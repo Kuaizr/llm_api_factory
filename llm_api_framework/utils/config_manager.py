@@ -49,3 +49,7 @@ class ConfigManager:
     def get_system_prompt(self) -> Optional[str]:
         """获取系统提示语"""
         return self._config.get("system_prompt")
+    
+    def get_vision(self) -> bool:
+        """获取是否启用视觉输入"""
+        return self._config.get("vision", False)

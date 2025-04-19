@@ -5,6 +5,10 @@ from ..utils.monitor import Monitor
 from .factory import PlatformFactory
 from .client import APIClient
 import time
+import os
+import base64
+from PIL import Image
+from io import BytesIO
 import asyncio
 
 class APIManager:
@@ -52,15 +56,78 @@ class APIManager:
                 except Exception as e:
                     self.logger.log_error(e)
 
+
     def add_message(self, role: str, content: str):
         """
         添加消息到对话历史
-        
+         
         参数:
             role: 消息角色 (user/assistant/system)
             content: 消息内容
         """
         self.messages.append({"role": role, "content": content})
+
+    def add_vision_message(self, role: str, images: list, detail: str = "low"):
+        """
+        添加视觉消息到对话历史
+
+        参数:
+            role: 消息角色 (user/assistant/system)
+            images: 图片列表(URL或本地路径)
+            detail: 图片处理细节 (low/high)
+        """
+        # 判断当前模型是否支持视觉输入
+        if not self.config.get_vision():
+            raise NotImplementedError("Current model does not support vision input")
+        
+        contents = []
+        for img in images:
+            if isinstance(img, str):
+                # 处理URL
+                if img.startswith(("http://", "https://")):
+                    contents.append({
+                        "type": "image_url",
+                        "image_url": {"url": img, "detail": detail}
+                    })
+                else:
+                    # 处理本地文件
+                    if not os.path.exists(img):
+                        raise FileNotFoundError(f"Image file not found: {img}")
+                    
+                    # 打开图片并转换为base64
+                    with Image.open(img) as image:
+                        buffered = BytesIO()
+                        image.save(buffered, format="JPEG")
+                        image_base64_data = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                    
+                    contents.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64_data}",
+                            "detail": detail
+                        }
+                    })
+            elif isinstance(img, Image.Image):  # 检查是否是PIL.Image对象
+                
+                buffered = BytesIO()
+                img.save(buffered, format="JPEG")
+                image_base64_data = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                
+                contents.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64_data}",
+                        "detail": detail
+                    }
+                })
+            else:
+                raise ValueError("Unsupported image type, must be URL, file path or PIL.Image")
+        
+        # 添加视觉消息到对话历史
+        self.messages.append({
+            "role": role,
+            "content": contents
+        })
 
     def clear_messages(self, keep_system_prompt: bool = True):
         """
