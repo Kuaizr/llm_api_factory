@@ -93,24 +93,31 @@ class APIManager:
         
         try:
             start_time = time.time()
-            response = client.call_api(self.messages, **kwargs)
+            raw_response = client.call_api(self.messages, **kwargs)
             latency = time.time() - start_time
-            
             self.monitor.record_latency(client, latency)
             
-            if "error" not in response:
-                # 处理不同API的响应格式
-                if "choices" in response and len(response["choices"]) > 0:
-                    content = response["choices"][0]["message"]["content"]
-                    self.add_message("assistant", content)
-                    response["content"] = content
-                elif "content" in response:
-                    self.add_message("assistant", response["content"])
-                
-                self.monitor.record_success(client)
+            response = {"error": None, "reasoning_content": None, "content": None}
+            
+            if "error" in raw_response:
+                response["error"] = raw_response["error"]
+                self.monitor.record_failure(client)
                 return response
                 
-            self.monitor.record_failure(client)
+            # 统一响应格式
+            if "choices" in raw_response and len(raw_response["choices"]) > 0:
+                message = raw_response["choices"][0]["message"]
+                response["reasoning_content"] = message.get("reasoning_content")
+                response["content"] = message.get("content")
+                
+                if response["content"]:
+                    self.add_message("assistant", response["content"])
+                    self.monitor.record_success(client)
+            elif "content" in raw_response:
+                response["content"] = raw_response["content"]
+                self.add_message("assistant", response["content"])
+                self.monitor.record_success(client)
+                
             return response
             
         except Exception as e:
@@ -119,9 +126,9 @@ class APIManager:
             return {"error": str(e)}
 
     async def call_api_async(self, prompt: str, **kwargs) -> Dict[str, Any]:
-        """异步API调用，参数和返回值同call_api"""
+        """异步API调用，返回统一格式字典"""
         if not self.clients:
-            return {"error": "No available API clients"}
+            return {"error": "No available API clients", "reasoning_content": None, "content": None}
             
         self.add_message("user", prompt)
         client = self.clients[self._current_client_index]
@@ -129,26 +136,34 @@ class APIManager:
         try:
             start_time = time.time()
             if hasattr(client, 'call_api_async'):
-                response = await client.call_api_async(self.messages, **kwargs)
+                raw_response = await client.call_api_async(self.messages, **kwargs)
             else:
-                response = client.call_api(self.messages, **kwargs)
+                raw_response = client.call_api(self.messages, **kwargs)
                 
             latency = time.time() - start_time
             self.monitor.record_latency(client, latency)
             
-            if "error" not in response:
-                # 处理不同API的响应格式
-                if "choices" in response and len(response["choices"]) > 0:
-                    content = response["choices"][0]["message"]["content"]
-                    self.add_message("assistant", content)
-                    response["content"] = content
-                elif "content" in response:
-                    self.add_message("assistant", response["content"])
-                
-                self.monitor.record_success(client)
+            response = {"error": None, "reasoning_content": None, "content": None}
+            
+            if "error" in raw_response:
+                response["error"] = raw_response["error"]
+                self.monitor.record_failure(client)
                 return response
                 
-            self.monitor.record_failure(client)
+            # 统一响应格式
+            if "choices" in raw_response and len(raw_response["choices"]) > 0:
+                message = raw_response["choices"][0]["message"]
+                response["reasoning_content"] = message.get("reasoning_content")
+                response["content"] = message.get("content")
+                
+                if response["content"]:
+                    self.add_message("assistant", response["content"])
+                    self.monitor.record_success(client)
+            elif "content" in raw_response:
+                response["content"] = raw_response["content"]
+                self.add_message("assistant", response["content"])
+                self.monitor.record_success(client)
+                
             return response
             
         except Exception as e:
@@ -177,12 +192,19 @@ class APIManager:
         
         try:
             for chunk in client.stream_api(self.messages, **kwargs):
-                if "content" in chunk:
-                    full_response += chunk["content"]
-                    yield chunk
-                elif "error" in chunk:
-                    yield chunk
+                if "error" in chunk:
+                    yield {"error": chunk["error"], "reasoning_content": None, "content": None}
                     return
+                    
+                response = {"error": None, "reasoning_content": None, "content": None}
+                
+                if "reasoning_content" in chunk:
+                    response["reasoning_content"] = chunk["reasoning_content"]
+                elif "content" in chunk:
+                    full_response += chunk["content"]
+                    response["content"] = chunk["content"]
+                    
+                yield response
                     
             self.add_message("assistant", full_response)
             
@@ -190,14 +212,15 @@ class APIManager:
             yield {"error": str(e)}
 
     async def stream_api_async(self, prompt: str, **kwargs) -> AsyncGenerator[Dict[str, Any], None]:
-        """异步流式API调用，参数和返回值同stream_api"""
+        """异步流式API调用，返回统一格式字典"""
         if not self.clients:
-            yield {"error": "No available API clients"}
+            yield {"error": "No available API clients", "reasoning_content": None, "content": None}
             return
             
         self.add_message("user", prompt)
         client = self.clients[self._current_client_index]
         full_response = ""
+        start_time = time.time()
         
         try:
             if hasattr(client, 'stream_api_async'):
@@ -206,14 +229,26 @@ class APIManager:
                 stream = client.stream_api(self.messages, **kwargs)
                 
             async for chunk in stream:
-                if "content" in chunk:
-                    full_response += chunk["content"]
-                    yield chunk
-                elif "error" in chunk:
-                    yield chunk
+                if "error" in chunk:
+                    self.monitor.record_failure(client)
+                    yield {"error": chunk["error"], "reasoning_content": None, "content": None}
                     return
                     
-            self.add_message("assistant", full_response)
+                response = {"error": None, "reasoning_content": None, "content": None}
+                
+                if "reasoning_content" in chunk:
+                    response["reasoning_content"] = chunk["reasoning_content"]
+                elif "content" in chunk:
+                    full_response += chunk["content"]
+                    response["content"] = chunk["content"]
+                    
+                yield response
+                
+            latency = time.time() - start_time
+            self.monitor.record_latency(client, latency)
+            if full_response:
+                self.add_message("assistant", full_response)
+                self.monitor.record_success(client)
             
         except Exception as e:
             yield {"error": str(e)}
