@@ -1,32 +1,40 @@
 # LLM API 集成框架
 
+我只是想优先使用免费的API
+
 ## 项目概述
-一个多平台LLM API集成框架，支持：
+一个轻量级、可扩展的多平台LLM API集成框架，提供统一的接口调用不同大模型平台API。主要特性包括：
+
 - 多平台API统一调用（OpenAI/MoDa/SiliconFlow等）
-- 同步/异步接口
+- 同步/异步接口支持
 - 流式响应处理
 - 对话历史管理
 - 性能监控和日志记录
+- 可扩展的客户端架构
 
-## 快速开始
-1. 安装依赖：
+## 安装与配置
+
+### 依赖安装
 ```bash
 pip install -r requirements.txt
 ```
 
-2. 配置API密钥：
-复制`configs/example.json`为`configs/default.json`并填写您的API密钥
+## 核心模块
 
-3. 运行测试：
-```bash
-python example_usage.py
-```
+### `clients/` - 平台客户端实现
+- `openai_client.py`: OpenAI API客户端
+- `moda_client.py`: 魔搭社区的免费API客户端
+- `siliconflow_client.py`: SiliconFlow平台客户端
 
-## 功能特性
-- 工厂模式管理不同平台客户端
-- 自动错误处理和重试机制
-- 对话上下文维护
-- 性能指标监控（延迟、成功率等）
+### `core/` - 框架核心
+- `factory.py`: 客户端工厂类
+- `manager.py`: 对话历史管理
+- `client.py`: 基础客户端接口
+
+### `utils/` - 工具类
+- `config_manager.py`: 配置管理
+- `logger.py`: 日志记录
+- `monitor.py`: 性能监控
 
 ## TODO 列表
 ### 近期计划
@@ -41,18 +49,12 @@ python example_usage.py
 - [ ] 开发Web交互界面
 - [ ] 实现多模态输入输出
 
-## 项目结构
-```
-llm_api_framework/
-├── clients/        # 各平台客户端实现
-├── core/           # 核心框架代码
-├── utils/          # 工具类
-configs/            # 配置文件目录
-example_usage.py    # 使用示例
-```
-
 ## 贡献指南
 欢迎提交Pull Request，请确保：
 1. 通过所有单元测试
 2. 更新相关文档
 3. 遵循代码风格规范
+4. 为新功能添加测试用例
+
+## 许可证
+MIT License
