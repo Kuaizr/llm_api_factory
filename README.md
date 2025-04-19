@@ -36,10 +36,40 @@ pip install -r requirements.txt
 - `logger.py`: 日志记录
 - `monitor.py`: 性能监控
 
+## 使用示例
+
+### 基本API调用
+```python
+from llm_api_framework.core.manager import APIManager
+
+# 初始化管理器
+manager = APIManager("configs/qwen2.5-VL-7B-Instruct.json")
+
+# 同步调用
+response = manager.call_api("请解释量子计算的基本原理")
+print(response["content"])
+
+# 流式调用
+for chunk in manager.stream_api("用简单语言解释相对论"):
+    if chunk["content"]:
+        print(chunk["content"], end="", flush=True)
+```
+
+### 视觉功能示例
+```python
+# 添加视觉消息
+image_url = "https://example.com/image.jpg"
+manager.add_vision_message("user", [image_url]) # 该函数可以同时支持URL和本地文件路径，以及PIL.Image对象
+
+# 询问图片内容
+response = manager.call_api("描述这幅图片")
+print(response["content"])
+```
+
 ## TODO 列表
 ### 近期计划
-- [ ] 支持推理模型输出（需修改manager API）
-- [ ] 添加视觉输入处理功能
+- [x] 支持推理模型输出
+- [x] 添加视觉输入处理功能
 - [ ] 增加更多平台支持（DeepSeek等）
 - [ ] 实现API调用负载均衡
 
@@ -47,7 +77,6 @@ pip install -r requirements.txt
 - [ ] 添加插件系统扩展功能
 - [ ] 支持本地模型部署
 - [ ] 开发Web交互界面
-- [ ] 实现多模态输入输出
 
 ## 贡献指南
 欢迎提交Pull Request，请确保：
