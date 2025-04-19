@@ -1,0 +1,16 @@
+{
+  "system_prompt": "你是一个有帮助的AI助手",
+  "platform_order": ["openai", "siliconflow"],
+  "platforms": {
+    "openai": {
+      "model": "gpt-3.5-turbo",
+      "api_keys": ["your_openai_api_key_here"],
+      "base_url": "https://api.openai.com/v1"
+    },
+    "siliconflow": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "api_keys": ["your_siliconflow_api_key_here"],
+      "base_url": "https://api.siliconflow.cn/v1"
+    }
+  }
+}
