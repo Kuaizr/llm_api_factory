@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Generator, AsyncGenerator, List, Optional
 import requests
+from .error_types import ErrorType
 
 class APIClient(ABC):
     def __init__(self, api_key: str, base_url: Optional[str] = None):
@@ -32,11 +33,14 @@ class APIClient(ABC):
         """Stream API response (async)"""
         pass
 
-    def handle_error(self, response: requests.Response) -> bool:
+    @abstractmethod
+    def handle_error(self, response: Any) -> ErrorType:
         """
-        Handle API error response
-        Returns True if should retry, False otherwise
+        处理API错误响应，返回标准错误类型
+        
+        参数:
+            response: API返回的错误响应(可能是dict/str/Response对象)
+        返回:
+            ErrorType: 标准化的错误类型
         """
-        if response.status_code >= 500:
-            return True  # Server error, should retry
-        return False
+        pass

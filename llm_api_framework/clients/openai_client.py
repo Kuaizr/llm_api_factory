@@ -2,6 +2,7 @@ from typing import Optional, Dict, Any, Generator, AsyncGenerator, List
 from ..core.client import APIClient
 import openai
 from openai import AsyncOpenAI
+from ..core.error_types import ErrorType
 
 class OpenAIClient(APIClient):
     def __init__(self, api_key: str, base_url: Optional[str] = None):
@@ -40,12 +41,21 @@ class OpenAIClient(APIClient):
                     yield {"content": chunk.choices[0].delta.content}
         except Exception as e:
             yield {"error": str(e)}
-            
-    def handle_error(self, response: Dict[str, Any]) -> bool:
-        if "error" in response:
-            error_msg = response["error"].lower()
-            if "rate limit" in error_msg:
-                return True  # Should retry with different key
-            elif "quota" in error_msg:
-                return False  # Should switch platform
-        return super().handle_error(response)
+
+    def handle_error(self, response: Any) -> ErrorType:
+        if not isinstance(response, dict) or "error" not in response:
+            return ErrorType.OTHER
+        
+        error_msg = str(response["error"]).lower()
+        
+        if "network" in error_msg or "timeout" in error_msg:
+            return ErrorType.NETWORK
+        elif "rate limit" in error_msg:
+            return ErrorType.RATE_LIMIT
+        elif "quota" in error_msg:
+            return ErrorType.QUOTA_EXCEEDED
+        elif "invalid" in error_msg or "auth" in error_msg:
+            return ErrorType.AUTH_FAILURE
+        elif "server" in error_msg or "internal" in error_msg:
+            return ErrorType.SERVER_ERROR
+        return ErrorType.OTHER

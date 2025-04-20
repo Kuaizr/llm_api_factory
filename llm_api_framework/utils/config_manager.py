@@ -53,3 +53,7 @@ class ConfigManager:
     def get_vision(self) -> bool:
         """获取是否启用视觉输入"""
         return self._config.get("vision", False)
+        
+    def get_max_retries(self) -> int:
+        """获取最大重试次数"""
+        return self._config.get("max_retries", 3)
