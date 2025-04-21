@@ -1,6 +1,9 @@
 from .client import APIClient
 from .factory import PlatformFactory
-from .llm_session import LLMSession, ConversationManager, APIClientRouter, APIExecutor
+from .session import LLMSession
+from .conversation import ConversationManager
+from .router import APIClientRouter
+from .executor import APIExecutor
 
 __all__ = [
     'APIClient',

@@ -1,4 +1,4 @@
-from llm_api_framework.core import LLMSession
+from llm_api_framework.core.session import LLMSession
 from PIL import Image
 
 def format_response(response):
