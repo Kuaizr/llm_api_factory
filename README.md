@@ -14,9 +14,16 @@
 
 ## 安装与配置
 
-### 依赖安装
+### 从源码安装
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/Kuaizr/llm_api_factory.git
+cd llm_api_factory
+pip install .
+```
+
+### 直接从Git安装
+```bash
+pip install git+https://github.com/Kuaizr/llm_api_factory.git
 ```
 
 ## 核心模块
@@ -28,8 +35,10 @@ pip install -r requirements.txt
 
 ### `core/` - 框架核心
 - `factory.py`: 客户端工厂类
-- `manager.py`: 对话历史管理
-- `client.py`: 基础客户端接口
+- `session.py`: 统一会话接口
+- `router.py`: API客户端路由
+- `executor.py`: API执行器
+- `conversation.py`: 对话管理
 
 ### `utils/` - 工具类
 - `config_manager.py`: 配置管理
@@ -40,17 +49,17 @@ pip install -r requirements.txt
 
 ### 基本API调用
 ```python
-from llm_api_framework.core.manager import APIManager
+from llm_api_framework.core import LLMSession
 
-# 初始化管理器
-manager = APIManager("configs/qwen2.5-VL-7B-Instruct.json")
+# 初始化会话
+session = LLMSession("configs/qwen2.5-VL-7B-Instruct.json")
 
 # 同步调用
-response = manager.call_api("请解释量子计算的基本原理")
+response = session.call_api("请解释量子计算的基本原理")
 print(response["content"])
 
 # 流式调用
-for chunk in manager.stream_api("用简单语言解释相对论"):
+for chunk in session.stream_api("用简单语言解释相对论"):
     if chunk["content"]:
         print(chunk["content"], end="", flush=True)
 ```
@@ -59,24 +68,18 @@ for chunk in manager.stream_api("用简单语言解释相对论"):
 ```python
 # 添加视觉消息
 image_url = "https://example.com/image.jpg"
-manager.add_vision_message("user", [image_url]) # 该函数可以同时支持URL和本地文件路径，以及PIL.Image对象
+session.add_vision_message("user", [image_url])
 
 # 询问图片内容
-response = manager.call_api("描述这幅图片")
+response = session.call_api("描述这幅图片")
 print(response["content"])
 ```
 
 ## TODO 列表
-### 近期计划
 - [x] 支持推理模型输出
 - [x] 添加视觉输入处理功能
 - [ ] 增加更多平台支持（DeepSeek等）
 - [ ] 实现API调用负载均衡
-
-### 长期规划
-- [ ] 添加插件系统扩展功能
-- [ ] 支持本地模型部署
-- [ ] 开发Web交互界面
 
 ## 贡献指南
 欢迎提交Pull Request，请确保：
