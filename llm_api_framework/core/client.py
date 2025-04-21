@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Generator, AsyncGenerator, List, Optional
-import requests
 from .error_types import ErrorType
 
 class APIClient(ABC):

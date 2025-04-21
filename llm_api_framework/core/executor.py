@@ -1,8 +1,7 @@
 from typing import Dict, Any, Generator, AsyncGenerator
 import time
-from .client import APIClient
 from ..utils.monitor import Monitor
-from .error_types import ErrorType
+from .error_types import Action
 
 class APIExecutor:
     """执行API调用并处理结果"""
