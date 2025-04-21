@@ -17,4 +17,4 @@ __pycache__/
 # IDE相关
 .vscode/
 .idea/
-.DS_Store
+.DS_Store*.egg-info
