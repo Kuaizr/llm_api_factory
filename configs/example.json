@@ -1,6 +1,14 @@
 {
   "system_prompt": "你是一个有帮助的AI助手",
   "platform_order": ["openai", "siliconflow"],
+  "max_retries": 3,
+  "error_policies": {
+    "network": "retry",
+    "rate_limit": "switch",
+    "quota_exceeded": "switch",
+    "auth_failure": "abort",
+    "invalid_request": "abort"
+  },
   "platforms": {
     "openai": {
       "model": "gpt-3.5-turbo",

@@ -1,4 +1,5 @@
 from typing import Dict, List, Any, Generator, AsyncGenerator, Optional
+import random
 from .client import APIClient
 from .factory import PlatformFactory
 from ..utils.config_manager import ConfigManager
@@ -58,18 +59,12 @@ class APIClientRouter:
                     Logger().log_error(e)
     
     def get_current_client(self) -> APIClient:
+        """获取当前客户端(严格遵循配置中的平台顺序)"""
         return self.clients[self._current_index]
 
     def process_error(self, error_type: ErrorType) -> Action:
         """根据错误类型返回处理动作"""
-        policy = {
-            ErrorType.NETWORK: Action.RETRY,
-            ErrorType.RATE_LIMIT: Action.SWITCH,
-            ErrorType.QUOTA_EXCEEDED: Action.SWITCH,
-            ErrorType.AUTH_FAILURE: Action.ABORT,
-            ErrorType.INVALID_REQUEST: Action.ABORT
-        }
-        return policy.get(error_type, Action.ABORT)
+        return self.config.get_error_policy(error_type)
     
     def switch_client(self):
         """切换到下一个可用客户端"""
@@ -218,22 +213,6 @@ class LLMSession:
         if system_prompt := ConfigManager(config_path).get_system_prompt():
             self.conversation.add_message("system", system_prompt)
     
-    def call_api(self, prompt: str, **kwargs) -> Dict[str, Any]:
-        """同步API调用"""
-        return self.executor.call_api(prompt, **kwargs)
-    
-    def add_message(self, role: str, content: str):
-        """添加消息到对话历史"""
-        self.conversation.add_message(role, content)
-    
-    def clear_messages(self, keep_system_prompt: bool = True):
-        """清除对话历史"""
-        self.conversation.clear_messages(keep_system_prompt)
-    
-    def get_conversation_history(self) -> List[Dict[str, str]]:
-        """获取完整对话历史"""
-        return self.conversation.get_history()
-
     def add_vision_message(self, role: str, images: list, detail: str = "low"):
         """添加视觉消息到对话历史"""
         contents = []
@@ -265,6 +244,18 @@ class LLMSession:
                 })
         
         self.conversation.add_message(role, contents)
+    
+    def add_message(self, role: str, content: str):
+        """添加消息到对话历史"""
+        self.conversation.add_message(role, content)
+    
+    def clear_messages(self, keep_system_prompt: bool = True):
+        """清除对话历史"""
+        self.conversation.clear_messages(keep_system_prompt)
+    
+    def get_conversation_history(self) -> List[Dict[str, str]]:
+        """获取完整对话历史"""
+        return self.conversation.get_history()
 
     def _pil_to_base64(self, image) -> str:
         """将PIL.Image转换为base64字符串"""
@@ -274,6 +265,10 @@ class LLMSession:
         buffered = BytesIO()
         image.save(buffered, format="JPEG")
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    def call_api(self, prompt: str, **kwargs) -> Dict[str, Any]:
+        """同步API调用"""
+        return self.executor.call_api(prompt, **kwargs)
 
     def stream_api(self, prompt: str, **kwargs) -> Generator[Dict[str, Any], None, None]:
         """流式API调用"""

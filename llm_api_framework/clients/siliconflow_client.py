@@ -139,17 +139,21 @@ class SiliconFlowClient(APIClient):
             yield {"error": str(e)}
 
     def handle_error(self, response: Any) -> ErrorType:
-        if not isinstance(response, dict) or "error" not in response:
+        if isinstance(response, str):
+            error_msg = response.lower()
+        elif isinstance(response, dict):
+            error_msg = str(response.get("message", "")).lower()
+        else:
             return ErrorType.OTHER
         
-        error_msg = str(response["error"]).lower()
-        
-        if "network" in error_msg or "timeout" in error_msg:
-            return ErrorType.NETWORK
-        elif "rate limit" in error_msg or "quota" in error_msg:
+        if "rate limit" in error_msg or "tpm limit" in error_msg:
             return ErrorType.RATE_LIMIT
-        elif "invalid" in error_msg or "auth" in error_msg:
+        elif "invalid token" in error_msg or "auth" in error_msg:
             return ErrorType.AUTH_FAILURE
-        elif "server" in error_msg or "internal" in error_msg:
+        elif "service overloaded" in error_msg or "try again later" in error_msg:
             return ErrorType.SERVER_ERROR
+        elif "timeout" in error_msg:
+            return ErrorType.NETWORK
+        elif "page not found" in error_msg:
+            return ErrorType.INVALID_REQUEST
         return ErrorType.OTHER

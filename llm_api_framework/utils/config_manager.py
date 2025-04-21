@@ -1,9 +1,34 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 import os
+import threading
+import atexit
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from ..core.error_types import ErrorType
+from ..core.error_types import Action
+from ..utils.logger import Logger
+
+class ConfigFileHandler(FileSystemEventHandler):
+    def __init__(self, callback: Callable):
+        self.callback = callback
+    
+    def on_modified(self, event):
+        if not event.is_directory:
+            self.callback()
 
 class ConfigManager:
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self, config_path: str = "configs/default.json"):
         """
         配置文件管理器
@@ -13,6 +38,39 @@ class ConfigManager:
         """
         self.config_path = Path(config_path)
         self._config = self.load_config()
+        self._observer = None
+        self._handlers = []
+        self._start_watching()
+        atexit.register(self.stop_watching)
+        
+    def stop_watching(self):
+        """停止配置文件监听"""
+        if self._observer and self._observer.is_alive():
+            self._observer.stop()
+            self._observer.join()
+        
+    def _start_watching(self):
+        """启动配置文件监听"""
+        if self._observer is None:
+            self._observer = Observer()
+            handler = ConfigFileHandler(self.reload_config)
+            self._observer.schedule(handler, self.config_path.parent, recursive=False)
+            self._observer.start()
+            
+    def reload_config(self):
+        """重新加载配置文件"""
+        try:
+            new_config = self.load_config()
+            with self._lock:
+                self._config = new_config
+            for handler in self._handlers:
+                handler()
+        except Exception as e:
+            Logger().log_error(f"Failed to reload config: {e}")
+            
+    def register_change_handler(self, handler: Callable):
+        """注册配置变更回调函数"""
+        self._handlers.append(handler)
 
     def load_config(self) -> Dict:
         """加载JSON配置文件"""
@@ -57,3 +115,22 @@ class ConfigManager:
     def get_max_retries(self) -> int:
         """获取最大重试次数"""
         return self._config.get("max_retries", 3)
+        
+    def get_error_policy(self, error_type: ErrorType) -> Action:
+        """获取指定错误类型的处理策略"""
+        policy_map = {
+            "network": ErrorType.NETWORK,
+            "rate_limit": ErrorType.RATE_LIMIT,
+            "quota_exceeded": ErrorType.QUOTA_EXCEEDED,
+            "auth_failure": ErrorType.AUTH_FAILURE,
+            "invalid_request": ErrorType.INVALID_REQUEST
+        }
+        
+        policies = self._config.get("error_policies", {})
+        policy_str = policies.get(error_type.name.lower(), "abort")
+        
+        return {
+            "retry": Action.RETRY,
+            "switch": Action.SWITCH,
+            "abort": Action.ABORT
+        }.get(policy_str.lower(), Action.ABORT)
