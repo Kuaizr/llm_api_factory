@@ -1,6 +1,6 @@
 {
   "system_prompt": "你是一个有帮助的AI助手",
-  "platform_order": ["openai", "siliconflow"],
+  "platform_order": ["free_aitools", "openai", "siliconflow", "moda", "infini"],
   "max_retries": 3,
   "error_policies": {
     "network": "retry",
@@ -10,6 +10,11 @@
     "invalid_request": "abort"
   },
   "platforms": {
+    "free_aitools": {
+      "model": "Qwen2.5-7B-Instruct",
+      "api_keys": ["your_free_aitools_api_key_here"],
+      "base_url": "https://platform.aitools.cfd/api/v1"
+    },
     "openai": {
       "model": "gpt-3.5-turbo",
       "api_keys": ["your_openai_api_key_here"],
@@ -19,6 +24,16 @@
       "model": "Qwen/Qwen2.5-7B-Instruct",
       "api_keys": ["your_siliconflow_api_key_here"],
       "base_url": "https://api.siliconflow.cn/v1"
+    },
+    "moda": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "api_keys": ["your_moda_api_key_here"],
+      "base_url": "https://api-inference.modelscope.cn/v1/"
+    },
+    "infini": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "api_keys": ["your_infini_api_key_here"],
+      "base_url": "https://cloud.infini-ai.com/maas/v1"
     }
   }
 }
