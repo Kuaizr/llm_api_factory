@@ -2,6 +2,8 @@ from typing import Type, Optional
 from ..clients.openai_client import OpenAIClient
 from ..clients.moda_client import MoDaClient
 from ..clients.siliconflow_client import SiliconFlowClient
+from ..clients.free_aitools_client import FreeAitoolsClient
+from ..clients.infini_client import InfiniClient
 from .client import APIClient
 
 class PlatformFactory:
@@ -9,6 +11,8 @@ class PlatformFactory:
         "openai": OpenAIClient,
         "moda": MoDaClient,
         "siliconflow": SiliconFlowClient,
+        "free_aitools": FreeAitoolsClient,
+        "infini": InfiniClient
     }
 
     @classmethod
@@ -19,7 +23,7 @@ class PlatformFactory:
             raise ValueError(f"Unsupported platform: {platform}")
             
         # 特殊处理需要model参数的平台
-        if platform.lower() in ["moda", "siliconflow"] and model:
+        if platform.lower() in ["moda", "siliconflow", "free_aitools", "infini"] and model:
             return client_class(api_key, model=model, **kwargs)
             
         return client_class(api_key, **kwargs)

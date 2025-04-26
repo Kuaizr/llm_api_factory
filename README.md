@@ -5,7 +5,7 @@
 ## 项目概述
 一个轻量级、可扩展的多平台LLM API集成框架，提供统一的接口调用不同大模型平台API。主要特性包括：
 
-- 多平台API统一调用（OpenAI/MoDa/SiliconFlow等）
+- 多平台API统一调用（OpenAI/MoDa/SiliconFlow/FreeAitools/Infini等）
 - 同步/异步接口支持
 - 流式响应处理
 - 对话历史管理
@@ -32,6 +32,8 @@ pip install git+https://github.com/Kuaizr/llm_api_factory.git
 - `openai_client.py`: OpenAI API客户端
 - `moda_client.py`: 魔搭社区的免费API客户端
 - `siliconflow_client.py`: SiliconFlow平台客户端
+- `free_aitools_client.py`: FreeAitools平台客户端
+- `infini_client.py`: Infini平台客户端
 
 ### `core/` - 框架核心
 - `factory.py`: 客户端工厂类
@@ -78,7 +80,7 @@ print(response["content"])
 ## TODO 列表
 - [x] 支持推理模型输出
 - [x] 添加视觉输入处理功能
-- [ ] 增加更多平台支持（DeepSeek等）
+- [X] 增加更多平台支持（MoDa/SiliconFlow/FreeAitools/Infini等）
 - [ ] 实现API调用负载均衡
 
 ## 贡献指南
