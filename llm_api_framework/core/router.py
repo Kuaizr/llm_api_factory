@@ -11,6 +11,7 @@ class APIClientRouter:
         self.config = ConfigManager(config_path)
         self.clients: List[APIClient] = []
         self._current_index = 0
+        self.strategy = self.config.get_routing_strategy()
         self._initialize_clients()
         
     def get_max_retries(self) -> int:
@@ -40,6 +41,17 @@ class APIClientRouter:
     def get_current_client(self) -> APIClient:
         """获取当前客户端(严格遵循配置中的平台顺序)"""
         return self.clients[self._current_index]
+
+    def select_client_for_request(self) -> APIClient:
+        """
+        根据策略选择用于本次请求的客户端。
+        - failover: 返回当前索引，不前进
+        - round_robin: 返回当前索引并前进到下一个
+        """
+        client = self.clients[self._current_index]
+        if self.strategy == "round_robin":
+            self._current_index = (self._current_index + 1) % len(self.clients)
+        return client
 
     def process_error(self, error_type: ErrorType) -> Action:
         """根据错误类型返回处理动作"""

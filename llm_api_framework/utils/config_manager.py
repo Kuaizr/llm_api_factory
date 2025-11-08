@@ -20,13 +20,14 @@ class ConfigFileHandler(FileSystemEventHandler):
 
 class ConfigManager:
     _instance = None
-    _lock = threading.Lock()
+    _lock = threading.RLock()
     
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
             with cls._lock:
                 if not cls._instance:
                     cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
     
     def __init__(self, config_path: str = "configs/default.json"):
@@ -36,22 +37,43 @@ class ConfigManager:
         参数:
             config_path: JSON配置文件路径，默认为configs/default.json
         """
-        self.config_path = Path(config_path)
+        config_path = Path(config_path)
+
+        if getattr(self, "_initialized", False):
+            if config_path != self.config_path:
+                self._update_config_path(config_path)
+            return
+
+        self.config_path = config_path
         self._config = self.load_config()
         self._observer = None
         self._handlers = []
         self._start_watching()
         atexit.register(self.stop_watching)
+        self._initialized = True
         
     def stop_watching(self):
         """停止配置文件监听"""
         if self._observer and self._observer.is_alive():
             self._observer.stop()
             self._observer.join()
+        self._observer = None
+        
+    def _update_config_path(self, new_path: Path):
+        """更新配置文件路径并重启监听"""
+        with self._lock:
+            if new_path == self.config_path:
+                return
+            self.stop_watching()
+            self.config_path = new_path
+            self._config = self.load_config()
+            self._start_watching()
         
     def _start_watching(self):
         """启动配置文件监听"""
-        if self._observer is None:
+        with self._lock:
+            if self._observer is not None and self._observer.is_alive():
+                return
             self._observer = Observer()
             handler = ConfigFileHandler(self.reload_config)
             self._observer.schedule(handler, self.config_path.parent, recursive=False)
@@ -115,6 +137,35 @@ class ConfigManager:
     def get_max_retries(self) -> int:
         """获取最大重试次数"""
         return self._config.get("max_retries", 3)
+    
+    def get_routing_strategy(self) -> str:
+        """获取路由策略: round_robin | failover"""
+        routing = self._config.get("routing", {})
+        return str(routing.get("strategy") or self._config.get("strategy") or "failover")
+        
+    def get_context_config(self) -> Dict:
+        """获取上下文窗口管理配置"""
+        return self._config.get("context", {})
+    
+    def get_context_max_tokens(self) -> int:
+        """获取上下文最大token限制"""
+        ctx = self.get_context_config()
+        return int(ctx.get("max_tokens", 100000))
+    
+    def get_context_overflow_strategy(self) -> str:
+        """获取上下文超限策略: trim|summarize"""
+        ctx = self.get_context_config()
+        return str(ctx.get("overflow_strategy", "trim"))
+    
+    def get_context_reserve_recent_n(self) -> int:
+        """获取保留最近消息条数"""
+        ctx = self.get_context_config()
+        return int(ctx.get("reserve_recent_n", 1))
+    
+    def get_context_tokenizer_model(self) -> str:
+        """获取用于估算token的tokenizer模型名称"""
+        ctx = self.get_context_config()
+        return str(ctx.get("tokenizer_model", "gpt-4o-mini"))
         
     def get_error_policy(self, error_type: ErrorType) -> Action:
         """获取指定错误类型的处理策略"""

@@ -13,22 +13,22 @@ class APIClient(ABC):
         pass
         
     @abstractmethod
-    def call_api(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+    def call_api(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """Call the API with given messages (sync)"""
         pass
         
     @abstractmethod
-    async def call_api_async(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+    async def call_api_async(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """Call the API with given messages (async)"""
         pass
         
     @abstractmethod
-    def stream_api(self, messages: List[Dict[str, str]], **kwargs) -> Generator[Dict[str, Any], None, None]:
+    def stream_api(self, messages: List[Dict[str, Any]], **kwargs) -> Generator[Dict[str, Any], None, None]:
         """Stream API response (sync)"""
         pass
         
     @abstractmethod 
-    async def stream_api_async(self, messages: List[Dict[str, str]], **kwargs) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_api_async(self, messages: List[Dict[str, Any]], **kwargs) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream API response (async)"""
         pass
 

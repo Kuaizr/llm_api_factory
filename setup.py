@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="llm_api_framework",
-    version="0.1.0",
+    version="0.2.0",
     author="kuaizhirui",
     author_email="kuaizhirui@gmail.com",
     description="一个轻量级、可扩展的多平台LLM API集成框架，提供统一的接口调用不同大模型平台API",
@@ -14,7 +14,8 @@ setup(
         "python-dotenv>=0.19.0",
         "tqdm>=4.0.0",
         "Pillow>=11.2.1",
-        "watchdog>=2.0.0"
+        "watchdog>=2.0.0",
+        "tiktoken>=0.7.0",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

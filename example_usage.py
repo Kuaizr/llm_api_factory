@@ -15,23 +15,27 @@ def format_response(response):
 
 def test_vision_model():
     # 使用Qwen2.5-VL-7B-Instruct视觉模型
-    # session = LLMSession("configs/qwen2.5-VL-72B-Instruct.json")
+    session = LLMSession("configs/qwen2.5-VL-7B-Instruct.json")
+    # 也可以在配置中启用上下文管理（见 configs/example.json 的 context 字段）
+    # 或者在代码中手动开启/调整（将覆盖配置）：
+    # session.conversation.set_overflow_strategy("summarize", reserve_recent_n=1)
+    # session.conversation.set_max_context_tokens(8192)
     # session = LLMSession("configs/deepseek-R1-Distill-Qwen-7B.json")
-    session = LLMSession("configs/deepseek-v3-0324.json")
+    # session = LLMSession("configs/deepseek-v3-0324.json")
     
     
     # 添加视觉消息
     # 使用网络图片或本地图片
     image_url = "https://modelscope.oss-cn-beijing.aliyuncs.com/demo/images/audrey_hepburn.jpg"
-    # session.add_vision_message("user", [image_url])
+    session.add_vision_message("user", [image_url])
 
-    print(format_response(session.call_api("做家务的步骤有哪些")))
-    # print(format_response(session.call_api("描述这张图片")))
+    # print(format_response(session.call_api("做家务的步骤有哪些")))
+    print(format_response(session.call_api("描述这张图片")))
     
     print("测试模型流式调用:")
     full_response = ""
-    for chunk in session.stream_api("具体到厨务呢"):
-    # for chunk in session.stream_api("有可能发生在哪个国家"):
+    # for chunk in session.stream_api("具体到厨务呢"):
+    for chunk in session.stream_api("有可能发生在哪个国家"):
         formatted = format_response(chunk)
         print(formatted, end="", flush=True)
         content = chunk.get("content") or chunk.get("reasoning_content")

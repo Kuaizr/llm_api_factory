@@ -35,5 +35,11 @@
       "api_keys": ["your_infini_api_key_here"],
       "base_url": "https://cloud.infini-ai.com/maas/v1"
     }
+  },
+  "context": {
+    "max_tokens": 8192,
+    "overflow_strategy": "summarize",
+    "reserve_recent_n": 1,
+    "tokenizer_model": "gpt-4o-mini"
   }
 }
