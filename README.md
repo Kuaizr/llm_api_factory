@@ -145,6 +145,11 @@ asyncio.run(main())
 session.conversation.set_overflow_strategy("summarize", reserve_recent_n=1)
 session.conversation.set_max_context_tokens(8192)
 ```
+- 视觉消息 token 计数策略：
+  - 图片内容只按“张数”计费，不再基于 base64 文本长度估算
+  - 每张图片固定计 **1024 tokens**（参考多数厂商的收费模型）
+  - 文本部分仍使用 tiktoken（或字符估算）统计实际 tokens
+  - 该策略既避免 base64 爆量导致的超限，也让 token 预算更接近真实调用成本
 
 ## 路由与负载均衡
 - 支持 `failover`（默认）与 `round_robin`。

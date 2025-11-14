@@ -69,22 +69,58 @@ class ConversationManager:
     def _count_tokens(self, messages: List[Dict[str, Any]]) -> int:
         if not messages:
             return 0
-        if self._encoding is None:
-            # Fallback: rough estimate ~ 4 chars per token
-            text = "\n".join(
-                f"{m.get('role','')}:{self._stringify(m.get('content'))}"
-                for m in messages
-            )
-            return max(1, len(text) // 4)
         tokens = 0
         for m in messages:
             role = str(m.get("role", ""))
-            content = self._stringify(m.get("content"))
-            tokens += len(self._encoding.encode(role))
-            tokens += len(self._encoding.encode(content))
-            # Add a small per-message overhead
+            content = m.get("content")
+            
+            # Count role tokens
+            if self._encoding:
+                tokens += len(self._encoding.encode(role))
+            else:
+                tokens += len(role) // 4
+            
+            # Count content tokens (with special handling for images)
+            content_tokens, image_count = self._count_content_tokens(content)
+            tokens += content_tokens
+            tokens += image_count * 1024  # Fixed 1024 tokens per image
+            
+            # Add per-message overhead
             tokens += 4
-        return tokens
+        return max(1, tokens)
+
+    def _count_content_tokens(self, content: Any) -> tuple[int, int]:
+        """
+        计算内容的 token 数量和图片数量
+        返回: (text_tokens, image_count)
+        """
+        image_count = 0
+        
+        # Handle list content (multimodal messages)
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "image_url":
+                        image_count += 1
+                    elif item.get("type") == "text":
+                        text_parts.append(str(item.get("text", "")))
+                    else:
+                        # Other structured content, stringify it
+                        text_parts.append(self._stringify(item))
+                else:
+                    text_parts.append(str(item))
+            text_content = "\n".join(text_parts)
+        else:
+            text_content = self._stringify(content)
+        
+        # Count text tokens
+        if self._encoding:
+            text_tokens = len(self._encoding.encode(text_content)) if text_content else 0
+        else:
+            text_tokens = len(text_content) // 4 if text_content else 0
+        
+        return text_tokens, image_count
 
     def _stringify(self, content: Any) -> str:
         if content is None:

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="llm_api_framework",
-    version="0.2.0",
+    version="0.2.1",
     author="kuaizhirui",
     author_email="kuaizhirui@gmail.com",
     description="一个轻量级、可扩展的多平台LLM API集成框架，提供统一的接口调用不同大模型平台API",

@@ -47,6 +47,35 @@ class ConversationTests(unittest.TestCase):
         # recent one should be u2
         self.assertEqual(history[-1]["content"], "u2")
 
+    def test_image_token_counting_fixed_per_image(self):
+        """测试图片消息的 token 计数：每张图片固定 1024 tokens，不计算 base64 长度"""
+        cm = ConversationManager(max_context_tokens=50000)
+        
+        # 添加一条包含 1 张图片的消息
+        cm.add_message({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ..."}}
+            ]
+        })
+        
+        # 添加一条包含 2 张图片的消息
+        cm.add_message({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Compare these"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,iVBORw0KGgoAAAANSU..."}},
+                {"type": "image_url", "image_url": {"url": "http://example.com/image.jpg"}}
+            ]
+        })
+        
+        total_tokens = cm._count_tokens(cm.messages)
+        # 3 张图片 = 3 * 1024 = 3072 tokens + 文本 tokens + overhead
+        # 确保不会因为 base64 长度而爆炸性增长
+        self.assertGreater(total_tokens, 3000)  # 至少 3 * 1024
+        self.assertLess(total_tokens, 5000)  # 但不会包含巨大的 base64 字符串长度
+
 
 if __name__ == "__main__":
     unittest.main()
