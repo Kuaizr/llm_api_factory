@@ -1,2 +1,0 @@
-[console_scripts]
-llm-agent = app.services.agent_client:run_agent
