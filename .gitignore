@@ -1,20 +1,19 @@
-# 个人配置文件
-configs/*.json
-!configs/example.json
-
-# 日志文件
-*.log
-
-# 开发环境
+.DS_Store
 .env
-.venv
-venv/
-
-# Python缓存
+.env.*
+.venv/
 __pycache__/
-*.py[cod]
-
-# IDE相关
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite
+*.sqlite3
+*.db
+node_modules/
+dist/
+build/
 .vscode/
 .idea/
-.DS_Store*.egg-info

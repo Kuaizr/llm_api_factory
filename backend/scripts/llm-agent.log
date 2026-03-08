@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/kuaizhirui/Desktop/codes/llm_api_factory/backend/scripts/test_agent.py", line 22, in <module>
+    import httpx
+ModuleNotFoundError: No module named 'httpx'

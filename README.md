@@ -1,217 +1,172 @@
-# LLM API 集成框架
+# LLM API Factory
 
-我只是想优先使用免费的API
+## 背景
+LLM API Factory 是一个面向个人或小团队的 LLM API 聚合分发与监控服务：统一管理多家模型 API Key，按模型名进行路由与降级，并提供健康探针、熔断与可视化控制台。核心理念是“模型名是一等公民”，请求只需指定模型，系统会自动选择可用端点。
 
-## 项目概述
-一个轻量级、可扩展的多平台 LLM API 集成框架，提供统一的接口调用不同大模型平台 API。主要特性包括：
+## 主要能力
+- OpenAI 兼容透明代理（支持流式），并记录请求用量与耗时。
+- 按模型 + 规则组路由，熔断不可用 Key。
+- 健康探针与趋势可视化，告警策略配置（Telegram）。
+- 管理控制台：资产管理、路由测试、日志导出与筛选。
+- 可选 Agent 节点（用于跨境代理，支持请求代理加速）。
 
-- 多平台 API 统一调用（OpenAI / MoDa / SiliconFlow / FreeAitools / Infini 等）
-- 工具调用（Tool Calling）原生透传与处理
-- 同步与异步接口（call_api/stream_api + call_api_async/stream_api_async）
-- 流式响应处理
-- 对话历史管理与上下文窗口控制（trim/summarize）
-- 智能路由与负载均衡（failover / round_robin）
-- 监控与日志记录
-- 抽象化客户端架构（OpenAI SDK 和 通用 HTTP 两大基类）
+## 快速开始
 
-## 安装与配置
+### 1. 后端
+进入后端目录：
 
-### 从源码安装
+```
+cd backend
+```
+
+安装依赖：
+
+```
+pip install -e .
+```
+
+建议配置环境变量（可选）：
+
+```
+export LLM_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/llm_api_factory"
+export LLM_REDIS_URL="redis://localhost:6379/0"
+export LLM_MASTER_AUTH_TOKEN="your-admin-token"
+```
+
+启动服务：
+
+```
+uvicorn app.main:app --reload --port 8000
+```
+
+### 2. 前端
+进入前端目录：
+
+```
+cd frontend
+```
+
+安装依赖：
+
+```
+npm install
+```
+
+可选环境变量：
+
+```
+export VITE_API_BASE="http://localhost:8000"
+export VITE_ADMIN_TOKEN="your-admin-token"
+```
+
+启动前端：
+
+```
+npm run dev -- --port 5173
+```
+
+## 测试
+
+后端测试：
+
+```
+cd backend
+pytest -q
+```
+
+前端测试：
+
+```
+cd frontend
+npm test -- --run
+```
+
+## 可选：Agent 节点
+
+Agent 节点用于跨境代理加速，通过 WebSocket 与后端保持连接，支持请求转发。
+
+### 部署方式
+
+#### 方式一：通过管理控制台（推荐）
+
+1. 登录管理控制台（管理员权限）
+2. 进入「Agent 节点」页签
+3. 点击「部署新节点」按钮
+4. 输入节点名称，点击生成部署命令
+5. 复制生成的命令，在目标服务器上执行
+
+#### 方式二：手动运行
+
 ```bash
-git clone https://github.com/Kuaizr/llm_api_factory.git
-cd llm_api_factory
-pip install .
+# 克隆仓库
+git clone https://github.com/your-repo/llm-api-factory.git
+cd llm-api-factory
+
+# 安装依赖
+pip install httpx websockets
+
+# 运行 Agent
+python scripts/llm-api-factory-agent.py \
+  --ws-url ws://localhost:8000/agent/ws \
+  --heartbeat-url http://localhost:8000/agent/heartbeat \
+  --name "edge-hk" \
+  --token "your-token-from-console" \
+  --region "HK"
 ```
 
-### 直接从Git安装
+#### 方式三：使用安装脚本（未来支持）
+
+未来可从 GitHub 直接安装：
+
 ```bash
-pip install git+https://github.com/Kuaizr/llm_api_factory.git
+curl -fsSL https://raw.githubusercontent.com/your-repo/llm-api-factory/main/scripts/agent_install.sh | bash -s -- \
+  --ws-url ws://localhost:8000/agent/ws \
+  --heartbeat-url http://localhost:8000/agent/heartbeat \
+  --agent-name "edge-hk" \
+  --agent-token "your-token" \
+  --agent-region "HK"
 ```
 
-## 核心模块
+### 常用命令行参数
 
-### `clients/` - 平台客户端实现
-- `base_openai_client.py`: 基于 OpenAI SDK 的通用 Chat Completions 客户端基类
-- `base_requests_client.py`: 基于 requests/aiohttp 的通用 Chat Completions 客户端基类
-- `openai_client.py`: OpenAI 平台（继承 base_openai_client）
-- `moda_client.py`: MoDa（继承 base_openai_client）
-- `siliconflow_client.py`: SiliconFlow（继承 base_requests_client）
-- `free_aitools_client.py`: FreeAitools（继承 base_requests_client）
-- `infini_client.py`: Infini（继承 base_requests_client）
+| 参数 | 说明 |
+|------|------|
+| `--ws-url` | WebSocket 连接地址 (必需) |
+| `--heartbeat-url` | 心跳上报地址 (必需) |
+| `--name` | 节点名称 (必需) |
+| `--token` | 认证 Token (必需) |
+| `--region` | 区域标识 (如 HK/SG/US) |
+| `--endpoint-url` | 出口公网地址 (用于延迟探测) |
 
-### `core/` - 框架核心
-- `factory.py`: 客户端工厂类
-- `session.py`: 统一会话接口
-- `router.py`: API客户端路由
-- `executor.py`: API执行器
-- `conversation.py`: 对话管理
+### Agent 功能
 
-### `utils/` - 工具类
-- `config_manager.py`: 配置管理
-- `logger.py`: 日志记录
-- `monitor.py`: 性能监控
+- **心跳检测**：Agent 定期向后端发送心跳，维持在线状态
+- **能力探测**：Agent 启动时自动探测支持的模型类型
+- **请求代理**：后端将请求转发给 Agent，Agent 转发到目标 LLM 服务
+- **Token 管理**：每个 Agent 拥有独立 Token，支持重新生成（仅限未部署节点）
 
-## 使用示例
+## 接口示例
 
-### 基本API调用
-```python
-from llm_api_framework.core import LLMSession
+模型列表：
 
-# 初始化会话（从配置读取平台、路由与上下文策略）
-session = LLMSession("configs/example.json")
-
-# 同步调用
-response = session.call_api("请解释量子计算的基本原理")
-print(response.get("content"))
-
-# 流式调用
-for chunk in session.stream_api("用简单语言解释相对论"):
-    if chunk.get("content"):
-        print(chunk.get("content"), end="", flush=True)
+```
+GET /v1/models
 ```
 
-### 视觉功能示例
-```python
-# 添加视觉消息
-image_url = "https://example.com/image.jpg"
-session.add_vision_message("user", [image_url])
+聊天代理：
 
-# 询问图片内容
-response = session.call_api("描述这幅图片")
-print(response.get("content"))
+```
+POST /v1/chat/completions
 ```
 
-### 工具调用（Tool Calling）
-```python
-tools = [{
-    "type": "function",
-    "function": {
-        "name": "lookup_weather",
-        "description": "查询天气",
-        "parameters": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}}
-        }
-    }
-}]
+文本补全：
 
-message = session.call_api(
-    "上海天气如何？",
-    tools=tools,
-    tool_choice={"type": "function", "function": {"name": "lookup_weather"}}
-)
-
-# 如返回 tool_calls，执行工具并回填 tool 响应
-for tc in message.get("tool_calls", []):
-    tool_id = tc["id"]
-    args = tc["function"]["arguments"]
-    result = "...你的工具结果..."
-    session.conversation.add_tool_response(tool_id, result)
+```
+POST /v1/completions
 ```
 
-### 异步接口（高并发）
-```python
-import asyncio
-from llm_api_framework.core import LLMSession
+向量嵌入：
 
-async def main():
-    session = LLMSession("configs/example.json")
-    msg = await session.call_api_async("异步请求示例")
-    print(msg.get("content"))
-
-    async for ch in session.stream_api_async("异步流式示例"):
-        if ch.get("content"):
-            print(ch["content"], end="", flush=True)
-
-asyncio.run(main())
 ```
-
-## 上下文窗口管理
-- 通过 `ConversationManager` 在 `add_message` 时自动控制 Token 预算。
-- 策略：
-  - `trim`: 保留 system 提示，超限时删除最旧消息（默认）
-  - `summarize`: 保留最近 n 条，其余用“当前模型”自动总结为一条系统摘要
-- 配置（`configs/example.json`）：
-```json
-"context": {
-  "max_tokens": 8192,
-  "overflow_strategy": "summarize",
-  "reserve_recent_n": 1,
-  "tokenizer_model": "gpt-4o-mini"
-}
+POST /v1/embeddings
 ```
-- 代码动态设置：
-```python
-session.conversation.set_overflow_strategy("summarize", reserve_recent_n=1)
-session.conversation.set_max_context_tokens(8192)
-```
-- 视觉消息 token 计数策略：
-  - 图片内容只按“张数”计费，不再基于 base64 文本长度估算
-  - 每张图片固定计 **1024 tokens**（参考多数厂商的收费模型）
-  - 文本部分仍使用 tiktoken（或字符估算）统计实际 tokens
-  - 该策略既避免 base64 爆量导致的超限，也让 token 预算更接近真实调用成本
-
-## 路由与负载均衡
-- 支持 `failover`（默认）与 `round_robin`。
-- 配置：
-```json
-"routing": { "strategy": "round_robin" }
-```
-- 行为：
-  - `failover`: 总是使用当前 client，错误时切换。
-  - `round_robin`: 每次请求轮询下一个 client。
-
-## 客户端扩展（继承基类）
-- OpenAI SDK 系（新增平台大多兼容 OpenAI 生态 API）：
-  - 继承 `BaseOpenAIChatCompletionsClient`
-  - 实现 `get_default_url()`，在构造函数设置 `self.model`（可选）
-- 通用 HTTP 系（OpenAI 格式兼容 /chat/completions 的第三方网关）：
-  - 继承 `BaseRequestsChatCompletionsClient`
-  - 实现 `get_default_url()`，在构造函数传入 `model`
-- 注册到 `PlatformFactory` 的 `_client_classes` 或通过 `register_platform`
-
-## 配置示例（节选）
-```json
-{
-  "system_prompt": "你是一个有帮助的AI助手",
-  "platform_order": ["free_aitools", "openai"],
-  "routing": { "strategy": "round_robin" },
-  "context": {
-    "max_tokens": 8192,
-    "overflow_strategy": "summarize",
-    "reserve_recent_n": 1,
-    "tokenizer_model": "gpt-4o-mini"
-  },
-  "platforms": {
-    "free_aitools": {
-      "model": "Qwen2.5-7B-Instruct",
-      "api_keys": ["your_key"],
-      "base_url": "https://platform.aitools.cfd/api/v1"
-    },
-    "openai": {
-      "model": "gpt-3.5-turbo",
-      "api_keys": ["sk-..."],
-      "base_url": "https://api.openai.com/v1"
-    }
-  }
-}
-```
-
-## TODO 列表
-- [x] 支持推理模型输出
-- [x] 添加视觉输入处理功能
-- [x] 增加更多平台支持（MoDa/SiliconFlow/FreeAitools/Infini等）
-- [x] 实现 API 调用负载均衡（failover/round_robin）
-- [x] 支持工具调用（Tool Calling）
-- [x] 提供完整异步接口
-- [x] 上下文窗口管理（trim/summarize）
-
-## 贡献指南
-欢迎提交Pull Request，请确保：
-1. 通过所有单元测试
-2. 更新相关文档
-3. 遵循代码风格规范
-4. 为新功能添加测试用例
-
-## 许可证
-MIT License

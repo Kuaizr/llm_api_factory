@@ -1,0 +1,1174 @@
+import React, { useState, useMemo } from 'react';
+import { 
+  Server, 
+  Activity, 
+  Shield, 
+  Settings, 
+  Zap, 
+  Globe, 
+  Database, 
+  AlertTriangle,
+  MoreVertical,
+  Plus,
+  Play,
+  RotateCw,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Cpu,
+  Lock,
+  Trash2,
+  Edit2,
+  Save,
+  Search,
+  Key,
+  RefreshCw,
+  Bell,
+  Eye,
+  Network,
+  BarChart3,
+  PieChart,
+  ArrowRight,
+  ChevronDown,
+  Filter,
+  Check
+} from 'lucide-react';
+
+// --- 类型定义 ---
+type EndpointStatus = 'online' | 'degraded' | 'offline';
+
+interface ApiKey {
+  id: string;
+  key_preview: string; // sk-xxxx...
+  rpm_limit: number;
+  daily_limit: number;
+  used_today: number;
+  is_active: boolean;
+  name?: string; // 备注名，如 "Free Tier 1"
+}
+
+interface Endpoint {
+  id: string;
+  name: string;
+  base_url: string;
+  provider: 'openai' | 'anthropic';
+  status: EndpointStatus;
+  latency: number; // ms
+  uptime: number; // %
+  is_agent_enabled: boolean;
+  agent_node?: string; // e.g., "HK-Node-01"
+  model_count: number;
+  keys: ApiKey[];
+  strategy: 'round_robin' | 'sequential'; // 轮询 or 顺序(主备)
+}
+
+interface RoutingRule {
+  id: string;
+  model_pattern: string; // e.g., "gpt-4.*" or "claude-3-opus"
+  group_name: string; // e.g., "premium_users"
+  target_key_ids: string[]; // 精确到 Key ID
+  priority: number;
+  is_active: boolean;
+}
+
+interface AgentNode {
+  id: string;
+  name: string;
+  region: string;
+  status: 'online' | 'offline';
+  last_heartbeat: string;
+  latency: number;
+  version: string;
+}
+
+// --- 模拟数据 (Mock Data) ---
+const MOCK_AGENTS: AgentNode[] = [
+  { id: 'a1', name: 'US-West-Proxy', region: 'San Francisco, US', status: 'online', last_heartbeat: '2s ago', latency: 145, version: 'v1.0.2' },
+  { id: 'a2', name: 'SG-Aws-Proxy', region: 'Singapore', status: 'online', last_heartbeat: '5s ago', latency: 85, version: 'v1.0.2' },
+  { id: 'a3', name: 'JP-Edge-Node', region: 'Tokyo, JP', status: 'offline', last_heartbeat: '2h ago', latency: 0, version: 'v0.9.8' },
+];
+
+const MOCK_ENDPOINTS: Endpoint[] = [
+  {
+    id: '1',
+    name: 'Official OpenAI (US)',
+    base_url: 'https://api.openai.com/v1',
+    provider: 'openai',
+    status: 'online',
+    latency: 145,
+    uptime: 99.9,
+    is_agent_enabled: true,
+    agent_node: 'US-West-Proxy',
+    model_count: 14,
+    strategy: 'round_robin',
+    keys: [
+      { id: 'k1', name: 'Main Paid Key', key_preview: 'sk-proj...8dA', rpm_limit: 5000, daily_limit: 1000000, used_today: 45000, is_active: true },
+      { id: 'k2', name: 'Backup Key', key_preview: 'sk-proj...9bB', rpm_limit: 5000, daily_limit: 1000000, used_today: 12000, is_active: true },
+    ]
+  },
+  {
+    id: '2',
+    name: 'Anthropic Official',
+    base_url: 'https://api.anthropic.com',
+    provider: 'anthropic',
+    status: 'online',
+    latency: 210,
+    uptime: 98.5,
+    is_agent_enabled: true,
+    agent_node: 'SG-Aws-Proxy',
+    model_count: 6,
+    strategy: 'sequential',
+    keys: [
+      { id: 'k3', name: 'Claude Pro', key_preview: 'sk-ant...551', rpm_limit: 100, daily_limit: 500000, used_today: 490000, is_active: true },
+    ]
+  },
+  {
+    id: '3',
+    name: 'DeepSeek (Local Forward)',
+    base_url: 'https://api.deepseek.com',
+    provider: 'openai',
+    status: 'degraded',
+    latency: 850,
+    uptime: 85.2,
+    is_agent_enabled: false,
+    model_count: 3,
+    strategy: 'round_robin',
+    keys: [
+      { id: 'k4', name: 'Free Tier', key_preview: 'sk-ds...991', rpm_limit: 60, daily_limit: 10000, used_today: 8000, is_active: true },
+    ]
+  },
+];
+
+const MOCK_RULES: RoutingRule[] = [
+  { id: 'r1', model_pattern: 'gpt-4.*', group_name: 'default', target_key_ids: ['k1', 'k2'], priority: 10, is_active: true },
+  { id: 'r2', model_pattern: 'claude.*', group_name: 'vip_users', target_key_ids: ['k3'], priority: 20, is_active: true },
+];
+
+// --- 基础组件 ---
+
+const StatusBadge = ({ status }: { status: EndpointStatus | 'online' | 'offline' }) => {
+  const colors = {
+    online: 'bg-green-500/20 text-green-400 border-green-500/30',
+    degraded: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    offline: 'bg-red-500/20 text-red-400 border-red-500/30',
+  };
+  
+  const labels: Record<string, string> = {
+    online: 'Online',
+    degraded: 'Degraded',
+    offline: 'Offline',
+  };
+
+  return (
+    <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${colors[status]} flex items-center gap-1.5`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${status === 'online' ? 'bg-green-400' : status === 'degraded' ? 'bg-yellow-400' : 'bg-red-400'} animate-pulse`} />
+      {labels[status]}
+    </span>
+  );
+};
+
+const LatencyBar = ({ ms }: { ms: number }) => {
+  let color = 'bg-green-500';
+  if (ms > 300) color = 'bg-yellow-500';
+  if (ms > 800) color = 'bg-red-500';
+  if (ms === 0) color = 'bg-gray-700';
+
+  const width = Math.min((ms / 1000) * 100, 100);
+
+  return (
+    <div className="flex items-center gap-2 text-xs text-gray-400 mt-2">
+      <Activity size={12} />
+      <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${width}%` }} />
+      </div>
+      <span className="w-12 text-right font-mono">{ms > 0 ? `${ms}ms` : 'N/A'}</span>
+    </div>
+  );
+};
+
+// --- 模态框组件 (Modals) ---
+
+// 1. Endpoint 编辑模态框
+const EditEndpointModal = ({ endpoint, onClose }: { endpoint: Endpoint, onClose: () => void }) => {
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[500px] shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div className="p-6 border-b border-gray-800 flex justify-between items-center">
+          <h3 className="text-lg font-bold text-white flex items-center gap-2">
+            <Settings size={18} className="text-blue-500" />
+            编辑 API 端点配置
+          </h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white"><XCircle size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">端点名称</label>
+            <input defaultValue={endpoint.name} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">Base URL</label>
+            <input defaultValue={endpoint.base_url} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white font-mono focus:border-blue-500 focus:outline-none" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+               <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">Provider 类型</label>
+               <select defaultValue={endpoint.provider} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                 <option value="openai">OpenAI Compatible</option>
+                 <option value="anthropic">Anthropic</option>
+               </select>
+            </div>
+            <div>
+               <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">调度策略</label>
+               <select defaultValue={endpoint.strategy} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                 <option value="round_robin">Weighted Round Robin</option>
+                 <option value="sequential">Sequential (Failover)</option>
+               </select>
+            </div>
+          </div>
+           {/* Agent 配置 */}
+           <div className="pt-2 border-t border-gray-800">
+             <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-gray-500 uppercase">Agent 代理加速</label>
+                <div className="flex items-center gap-2">
+                   <span className="text-xs text-gray-400">{endpoint.is_agent_enabled ? '已启用' : '未启用'}</span>
+                   <button className={`w-8 h-4 rounded-full p-0.5 transition-colors ${endpoint.is_agent_enabled ? 'bg-blue-600' : 'bg-gray-700'}`}>
+                     <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${endpoint.is_agent_enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                   </button>
+                </div>
+             </div>
+             {endpoint.is_agent_enabled && (
+               <select defaultValue={endpoint.agent_node} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                  {MOCK_AGENTS.map(a => <option key={a.id} value={a.name}>{a.name} ({a.region})</option>)}
+               </select>
+             )}
+           </div>
+        </div>
+        <div className="p-4 border-t border-gray-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition">取消</button>
+          <button className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded transition">保存修改</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 2. Key 编辑/添加模态框 (Sub-modal)
+const KeyConfigModal = ({ keyData, onClose, onSave }: { keyData?: ApiKey, onClose: () => void, onSave: () => void }) => {
+  return (
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-[2px]">
+      <div className="bg-[#1a1d24] border border-gray-700 rounded-lg w-[400px] shadow-2xl p-5 animate-in fade-in zoom-in-95 duration-200">
+        <h4 className="text-md font-bold text-white mb-4 flex items-center gap-2">
+          <Key size={16} className="text-green-500"/> {keyData ? '编辑 API Key 限制' : '添加新 API Key'}
+        </h4>
+        <div className="space-y-3">
+          {!keyData && (
+             <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">API Key (sk-...)</label>
+              <input placeholder="sk-..." className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"/>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1">备注名称</label>
+            <input defaultValue={keyData?.name} placeholder="e.g. Free Tier Account" className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"/>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+             <div>
+               <label className="block text-xs font-medium text-gray-400 mb-1">每日配额 (Quota)</label>
+               <input type="number" defaultValue={keyData?.daily_limit} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"/>
+             </div>
+             <div>
+               <label className="block text-xs font-medium text-gray-400 mb-1">速率限制 (RPM)</label>
+               <input type="number" defaultValue={keyData?.rpm_limit} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"/>
+             </div>
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <input type="checkbox" defaultChecked={keyData?.is_active ?? true} className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-green-500 focus:ring-offset-gray-900"/>
+            <span className="text-sm text-gray-300">启用此 Key</span>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-6">
+          <button onClick={onClose} className="px-3 py-1.5 text-xs text-gray-400 hover:text-white">取消</button>
+          <button onClick={onSave} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded">保存</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ManageKeysModal = ({ endpoint, onClose }: { endpoint: Endpoint; onClose: () => void }) => {
+  const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
+  const [isAddingKey, setIsAddingKey] = useState(false);
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[900px] max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div className="p-6 border-b border-gray-800 flex justify-between items-center">
+          <div>
+            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+              <Key size={20} className="text-blue-500" />
+              管理 API Keys (纤维束)
+            </h3>
+            <p className="text-sm text-gray-500 mt-1">Endpoint: {endpoint.name} - 配置负载极限</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white"><XCircle size={24} /></button>
+        </div>
+        
+        <div className="p-6 overflow-y-auto flex-1">
+          <div className="flex justify-end mb-4">
+             <button 
+               onClick={() => setIsAddingKey(true)}
+               className="bg-blue-600/20 text-blue-400 border border-blue-500/30 px-3 py-1.5 rounded text-sm hover:bg-blue-600/30 flex items-center gap-2 transition"
+             >
+               <Plus size={14} /> 添加新 Key
+             </button>
+          </div>
+          
+          <table className="w-full text-left text-sm text-gray-400">
+            <thead className="bg-gray-900/50 text-gray-200 uppercase font-medium">
+              <tr>
+                <th className="px-4 py-3 rounded-l-lg">备注名 / Key</th>
+                <th className="px-4 py-3">每日限额 (Quota)</th>
+                <th className="px-4 py-3">今日已用</th>
+                <th className="px-4 py-3">速率 (RPM)</th>
+                <th className="px-4 py-3">状态</th>
+                <th className="px-4 py-3 rounded-r-lg text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50">
+              {endpoint.keys.map(key => (
+                <tr key={key.id} className="hover:bg-gray-900/30 transition-colors group">
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-gray-200">{key.name || 'Untitled Key'}</div>
+                    <div className="font-mono text-xs text-gray-500 group-hover:text-blue-400 transition">{key.key_preview}</div>
+                  </td>
+                  <td className="px-4 py-3">{key.daily_limit.toLocaleString()}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500" style={{ width: `${(key.used_today / key.daily_limit) * 100}%` }} />
+                      </div>
+                      <span className="text-xs">{key.used_today.toLocaleString()}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">{key.rpm_limit}</td>
+                  <td className="px-4 py-3">
+                    {key.is_active ? 
+                      <span className="text-green-400 text-xs px-2 py-0.5 bg-green-900/20 rounded border border-green-900/30">Active</span> : 
+                      <span className="text-gray-500 text-xs px-2 py-0.5 bg-gray-800 rounded border border-gray-700">Disabled</span>
+                    }
+                  </td>
+                  <td className="px-4 py-3 text-right flex justify-end gap-2">
+                    <button onClick={() => setEditingKey(key)} className="p-1.5 hover:bg-gray-800 rounded text-blue-400 transition"><Edit2 size={14} /></button>
+                    <button className="p-1.5 hover:bg-gray-800 rounded text-red-400 transition"><Trash2 size={14} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {(editingKey || isAddingKey) && (
+        <KeyConfigModal 
+          keyData={editingKey || undefined}
+          onClose={() => { setEditingKey(null); setIsAddingKey(false); }}
+          onSave={() => { setEditingKey(null); setIsAddingKey(false); }} // Logic to actually save would go here
+        />
+      )}
+    </div>
+  );
+};
+
+const AgentSelectorModal = ({ currentAgent, onClose, onSelect }: { currentAgent?: string, onClose: () => void, onSelect: (id: string) => void }) => {
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-[2px]">
+      <div className="bg-[#1a1d24] border border-gray-700 rounded-lg w-[400px] shadow-2xl p-4">
+        <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+          <Globe size={16} className="text-blue-400"/> 选择代理节点
+        </h3>
+        <div className="space-y-2">
+          {MOCK_AGENTS.filter(a => a.status === 'online').map(agent => (
+            <button 
+              key={agent.id}
+              onClick={() => { onSelect(agent.name); onClose(); }}
+              className={`w-full flex items-center justify-between p-3 rounded border ${currentAgent === agent.name ? 'bg-blue-900/20 border-blue-500/50' : 'bg-gray-900 border-gray-800 hover:border-gray-600'} transition text-left`}
+            >
+              <div>
+                <div className="text-sm font-medium text-gray-200">{agent.name}</div>
+                <div className="text-xs text-gray-500">{agent.region}</div>
+              </div>
+              <div className="text-xs font-mono text-green-400">{agent.latency}ms</div>
+            </button>
+          ))}
+        </div>
+        <button onClick={onClose} className="mt-3 w-full py-2 text-xs text-gray-400 hover:text-white">取消</button>
+      </div>
+    </div>
+  );
+};
+
+const ProbeModal = ({ endpoint, onClose }: { endpoint: Endpoint; onClose: () => void }) => {
+  const [isProbing, setIsProbing] = useState(false);
+  const [manualModelId, setManualModelId] = useState('');
+  const [mockModels, setMockModels] = useState([
+    { id: 'gpt-4-0125-preview', alias: 'gpt-4-turbo', type: 'chat' },
+    { id: 'gpt-3.5-turbo-0125', alias: 'gpt-3.5', type: 'chat' },
+  ]);
+
+  const handleProbe = () => {
+    setIsProbing(true);
+    setTimeout(() => setIsProbing(false), 1500);
+  };
+
+  const handleManualAdd = () => {
+    if(!manualModelId) return;
+    setMockModels([...mockModels, { id: manualModelId, alias: '', type: 'chat' }]);
+    setManualModelId('');
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[600px] max-h-[80vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div className="p-6 border-b border-gray-800 flex justify-between items-center">
+           <div>
+            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+              <Search size={20} className="text-purple-500" />
+              模型探测与映射
+            </h3>
+            <p className="text-sm text-gray-500 mt-1">Endpoint: {endpoint.name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white"><XCircle size={24} /></button>
+        </div>
+
+        <div className="p-6 overflow-y-auto flex-1">
+          {/* 探测区域 */}
+          <div className="bg-blue-900/10 border border-blue-900/30 p-4 rounded-lg mb-6 flex items-start gap-3">
+             <div className="p-2 bg-blue-900/20 rounded-full text-blue-400 mt-0.5">
+               <RotateCw size={16} className={isProbing ? "animate-spin" : ""} />
+             </div>
+             <div className="flex-1">
+               <h4 className="text-sm font-bold text-blue-200 mb-1">自动回声探测 (Auto-Discovery)</h4>
+               <p className="text-xs text-blue-300/70 mb-3">
+                 系统将尝试调用 <code>/v1/models</code> 接口。
+               </p>
+               <button 
+                onClick={handleProbe}
+                disabled={isProbing}
+                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1.5 rounded text-xs font-medium transition"
+               >
+                 {isProbing ? '正在探测...' : '开始探测'}
+               </button>
+             </div>
+          </div>
+
+          {/* 手动添加区域 */}
+          <div className="mb-6 flex items-end gap-2 bg-gray-900/30 p-3 rounded-lg border border-gray-800">
+            <div className="flex-1">
+              <label className="text-xs text-gray-500 mb-1 block">手动添加模型 ID (如厂商未提供列表)</label>
+              <input 
+                value={manualModelId}
+                onChange={(e) => setManualModelId(e.target.value)}
+                placeholder="e.g. qwen-max-longcontext"
+                className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-xs text-white focus:border-purple-500 focus:outline-none"
+              />
+            </div>
+            <button 
+              onClick={handleManualAdd}
+              className="bg-gray-800 hover:bg-gray-700 text-white px-3 py-2 rounded text-xs font-medium border border-gray-700 h-[34px]"
+            >
+              添加
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">模型映射表</h4>
+            {mockModels.map((model, idx) => (
+              <div key={idx} className="flex items-center justify-between bg-gray-900/30 border border-gray-800 p-3 rounded-lg group hover:border-gray-700 transition">
+                <div className="flex items-center gap-3">
+                   <div className="w-8 h-8 rounded bg-gray-800 flex items-center justify-center text-gray-400 font-mono text-xs border border-gray-700">
+                     {model.type === 'chat' ? 'LLM' : 'Emb'}
+                   </div>
+                   <div>
+                     <p className="text-sm font-mono text-gray-200">{model.id}</p>
+                     <div className="flex items-center gap-1.5 mt-0.5">
+                       <span className="text-[10px] text-gray-500">别名:</span>
+                       <input 
+                        type="text" 
+                        defaultValue={model.alias} 
+                        placeholder="未设置"
+                        className="bg-transparent border-b border-gray-700 text-xs text-yellow-400 placeholder-gray-600 focus:outline-none focus:border-yellow-500 w-32 py-0.5"
+                       />
+                     </div>
+                   </div>
+                </div>
+                <div className="text-xs text-green-500 flex items-center gap-1">
+                  <CheckCircle2 size={12} />
+                  可用
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+         <div className="p-4 border-t border-gray-800 flex justify-end">
+            <button onClick={onClose} className="px-4 py-2 bg-white text-black text-sm font-bold rounded hover:bg-gray-200 transition">
+              保存映射关系
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 3. 增强的路由规则编辑器
+const RuleEditorModal = ({ rule, onClose }: { rule?: RoutingRule, onClose: () => void }) => {
+  const [modelPattern, setModelPattern] = useState(rule?.model_pattern || '');
+  const [selectedKeyIds, setSelectedKeyIds] = useState<Set<string>>(new Set(rule?.target_key_ids || []));
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<Endpoint[] | null>(null);
+
+  // 模拟扫描逻辑：查找所有包含该模型的端点（这里简单返回所有，实际逻辑后端实现）
+  const handleScan = () => {
+    if (!modelPattern) return;
+    setIsScanning(true);
+    setTimeout(() => {
+      setIsScanning(false);
+      setScanResult(MOCK_ENDPOINTS); // 模拟返回了所有可能的端点
+    }, 800);
+  };
+
+  const toggleKey = (id: string) => {
+    const next = new Set(selectedKeyIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedKeyIds(next);
+  };
+
+  const selectAllKeysInEndpoint = (ep: Endpoint) => {
+    const next = new Set(selectedKeyIds);
+    ep.keys.forEach(k => next.add(k.id));
+    setSelectedKeyIds(next);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[700px] h-[80vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div className="p-6 border-b border-gray-800 flex justify-between items-center">
+          <h3 className="text-xl font-bold text-white flex items-center gap-2">
+            <Network size={20} className="text-yellow-500" />
+            {rule ? '编辑路由规则' : '创建路由规则'}
+          </h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white"><XCircle size={24} /></button>
+        </div>
+        
+        <div className="p-6 overflow-y-auto flex-1 space-y-6">
+           {/* 1. 匹配条件 */}
+           <div className="space-y-4">
+             <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">模型匹配模式 (Wildcard)</label>
+                <div className="flex gap-2">
+                  <input 
+                    value={modelPattern}
+                    onChange={(e) => setModelPattern(e.target.value)}
+                    placeholder="e.g. gpt-4* or claude-3-opus" 
+                    className="flex-1 bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none" 
+                  />
+                  <button 
+                    onClick={handleScan}
+                    disabled={!modelPattern || isScanning}
+                    className="bg-yellow-600/20 text-yellow-500 border border-yellow-600/50 px-4 rounded text-sm font-medium hover:bg-yellow-600/30 flex items-center gap-2 disabled:opacity-50 transition"
+                  >
+                    {isScanning ? <RotateCw size={16} className="animate-spin"/> : <Search size={16}/>}
+                    扫描可用 Key
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1.5">支持通配符 `*`。点击扫描以查找所有声称支持该模型的端点。</p>
+             </div>
+             
+             <div className="grid grid-cols-2 gap-4">
+               <div>
+                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">规则组 (Header: X-Rule-Group)</label>
+                 <input defaultValue={rule?.group_name || 'default'} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none" />
+               </div>
+               <div>
+                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">优先级 (Priority)</label>
+                 <input type="number" defaultValue={rule?.priority || 10} className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none" />
+               </div>
+             </div>
+           </div>
+
+           {/* 2. 目标 Key 选择 (Topology) */}
+           <div>
+             <label className="block text-xs font-bold text-gray-500 uppercase mb-3 flex justify-between items-center">
+               <span>路由目标拓扑 (Target Topology)</span>
+               <span className="text-[10px] font-normal normal-case text-gray-400">已选 {selectedKeyIds.size} 个 Keys</span>
+             </label>
+             
+             <div className="bg-gray-900/30 border border-gray-800 rounded-lg p-1 min-h-[200px]">
+                {!scanResult && !rule ? (
+                  <div className="h-full flex flex-col items-center justify-center text-gray-600 py-10">
+                     <Search size={32} className="mb-2 opacity-50"/>
+                     <p className="text-sm">请输入模型并点击扫描以加载拓扑</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 p-2">
+                    {(scanResult || MOCK_ENDPOINTS).map(ep => (
+                      <div key={ep.id} className="border border-gray-800 bg-[#0f1117] rounded-lg overflow-hidden">
+                        {/* Endpoint Header */}
+                        <div className="p-3 bg-gray-800/50 flex items-center justify-between">
+                           <div className="flex items-center gap-2">
+                             <Server size={14} className="text-gray-400"/>
+                             <span className="text-sm font-medium text-gray-200">{ep.name}</span>
+                             <span className="text-[10px] text-gray-500 font-mono bg-gray-900 px-1.5 py-0.5 rounded">{ep.provider}</span>
+                           </div>
+                           <button 
+                             onClick={() => selectAllKeysInEndpoint(ep)}
+                             className="text-xs text-blue-400 hover:text-blue-300"
+                           >
+                             全选
+                           </button>
+                        </div>
+                        {/* Keys List */}
+                        <div className="divide-y divide-gray-800/50">
+                           {ep.keys.map(key => {
+                             const isSelected = selectedKeyIds.has(key.id);
+                             return (
+                               <div 
+                                 key={key.id} 
+                                 onClick={() => toggleKey(key.id)}
+                                 className={`flex items-center gap-3 p-3 cursor-pointer transition-colors ${isSelected ? 'bg-yellow-900/10' : 'hover:bg-gray-800/30'}`}
+                               >
+                                 <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? 'bg-yellow-600 border-yellow-600 text-black' : 'border-gray-600 bg-gray-800'}`}>
+                                    {isSelected && <Check size={10} strokeWidth={4} />}
+                                 </div>
+                                 <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-sm ${isSelected ? 'text-yellow-200 font-medium' : 'text-gray-400'}`}>{key.name || 'Untitled Key'}</span>
+                                      <span className="text-xs text-gray-600 font-mono">{key.key_preview}</span>
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 flex gap-2 mt-0.5">
+                                      <span>RPM: {key.rpm_limit}</span>
+                                      <span>Quota: {key.daily_limit}</span>
+                                    </div>
+                                 </div>
+                               </div>
+                             );
+                           })}
+                           {ep.keys.length === 0 && (
+                             <div className="p-3 text-xs text-gray-600 italic">暂无可用 API Key</div>
+                           )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+             </div>
+           </div>
+        </div>
+        <div className="p-4 border-t border-gray-800 flex justify-end gap-2">
+           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition">取消</button>
+           <button className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white text-sm font-bold rounded transition">保存规则</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- 主要视图组件 ---
+
+const AgentsView = () => (
+  <div className="space-y-6">
+     <div className="flex justify-between items-center">
+      <div>
+        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <Globe size={20} className="text-green-500" />
+          Agent 节点网络
+        </h2>
+        <p className="text-sm text-gray-500 mt-1">管理部署在全球各地的代理服务器，用于跨境加速请求。</p>
+      </div>
+      <button className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+        <Plus size={16} /> 部署新节点
+      </button>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+       {MOCK_AGENTS.map(agent => (
+         <div key={agent.id} className="bg-[#0f1117] border border-gray-800 rounded-xl p-5 relative overflow-hidden group">
+            {/* 背景装饰 */}
+            <div className="absolute -right-4 -top-4 text-gray-800/20 group-hover:text-gray-800/40 transition-colors">
+              <Globe size={100} />
+            </div>
+            
+            <div className="relative z-10">
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex items-center gap-3">
+                   <div className={`p-2 rounded-lg ${agent.status === 'online' ? 'bg-green-900/20 text-green-400' : 'bg-red-900/20 text-red-400'}`}>
+                     <Zap size={18} />
+                   </div>
+                   <div>
+                     <h3 className="text-sm font-bold text-white">{agent.name}</h3>
+                     <p className="text-xs text-gray-500">{agent.region}</p>
+                   </div>
+                </div>
+                <StatusBadge status={agent.status} />
+              </div>
+
+              <div className="space-y-2 mb-4">
+                 <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
+                   <span className="text-gray-500">延迟</span>
+                   <span className="font-mono text-gray-300">{agent.latency}ms</span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
+                   <span className="text-gray-500">心跳</span>
+                   <span className="font-mono text-gray-300">{agent.last_heartbeat}</span>
+                 </div>
+                 <div className="flex justify-between text-xs">
+                   <span className="text-gray-500">版本</span>
+                   <span className="font-mono text-gray-500">{agent.version}</span>
+                 </div>
+              </div>
+
+              <button className="w-full py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded border border-gray-700 transition">
+                查看日志
+              </button>
+            </div>
+         </div>
+       ))}
+    </div>
+  </div>
+);
+
+const UsageStatsView = () => (
+  <div className="space-y-8">
+     <div className="flex justify-between items-center">
+      <div>
+        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <BarChart3 size={20} className="text-purple-500" />
+          流量与用量统计
+        </h2>
+        <p className="text-sm text-gray-500 mt-1">查看规则组消耗及 Top Key 排名。</p>
+      </div>
+      <div className="flex gap-2">
+        <select className="bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded px-3 py-1.5 focus:outline-none">
+          <option>最近 24 小时</option>
+          <option>最近 7 天</option>
+          <option>最近 30 天</option>
+        </select>
+        <button className="p-2 bg-gray-800 rounded border border-gray-700 text-gray-400 hover:text-white"><RefreshCw size={16}/></button>
+      </div>
+    </div>
+
+    {/* 模拟图表区域 */}
+    <div className="grid grid-cols-2 gap-6">
+      {/* 左侧：规则组分布 */}
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl p-6">
+        <h3 className="text-sm font-bold text-gray-300 mb-6 flex items-center gap-2"><PieChart size={16}/> 规则组 Token 消耗占比</h3>
+        <div className="space-y-4">
+           {[
+             { name: 'Default (Direct)', percent: 65, color: 'bg-blue-500' },
+             { name: 'VIP Users', percent: 25, color: 'bg-purple-500' },
+             { name: 'Free Tier', percent: 10, color: 'bg-gray-500' },
+           ].map((item, idx) => (
+             <div key={idx}>
+               <div className="flex justify-between text-xs mb-1">
+                 <span className="text-gray-400">{item.name}</span>
+                 <span className="text-gray-200 font-mono">{item.percent}%</span>
+               </div>
+               <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+                 <div className={`h-full ${item.color}`} style={{ width: `${item.percent}%` }} />
+               </div>
+             </div>
+           ))}
+        </div>
+      </div>
+
+      {/* 右侧：Top Keys */}
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl p-6">
+         <h3 className="text-sm font-bold text-gray-300 mb-6 flex items-center gap-2"><Activity size={16}/> Top 5 消耗最高的 API Keys</h3>
+         <table className="w-full text-left text-xs">
+           <thead className="text-gray-500 border-b border-gray-800">
+             <tr>
+               <th className="pb-2 font-medium">Key ID</th>
+               <th className="pb-2 font-medium">Endpoint</th>
+               <th className="pb-2 text-right font-medium">Usage</th>
+             </tr>
+           </thead>
+           <tbody className="divide-y divide-gray-800/50">
+             {[
+               { id: 'sk-...4f9', ep: 'OpenAI (US)', usage: '4.2M' },
+               { id: 'sk-...9a1', ep: 'Anthropic', usage: '2.1M' },
+               { id: 'sk-...b22', ep: 'DeepSeek', usage: '1.8M' },
+             ].map((row, idx) => (
+               <tr key={idx}>
+                 <td className="py-3 font-mono text-blue-400">{row.id}</td>
+                 <td className="py-3 text-gray-400">{row.ep}</td>
+                 <td className="py-3 text-right text-gray-200">{row.usage}</td>
+               </tr>
+             ))}
+           </tbody>
+         </table>
+      </div>
+    </div>
+  </div>
+);
+
+const RulesView = ({ onEdit }: { onEdit: (rule?: RoutingRule) => void }) => (
+  <div className="space-y-6">
+    <div className="flex justify-between items-center">
+      <div>
+        <h2 className="text-xl font-bold text-white">路由规则拓扑</h2>
+        <p className="text-sm text-gray-500 mt-1">定义不同请求特征（模型名、用户组）下的分流策略。</p>
+      </div>
+      <button onClick={() => onEdit()} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+        <Plus size={16} /> 新建规则
+      </button>
+    </div>
+
+    <div className="grid gap-4">
+      {MOCK_RULES.map(rule => (
+        <div key={rule.id} className="bg-[#0f1117] border border-gray-800 p-5 rounded-xl flex items-center justify-between hover:border-gray-700 transition group">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-gray-900 rounded-lg text-gray-400 group-hover:text-yellow-500 transition-colors">
+              <Network size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-mono font-bold text-yellow-400 text-lg">{rule.model_pattern}</span>
+                <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">Priority: {rule.priority}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-gray-400">
+                <span className="flex items-center gap-1"><Database size={12} /> Group: <b className="text-gray-300">{rule.group_name}</b></span>
+                <span className="text-gray-600">→</span>
+                <span className="flex items-center gap-1"><Key size={12} /> Target Keys: <b className="text-gray-300">{rule.target_key_ids.length} selected</b></span>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+             <div className={`px-3 py-1 rounded-full text-xs font-medium border ${rule.is_active ? 'bg-green-900/20 border-green-900/30 text-green-400' : 'bg-gray-800 border-gray-700 text-gray-500'}`}>
+               {rule.is_active ? 'Active' : 'Inactive'}
+             </div>
+             <button onClick={() => onEdit(rule)} className="p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition"><Edit2 size={16} /></button>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const SettingsView = () => (
+  <div className="max-w-4xl space-y-8">
+    {/* 安全设置 */}
+    <div className="bg-[#0f1117] border border-gray-800 rounded-xl p-6">
+       <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
+         <Shield size={20} className="text-green-500" />
+         系统安全
+       </h3>
+       
+       <div className="grid grid-cols-2 gap-8">
+         <div className="space-y-4">
+           <div>
+             <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase">当前管理员密码</label>
+             <input type="password" placeholder="••••••••" className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none transition" />
+           </div>
+           <div>
+             <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase">新密码</label>
+             <input type="password" placeholder="••••••••" className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none transition" />
+           </div>
+           <button className="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded text-sm font-medium border border-gray-700 transition">
+             更新密码
+           </button>
+         </div>
+         <div className="bg-yellow-900/10 border border-yellow-900/20 p-4 rounded-lg">
+           <div className="flex items-start gap-3">
+             <AlertTriangle className="text-yellow-500 shrink-0" size={18} />
+             <div>
+               <h4 className="text-sm font-bold text-yellow-500 mb-1">安全警告</h4>
+               <p className="text-xs text-yellow-200/60 leading-relaxed">
+                 该系统目前仅支持单用户（Admin）模式。请确保您的密码足够复杂。如需重置密码且无法登录，请在服务器端使用 CLI 工具重置。
+               </p>
+             </div>
+           </div>
+         </div>
+       </div>
+    </div>
+
+    {/* 通知设置 */}
+    <div className="bg-[#0f1117] border border-gray-800 rounded-xl p-6">
+       <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
+         <Bell size={20} className="text-blue-500" />
+         告警通知 (Telegram)
+       </h3>
+       
+       <div className="space-y-4 max-w-2xl">
+          <div>
+             <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase">Bot Token</label>
+             <div className="relative">
+               <input type="text" defaultValue="123456789:ABCdefGHIjklMNOpqRSTuvwxyZ" className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-gray-300 font-mono focus:border-blue-500 focus:outline-none transition pl-10" />
+               <Lock size={14} className="absolute left-3.5 top-3 text-gray-600" />
+             </div>
+          </div>
+          <div>
+             <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase">Chat ID / Channel ID</label>
+             <input type="text" defaultValue="-100123456789" className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-gray-300 font-mono focus:border-blue-500 focus:outline-none transition" />
+          </div>
+          
+          <div className="pt-2 flex items-center gap-3">
+             <button className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded text-sm font-medium transition flex items-center gap-2">
+               <Save size={16} /> 保存配置
+             </button>
+             <button className="text-gray-400 hover:text-white px-4 py-2 text-sm transition">
+               发送测试消息
+             </button>
+          </div>
+       </div>
+    </div>
+  </div>
+);
+
+// --- 主组件 ---
+
+export default function VPSProbeUI() {
+  const [activeTab, setActiveTab] = useState<'endpoints' | 'agents' | 'rules' | 'usage' | 'settings'>('endpoints');
+  const [manageKeysEndpoint, setManageKeysEndpoint] = useState<Endpoint | null>(null);
+  const [probeEndpoint, setProbeEndpoint] = useState<Endpoint | null>(null);
+  const [agentSelectEndpoint, setAgentSelectEndpoint] = useState<Endpoint | null>(null);
+  const [editingRule, setEditingRule] = useState<RoutingRule | undefined | null>(null); // null: hidden, undefined: new, object: edit
+  const [editingEndpoint, setEditingEndpoint] = useState<Endpoint | null>(null);
+
+  const EndpointCard = ({ data }: { data: Endpoint }) => {
+    return (
+      <div className="group relative bg-[#0f1117] border border-gray-800 rounded-xl p-5 hover:border-blue-500/50 transition-all duration-300 shadow-lg hover:shadow-blue-900/10 flex flex-col h-full">
+        {/* 顶部：标题与状态 */}
+        <div className="flex justify-between items-start mb-4">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg ${data.provider === 'openai' ? 'bg-green-900/20 text-green-400' : 'bg-purple-900/20 text-purple-400'}`}>
+              <Cpu size={18} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-gray-100 group-hover:text-blue-400 transition-colors">
+                {data.name}
+              </h3>
+              <div className="flex items-center gap-2 mt-0.5">
+                <Globe size={10} className="text-gray-500" />
+                <p className="text-xs text-gray-500 font-mono truncate max-w-[150px]">{data.base_url}</p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+             <StatusBadge status={data.status} />
+             <button onClick={() => setEditingEndpoint(data)} className="text-gray-500 hover:text-white p-1 rounded hover:bg-gray-800 transition">
+               <MoreVertical size={16} />
+             </button>
+          </div>
+        </div>
+
+        {/* 中部：核心指标 (Dashboard Metrics) */}
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="bg-gray-900/50 p-2.5 rounded-lg border border-gray-800">
+            <div className="text-xs text-gray-500 flex items-center gap-1 mb-1">
+              <Shield size={10} />
+              可用性
+            </div>
+            <div className="text-lg font-mono font-semibold text-gray-200">{data.uptime}%</div>
+          </div>
+          <div className="bg-gray-900/50 p-2.5 rounded-lg border border-gray-800">
+             <div className="text-xs text-gray-500 flex items-center gap-1 mb-1">
+              <RotateCw size={10} />
+              调度策略
+            </div>
+            <div className="text-xs font-medium text-gray-300 mt-1.5 flex items-center gap-1">
+              {data.strategy === 'sequential' ? '顺序主备' : '加权轮询'}
+            </div>
+          </div>
+        </div>
+
+        {/* 代理状态 */}
+        {data.is_agent_enabled && (
+          <div className="mb-4 px-3 py-1.5 bg-blue-900/10 border border-blue-800/30 rounded-md flex items-center justify-between group/agent">
+            <div className="flex items-center gap-2 text-xs text-blue-400">
+              <Zap size={12} />
+              <span>Agent 代理加速</span>
+            </div>
+            <button 
+              onClick={() => setAgentSelectEndpoint(data)}
+              className="flex items-center gap-1 text-[10px] font-mono text-blue-300/70 hover:text-white hover:bg-blue-600/50 px-1.5 py-0.5 rounded transition cursor-pointer"
+            >
+              {data.agent_node} <ChevronDown size={10} />
+            </button>
+          </div>
+        )}
+
+        <div className="flex-1" />
+
+        {/* 底部：Key 与 模型概览 */}
+        <div className="space-y-3 border-t border-gray-800 pt-3">
+          <div className="flex items-center justify-between text-xs">
+             <div className="flex items-center gap-2 text-gray-400">
+               <Lock size={12} />
+               <span>API Keys: <b className="text-gray-200">{data.keys.length}</b></span>
+             </div>
+             <div className="flex items-center gap-2 text-gray-400">
+               <Database size={12} />
+               <span>模型: <b className="text-gray-200">{data.model_count}</b></span>
+             </div>
+          </div>
+          
+          <LatencyBar ms={data.latency} />
+        </div>
+
+        {/* 悬停操作栏 (Action Bar) */}
+        <div className="absolute bottom-0 left-0 w-full p-4 bg-[#0f1117]/95 backdrop-blur-sm border-t border-gray-800 rounded-b-xl opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+          <button 
+            onClick={() => setManageKeysEndpoint(data)}
+            className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded font-medium transition"
+          >
+            管理 Keys
+          </button>
+          <button 
+            onClick={() => setProbeEndpoint(data)}
+            className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-2 rounded font-medium border border-gray-700 transition"
+          >
+            探测模型
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-gray-300 font-sans selection:bg-blue-500/30">
+      {/* 顶部导航 */}
+      <nav className="border-b border-gray-800 bg-[#0a0a0a]/80 backdrop-blur sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-600 p-1.5 rounded-lg">
+               <Server className="text-white" size={20} />
+            </div>
+            <span className="font-bold text-lg tracking-tight text-white">LLM API Factory</span>
+            <span className="px-2 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400 border border-gray-700">v2.0-Probe</span>
+          </div>
+          
+          <div className="flex items-center gap-6 h-full">
+            {[
+              { id: 'endpoints', label: '端点管理' },
+              { id: 'agents', label: '节点管理' },
+              { id: 'rules', label: '路由规则' },
+              { id: 'usage', label: '流量统计' },
+              { id: 'settings', label: '系统设置' },
+            ].map(tab => (
+              <button 
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`text-sm font-medium transition-colors h-full border-b-2 pt-1 px-1 ${activeTab === tab.id ? 'text-white border-blue-500' : 'text-gray-500 border-transparent hover:text-gray-300'}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-xs text-green-500 bg-green-900/10 px-3 py-1.5 rounded-full border border-green-900/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+              系统运转正常
+            </div>
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 border-2 border-gray-800 cursor-pointer hover:scale-105 transition" />
+          </div>
+        </div>
+      </nav>
+
+      {/* 主要内容区域 */}
+      <main className="max-w-7xl mx-auto px-6 py-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        
+        {/* 动态内容渲染 */}
+        {activeTab === 'endpoints' && (
+          <>
+            {/* 概览统计 (Summary Stats) - 仅在 Endpoints 页显示 */}
+            <div className="grid grid-cols-4 gap-4 mb-8">
+              {[
+                { label: '活跃端点', value: '3/4', icon: Server, color: 'text-blue-400' },
+                { label: '今日请求', value: '142.5k', icon: Activity, color: 'text-purple-400' },
+                { label: '平均延迟', value: '240ms', icon: Clock, color: 'text-yellow-400' },
+                { label: 'Agent 节点', value: '2 Online', icon: Globe, color: 'text-green-400' },
+              ].map((stat, idx) => (
+                <div key={idx} className="bg-[#0f1117] border border-gray-800 p-4 rounded-xl flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-500 font-medium mb-1">{stat.label}</p>
+                    <p className="text-2xl font-bold text-gray-100">{stat.value}</p>
+                  </div>
+                  <div className={`p-3 rounded-lg bg-gray-900 ${stat.color}`}>
+                    <stat.icon size={20} />
+                  </div>
+                </div>
+              ))}
+            </div>
+        
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <Database size={20} className="text-blue-500" />
+                API 端点列表
+              </h2>
+              <button className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition hover:shadow-lg hover:shadow-blue-900/20">
+                <Plus size={16} />
+                添加新端点
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {MOCK_ENDPOINTS.map(ep => (
+                <EndpointCard key={ep.id} data={ep} />
+              ))}
+              
+              <div className="border border-dashed border-gray-800 rounded-xl p-6 flex flex-col items-center justify-center text-gray-600 hover:border-gray-600 hover:text-gray-400 hover:bg-gray-900/30 transition-all cursor-pointer min-h-[240px] group">
+                <div className="w-12 h-12 rounded-full bg-gray-900 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                  <Plus size={24} />
+                </div>
+                <p className="text-sm font-medium">配置新的 API 提供商</p>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeTab === 'agents' && <AgentsView />}
+        {activeTab === 'rules' && <RulesView onEdit={(r) => setEditingRule(r || undefined)} />}
+        {activeTab === 'usage' && <UsageStatsView />}
+        {activeTab === 'settings' && <SettingsView />}
+
+      </main>
+
+      {/* 模态框渲染层 */}
+      {manageKeysEndpoint && (
+        <ManageKeysModal 
+          endpoint={manageKeysEndpoint} 
+          onClose={() => setManageKeysEndpoint(null)} 
+        />
+      )}
+      {probeEndpoint && (
+        <ProbeModal 
+          endpoint={probeEndpoint} 
+          onClose={() => setProbeEndpoint(null)} 
+        />
+      )}
+      {agentSelectEndpoint && (
+        <AgentSelectorModal
+          currentAgent={agentSelectEndpoint.agent_node}
+          onClose={() => setAgentSelectEndpoint(null)}
+          onSelect={(id) => {
+             console.log(`Endpoint ${agentSelectEndpoint.name} switched to agent ${id}`);
+             // Logic to update endpoint agent would go here
+          }}
+        />
+      )}
+      {editingRule !== null && (
+        <RuleEditorModal
+          rule={editingRule}
+          onClose={() => setEditingRule(null)}
+        />
+      )}
+      {editingEndpoint && (
+        <EditEndpointModal
+          endpoint={editingEndpoint}
+          onClose={() => setEditingEndpoint(null)}
+        />
+      )}
+    </div>
+  );
+}
