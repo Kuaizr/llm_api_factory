@@ -50,7 +50,9 @@ type ModelMapDraft = {
   real_model: string;
 };
 
-const apiBase = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const apiBase =
+  import.meta.env.VITE_API_BASE ??
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 const adminToken = import.meta.env.VITE_ADMIN_TOKEN;
 
 const inputClass =

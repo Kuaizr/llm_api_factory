@@ -29,7 +29,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-const apiBase = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const apiBase =
+  import.meta.env.VITE_API_BASE ??
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 const tokenStorageKey = "llm_admin_token";
 
 type EndpointStatus = "online" | "degraded" | "offline";
@@ -67,6 +69,7 @@ type Endpoint = {
   name: string;
   base_url: string;
   provider: string;
+  is_active: boolean;
   status: EndpointStatus;
   latency: number;
   uptime: number;
@@ -314,7 +317,7 @@ const EditEndpointModal = ({
     base_url: endpoint?.base_url ?? "",
     provider: endpoint?.provider ?? "openai",
     agent_node: endpoint?.agent_node ?? "",
-    is_active: endpoint?.status !== "offline",
+    is_active: endpoint?.is_active ?? true,
   });
 
   return (
@@ -1955,19 +1958,24 @@ export const Console = () => {
         setIsAdmin(false);
         const fallback = await fetch(`${apiBase}/v1/status/dashboard`);
         const publicData = (await fallback.json()) as {
-          endpoints: Array<
-            Omit<Endpoint, "keys" | "model_count" | "is_agent_enabled" | "strategy">
-          >;
-        };
-        setEndpoints(
-          publicData.endpoints.map((endpoint) => ({
-            ...endpoint,
-            strategy: "weighted_round_robin",
-            is_agent_enabled: Boolean(endpoint.agent_node),
-            model_count: 0,
-            keys: [],
-          }))
-        );
+        endpoints: Array<
+          Omit<
+            Endpoint,
+            "keys" | "model_count" | "is_agent_enabled" | "strategy" | "is_active"
+          >
+        >;
+      };
+      setEndpoints(
+        publicData.endpoints.map((endpoint) => ({
+          ...endpoint,
+          is_active: endpoint.status !== "offline",
+          strategy: "weighted_round_robin",
+          is_agent_enabled: Boolean(endpoint.agent_node),
+          model_count: 0,
+          keys: [],
+        }))
+      );
+
         return;
       }
       const data = (await response.json()) as Endpoint[];

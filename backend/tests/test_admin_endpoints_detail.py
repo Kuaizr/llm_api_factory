@@ -11,6 +11,7 @@ from app.core.redis import MemoryRedis
 from app.db.base import Base
 from app.db.models import APIKey, Endpoint, ModelMap
 from app.db.session import get_session
+from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 
 
@@ -108,8 +109,156 @@ async def test_admin_endpoints_detail_includes_keys(monkeypatch: pytest.MonkeyPa
     assert payload
     assert payload[0]["model_count"] == 1
     assert payload[0]["keys"][0]["name"] == "Main"
+    assert payload[0]["is_active"] is True
     assert payload[0]["latency"] == 120
     assert payload[0]["uptime"] == 50.0
 
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_probe_records_success_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(name="OpenAI", base_url="https://api.openai.com", is_active=True)
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-probe", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    settings = Settings(
+        master_auth_token="token",
+        circuit_breaker_failures=1,
+        circuit_breaker_ttl_seconds=90,
+    )
+    redis = MemoryRedis()
+    probe_store = HealthProbeStore(redis)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_redis():
+        return redis
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/probe",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload
+    assert payload[0]["model_alias"] == "gpt-4o-mini"
+
+    probe = await probe_store.read(api_key.id)
+    assert probe is not None
+    assert probe.status == "success"
+    assert probe.status_code == 200
+
+    breaker = CircuitBreaker(redis, settings=settings)
+    breaker_status = await breaker.get_status(api_key.id)
+    assert breaker_status.state == "closed"
+
+    await upstream_client.aclose()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_probe_records_failure_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(name="OpenAI", base_url="https://api.openai.com", is_active=True)
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-probe", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    settings = Settings(
+        master_auth_token="token",
+        circuit_breaker_failures=1,
+        circuit_breaker_ttl_seconds=90,
+    )
+    redis = MemoryRedis()
+    probe_store = HealthProbeStore(redis)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": {"message": "upstream down"}})
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_redis():
+        return redis
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/probe",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 502
+
+    probe = await probe_store.read(api_key.id)
+    assert probe is not None
+    assert probe.status == "failure"
+    assert probe.status_code == 503
+
+    breaker = CircuitBreaker(redis, settings=settings)
+    breaker_status = await breaker.get_status(api_key.id)
+    assert breaker_status.state == "open"
+
+    await upstream_client.aclose()
     await session.close()
     await engine.dispose()

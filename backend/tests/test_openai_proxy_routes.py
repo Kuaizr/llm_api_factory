@@ -86,7 +86,7 @@ def build_proxy_app(
     async def fake_get_candidates(self, session, model_alias: str, rule_group: str):  # noqa: ANN001
         recorded["model_alias"] = model_alias
         recorded["rule_group"] = rule_group
-        return [candidate]
+        return [candidate], rule_group
 
     async def fake_get_http_client() -> httpx.AsyncClient:
         return upstream_client
@@ -147,6 +147,51 @@ async def test_completions_proxy_success(monkeypatch: pytest.MonkeyPatch) -> Non
     sent_request = requests[0]
     payload = json.loads(sent_request.content.decode("utf-8"))
     assert payload["model"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_responses_proxy_passthrough_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    endpoint = EndpointStub(id=2, name="OpenAI", base_url="https://api.example.com")
+    api_key = APIKeyStub(id=3, key="sk-resp")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4o")
+
+    upstream_payload = {"id": "resp-1", "object": "response", "output": []}
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=upstream_payload)
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    raw_payload = {
+        "model": "gpt-4o-mini",
+        "input": [{"role": "user", "content": "hello"}],
+        "temperature": 0.1,
+        "rule_group": "qiniu",
+    }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer token"},
+            json=raw_payload,
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == upstream_payload
+    assert recorded["model_alias"] == "gpt-4o-mini"
+    assert recorded["rule_group"] == "qiniu"
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/v1/responses"
+    payload = json.loads(sent_request.content.decode("utf-8"))
+    assert payload == raw_payload
 
 
 @pytest.mark.asyncio

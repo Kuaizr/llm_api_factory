@@ -153,6 +153,7 @@ class EndpointDetailOut(BaseModel):
     base_url: str
     provider: str
     strategy: str
+    is_active: bool
     status: str
     latency: int
     uptime: float
@@ -566,6 +567,7 @@ def _build_endpoint_detail(
         base_url=endpoint.base_url,
         provider=endpoint.provider,
         strategy=endpoint.strategy,
+        is_active=endpoint.is_active,
         status=status,
         latency=latency_ms,
         uptime=uptime,
@@ -1574,6 +1576,17 @@ async def probe_endpoint(
     )
     if not api_key:
         raise HTTPException(status_code=400, detail="No active API key for probe")
+
+    settings = get_settings()
+    redis = await get_redis()
+    probe_store = HealthProbeStore(
+        redis,
+        ttl_seconds=settings.health_probe_result_ttl_seconds,
+        series_ttl_seconds=settings.health_probe_series_ttl_seconds,
+        series_max_entries=settings.health_probe_series_max_entries,
+    )
+    circuit_breaker = CircuitBreaker(redis, settings=settings)
+
     client = await get_http_client()
     url = f"{endpoint.base_url.rstrip('/')}/v1/models"
     header_name = endpoint.auth_header_name or "Authorization"
@@ -1583,12 +1596,58 @@ async def probe_endpoint(
         if header_prefix
         else {header_name: api_key.key}
     )
-    response = await client.get(url, headers=headers)
-    if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail="Probe failed")
-    payload = response.json()
-    models = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(models, list):
+
+    status = "error"
+    status_code: int | None = None
+    latency_ms: int | None = None
+    models: list[dict] = []
+    response = None
+    started_at = time.perf_counter()
+
+    try:
+        response = await client.get(
+            url,
+            headers=headers,
+            timeout=settings.health_probe_timeout_seconds,
+        )
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        status_code = response.status_code
+        if status_code >= 400:
+            status = "failure"
+        else:
+            payload = response.json()
+            payload_models = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(payload_models, list):
+                status = "success"
+                models = [item for item in payload_models if isinstance(item, dict)]
+            else:
+                status = "failure"
+    except Exception:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        status = "error"
+    finally:
+        if response is not None:
+            await response.aclose()
+
+    if status == "success":
+        await circuit_breaker.record_success(api_key.id)
+    else:
+        await circuit_breaker.record_failure(api_key.id)
+
+    await probe_store.write(
+        HealthProbeResult(
+            api_key_id=api_key.id,
+            endpoint_id=endpoint.id,
+            endpoint_name=endpoint.name,
+            real_model=None,
+            status=status,
+            status_code=status_code,
+            latency_ms=latency_ms,
+            checked_at=datetime.utcnow(),
+        )
+    )
+
+    if status != "success":
         raise HTTPException(status_code=502, detail="Probe failed")
 
     existing = await session.execute(
@@ -1598,8 +1657,6 @@ async def probe_endpoint(
     existing_aliases = {model.model_alias for model in existing_models}
     existing_real_models = {model.real_model for model in existing_models}
     for item in models:
-        if not isinstance(item, dict):
-            continue
         model_id = item.get("id")
         if not model_id:
             continue
@@ -2059,7 +2116,11 @@ async def list_request_logs(
 
 
 async def _proxy_openai_request(
-    request: Request, session: AsyncSession
+    request: Request,
+    session: AsyncSession,
+    *,
+    rewrite_model: bool = True,
+    strip_rule_group_from_payload: bool = True,
 ) -> Response:
     _require_master_auth(request)
 
@@ -2076,11 +2137,14 @@ async def _proxy_openai_request(
     if not model_alias:
         raise HTTPException(status_code=400, detail="Missing model field")
 
-    rule_group = payload.pop("rule_group", None)
+    rule_group = payload.get("rule_group")
     if rule_group is None:
-        rule_group = payload.pop("rules", None)
+        rule_group = payload.get("rules")
     if not isinstance(rule_group, str) or not rule_group:
         rule_group = request.headers.get("X-Rule-Group", "default")
+    if strip_rule_group_from_payload:
+        payload.pop("rule_group", None)
+        payload.pop("rules", None)
     redis = await get_redis()
     notifier = get_notifier()
     circuit_breaker = CircuitBreaker(redis, notifier=notifier)
@@ -2146,9 +2210,14 @@ async def _proxy_openai_request(
     client = await get_http_client()
 
     for candidate in candidates:
-        upstream_payload = dict(payload)
-        upstream_payload["model"] = candidate.real_model
-        upstream_body = json.dumps(upstream_payload).encode("utf-8")
+        if rewrite_model:
+            upstream_payload = dict(payload)
+            upstream_payload["model"] = candidate.real_model
+            upstream_body = json.dumps(upstream_payload).encode("utf-8")
+        else:
+            upstream_payload = payload
+            upstream_body = raw_body
+
         headers = _build_upstream_headers(request.headers, candidate.endpoint, candidate.api_key.key)
         if not any(key.lower() == "x-trace-id" for key in headers):
             headers["X-Trace-Id"] = trace_id
@@ -2414,6 +2483,18 @@ async def embeddings(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> Response:
     return await _proxy_openai_request(request, session)
+
+
+@router.post("/v1/responses")
+async def responses(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> Response:
+    return await _proxy_openai_request(
+        request,
+        session,
+        rewrite_model=False,
+        strip_rule_group_from_payload=False,
+    )
 
 
 def _build_upstream_headers(

@@ -17,8 +17,8 @@ def main() -> None:
         raise RuntimeError("No models available from llm_api_factory")
 
     response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": "ping"}],
+        model="gpt-5.2",
+        messages=[{"role": "user", "content": "你好,你是什么模型，具体的版本是什么"}],
         # extra_body={"rules": "qiniu"},
     )
     message = response.choices[0].message.content

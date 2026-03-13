@@ -51,7 +51,9 @@ type LogFilters = {
   until: string;
 };
 
-const apiBase = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const apiBase =
+  import.meta.env.VITE_API_BASE ??
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 const adminToken = import.meta.env.VITE_ADMIN_TOKEN;
 
 const inputClass =
@@ -496,7 +498,13 @@ export const RouterLab = () => {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle>请求日志</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={loadRequestLogs} disabled={logsLoading}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  void loadRequestLogs();
+                }}
+                disabled={logsLoading}
+              >
                 {logsLoading ? "加载中" : "刷新"}
               </Button>
               <Button
@@ -570,7 +578,13 @@ export const RouterLab = () => {
             />
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button variant="outline" onClick={loadRequestLogs} disabled={logsLoading}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                void loadRequestLogs();
+              }}
+              disabled={logsLoading}
+            >
               筛选
             </Button>
             <Button variant="outline" onClick={clearLogFilters} disabled={logsLoading}>
@@ -633,8 +647,8 @@ export const RouterLab = () => {
                       <td>{new Date(log.created_at).toLocaleString()}</td>
                       <td>
                         <Button
-                          size="sm"
                           variant="outline"
+                          className="px-2 py-1 text-xs"
                           aria-label={`copy-log-${log.id}`}
                           onClick={() => copyLog(log)}
                         >
