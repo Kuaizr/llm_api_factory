@@ -9,7 +9,7 @@ PID_DIR="$ROOT_DIR/scripts/pids"
 
 PORT=8000
 HOST="0.0.0.0"
-PYTHON_BIN="/opt/anaconda3/bin/python"
+PYTHON_BIN="/home/kzer/miniconda3/bin/python"
 API_BASE=""
 ADMIN_TOKEN="${LLM_MASTER_AUTH_TOKEN:-admin}"
 DISABLE_AUTH=0

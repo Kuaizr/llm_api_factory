@@ -94,7 +94,11 @@ async def admin_usage_stats(
         tokens = log.total_tokens
         if tokens is None:
             tokens = (log.prompt_tokens or 0) + (log.completion_tokens or 0)
-        group_name = log.rule_group or api_key.rule_group or "default"
+        group_name = (
+            log.rule_group
+            or getattr(api_key, "primary_rule_group", api_key.rule_group)
+            or "default"
+        )
         group_totals[group_name] = group_totals.get(group_name, 0) + tokens
         total_tokens += tokens
         log_time = _normalize_datetime(log.created_at)

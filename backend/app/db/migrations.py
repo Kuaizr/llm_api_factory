@@ -27,6 +27,8 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
         "ALTER TABLE endpoints ADD COLUMN oauth_config TEXT",
         "ALTER TABLE endpoints ADD COLUMN request_body_template TEXT",
         "ALTER TABLE endpoints ADD COLUMN probe_interval_seconds INTEGER",
+        "ALTER TABLE api_keys ADD COLUMN rule_groups_json TEXT",
+        "ALTER TABLE model_maps ADD COLUMN probe_managed BOOLEAN DEFAULT 0",
         "ALTER TABLE routing_rules ADD COLUMN dump_enabled BOOLEAN DEFAULT 0",
         "ALTER TABLE routing_rules ADD COLUMN dump_path VARCHAR(1024)",
         """
@@ -62,6 +64,20 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
         """,
         "CREATE INDEX IF NOT EXISTS ix_rule_access_keys_rule_id ON rule_access_keys(rule_id)",
         "CREATE INDEX IF NOT EXISTS ix_rule_access_keys_key ON rule_access_keys(key)",
+        """
+        UPDATE api_keys
+        SET rule_groups_json = '["default"]'
+        WHERE (rule_groups_json IS NULL OR TRIM(rule_groups_json) = '')
+          AND (rule_group IS NULL OR TRIM(rule_group) = '' OR LOWER(rule_group) = 'default')
+        """,
+        """
+        UPDATE api_keys
+        SET rule_groups_json = '["default","' || REPLACE(rule_group, '"', '') || '"]'
+        WHERE (rule_groups_json IS NULL OR TRIM(rule_groups_json) = '')
+          AND rule_group IS NOT NULL
+          AND TRIM(rule_group) != ''
+          AND LOWER(rule_group) != 'default'
+        """,
     ]
 
     async with engine.begin() as conn:

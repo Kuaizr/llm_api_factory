@@ -4,6 +4,7 @@ import {
   Copy,
   Database,
   Edit2,
+  GripVertical,
   Key,
   Network,
   Plus,
@@ -53,29 +54,191 @@ export const RuleEditorModal = ({
   const [selectedKeyIds, setSelectedKeyIds] = useState<Set<number>>(
     new Set(rule?.target_key_ids ?? [])
   );
+  const [endpointOrder, setEndpointOrder] = useState<number[]>(() => {
+    const targetOrder = new Map(
+      (rule?.target_key_ids ?? []).map((keyId, index) => [keyId, index])
+    );
+    return [...endpoints]
+      .map((endpoint, index) => {
+        const rank = endpoint.keys.reduce((current, key) => {
+          const keyRank = targetOrder.get(key.id);
+          if (keyRank == null) {
+            return current;
+          }
+          return Math.min(current, keyRank);
+        }, Number.POSITIVE_INFINITY);
+        return { endpointId: endpoint.id, index, rank };
+      })
+      .sort((left, right) => {
+        if (left.rank !== right.rank) {
+          return left.rank - right.rank;
+        }
+        return left.index - right.index;
+      })
+      .map((item) => item.endpointId);
+  });
+  const [keyOrderByEndpoint, setKeyOrderByEndpoint] = useState<Record<number, number[]>>(
+    () => {
+      const targetOrder = new Map(
+        (rule?.target_key_ids ?? []).map((keyId, index) => [keyId, index])
+      );
+      const initialOrder: Record<number, number[]> = {};
+      endpoints.forEach((endpoint) => {
+        const originalIndexes = new Map(
+          endpoint.keys.map((key, index) => [key.id, index])
+        );
+        initialOrder[endpoint.id] = [...endpoint.keys]
+          .sort((left, right) => {
+            const leftRank = targetOrder.get(left.id);
+            const rightRank = targetOrder.get(right.id);
+            if (leftRank != null && rightRank != null) {
+              return leftRank - rightRank;
+            }
+            if (leftRank != null) {
+              return -1;
+            }
+            if (rightRank != null) {
+              return 1;
+            }
+            return (originalIndexes.get(left.id) ?? 0) - (originalIndexes.get(right.id) ?? 0);
+          })
+          .map((key) => key.id);
+      });
+      return initialOrder;
+    }
+  );
   const [scanResults, setScanResults] = useState<string[]>([]);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanEndpointIds, setScanEndpointIds] = useState<Set<number> | null>(null);
   const [hasScanned, setHasScanned] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [draggingEndpointId, setDraggingEndpointId] = useState<number | null>(null);
+  const [draggingKey, setDraggingKey] = useState<{
+    endpointId: number;
+    keyId: number;
+  } | null>(null);
   const isDefaultRule = (rule?.group_name ?? "").toLowerCase() === "default";
+
+  useEffect(() => {
+    setEndpointOrder((prev) => {
+      const endpointIds = endpoints.map((endpoint) => endpoint.id);
+      const merged = prev.filter((endpointId) => endpointIds.includes(endpointId));
+      endpointIds.forEach((endpointId) => {
+        if (!merged.includes(endpointId)) {
+          merged.push(endpointId);
+        }
+      });
+      return merged;
+    });
+
+    setKeyOrderByEndpoint((prev) => {
+      const next: Record<number, number[]> = {};
+      endpoints.forEach((endpoint) => {
+        const endpointKeyIds = endpoint.keys.map((key) => key.id);
+        const previousOrder = prev[endpoint.id] ?? [];
+        const merged = previousOrder.filter((keyId) => endpointKeyIds.includes(keyId));
+        endpointKeyIds.forEach((keyId) => {
+          if (!merged.includes(keyId)) {
+            merged.push(keyId);
+          }
+        });
+        next[endpoint.id] = merged;
+      });
+      return next;
+    });
+  }, [endpoints]);
+
+  const orderedEndpoints = useMemo(() => {
+    const endpointMap = new Map(endpoints.map((endpoint) => [endpoint.id, endpoint]));
+    return endpointOrder
+      .map((endpointId) => endpointMap.get(endpointId))
+      .filter((endpoint): endpoint is Endpoint => Boolean(endpoint))
+      .map((endpoint) => {
+        const keyMap = new Map(endpoint.keys.map((key) => [key.id, key]));
+        const orderedKeyIds = keyOrderByEndpoint[endpoint.id] ?? endpoint.keys.map((key) => key.id);
+        const mergedKeyIds = orderedKeyIds.filter((keyId) => keyMap.has(keyId));
+        endpoint.keys.forEach((key) => {
+          if (!mergedKeyIds.includes(key.id)) {
+            mergedKeyIds.push(key.id);
+          }
+        });
+        const orderedKeys = mergedKeyIds
+          .map((keyId) => keyMap.get(keyId))
+          .filter((key): key is (typeof endpoint.keys)[number] => Boolean(key));
+        return { ...endpoint, keys: orderedKeys };
+      });
+  }, [endpoints, endpointOrder, keyOrderByEndpoint]);
 
   const filteredEndpoints = useMemo(
     () =>
       hasScanned && scanEndpointIds
-        ? endpoints.filter((endpoint) => scanEndpointIds.has(endpoint.id))
-        : endpoints,
-    [endpoints, hasScanned, scanEndpointIds]
+        ? orderedEndpoints.filter((endpoint) => scanEndpointIds.has(endpoint.id))
+        : orderedEndpoints,
+    [hasScanned, orderedEndpoints, scanEndpointIds]
   );
 
+  const orderedSelectedKeyIds = useMemo(() => {
+    const ordered: number[] = [];
+    const seen = new Set<number>();
+    orderedEndpoints.forEach((endpoint) => {
+      endpoint.keys.forEach((key) => {
+        if (selectedKeyIds.has(key.id) && !seen.has(key.id)) {
+          seen.add(key.id);
+          ordered.push(key.id);
+        }
+      });
+    });
+    selectedKeyIds.forEach((keyId) => {
+      if (!seen.has(keyId)) {
+        ordered.push(keyId);
+      }
+    });
+    return ordered;
+  }, [orderedEndpoints, selectedKeyIds]);
+
   const toggleKey = (id: number) => {
-    const next = new Set(selectedKeyIds);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
+    setSelectedKeyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const reorderInList = (ids: number[], movingId: number, targetId: number) => {
+    if (movingId === targetId) {
+      return ids;
     }
-    setSelectedKeyIds(next);
+    const next = [...ids];
+    const fromIndex = next.indexOf(movingId);
+    const targetIndex = next.indexOf(targetId);
+    if (fromIndex < 0 || targetIndex < 0) {
+      return ids;
+    }
+    next.splice(fromIndex, 1);
+    next.splice(targetIndex, 0, movingId);
+    return next;
+  };
+
+  const moveEndpoint = (sourceEndpointId: number, targetEndpointId: number) => {
+    setEndpointOrder((prev) => reorderInList(prev, sourceEndpointId, targetEndpointId));
+  };
+
+  const moveKeyInEndpoint = (endpointId: number, sourceKeyId: number, targetKeyId: number) => {
+    setKeyOrderByEndpoint((prev) => {
+      const currentOrder = prev[endpointId] ?? [];
+      const nextOrder = reorderInList(currentOrder, sourceKeyId, targetKeyId);
+      if (nextOrder === currentOrder) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [endpointId]: nextOrder,
+      };
+    });
   };
 
   const handleScan = async () => {
@@ -278,17 +441,62 @@ export const RuleEditorModal = ({
           </div>
 
           <div className="space-y-3">
-            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
-              选择 Key
-            </h4>
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                选择 Key
+              </h4>
+              <span className="text-[11px] text-gray-500">
+                可拖拽端点卡片与 Key 卡片排序；顺序主备按从上到下执行。
+              </span>
+            </div>
             <div className="space-y-2">
               {filteredEndpoints.map((endpoint) => (
                 <div
                   key={endpoint.id}
-                  className="bg-gray-900/40 border border-gray-800 rounded-lg p-3"
+                  draggable={isAdmin}
+                  onDragStart={(event) => {
+                    if (!isAdmin) {
+                      return;
+                    }
+                    setDraggingKey(null);
+                    setDraggingEndpointId(endpoint.id);
+                    event.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(event) => {
+                    if (
+                      !isAdmin ||
+                      draggingEndpointId === null ||
+                      draggingEndpointId === endpoint.id
+                    ) {
+                      return;
+                    }
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    if (
+                      !isAdmin ||
+                      draggingEndpointId === null ||
+                      draggingEndpointId === endpoint.id
+                    ) {
+                      return;
+                    }
+                    event.preventDefault();
+                    moveEndpoint(draggingEndpointId, endpoint.id);
+                    setDraggingEndpointId(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingEndpointId(null);
+                  }}
+                  className={`bg-gray-900/40 border rounded-lg p-3 transition ${
+                    draggingEndpointId === endpoint.id
+                      ? "border-yellow-500/60 opacity-80"
+                      : "border-gray-800"
+                  }`}
                 >
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm text-gray-300 font-medium">
+                    <div className="text-sm text-gray-300 font-medium flex items-center gap-2">
+                      <GripVertical size={14} className="text-gray-500" />
                       {endpoint.name}
                     </div>
                     <span className="text-xs text-gray-500">
@@ -298,17 +506,61 @@ export const RuleEditorModal = ({
                   <div className="space-y-1">
                     {endpoint.keys.map((key) => {
                       const isSelected = selectedKeyIds.has(key.id);
+                      const isDraggingKey =
+                        draggingKey?.endpointId === endpoint.id &&
+                        draggingKey.keyId === key.id;
                       return (
                         <button
                           key={key.id}
                           type="button"
+                          draggable={isAdmin}
+                          onDragStart={(event) => {
+                            if (!isAdmin) {
+                              return;
+                            }
+                            event.stopPropagation();
+                            setDraggingEndpointId(null);
+                            setDraggingKey({ endpointId: endpoint.id, keyId: key.id });
+                            event.dataTransfer.effectAllowed = "move";
+                          }}
+                          onDragOver={(event) => {
+                            if (
+                              !isAdmin ||
+                              !draggingKey ||
+                              draggingKey.endpointId !== endpoint.id ||
+                              draggingKey.keyId === key.id
+                            ) {
+                              return;
+                            }
+                            event.preventDefault();
+                            event.stopPropagation();
+                            event.dataTransfer.dropEffect = "move";
+                          }}
+                          onDrop={(event) => {
+                            if (
+                              !isAdmin ||
+                              !draggingKey ||
+                              draggingKey.endpointId !== endpoint.id ||
+                              draggingKey.keyId === key.id
+                            ) {
+                              return;
+                            }
+                            event.preventDefault();
+                            event.stopPropagation();
+                            moveKeyInEndpoint(endpoint.id, draggingKey.keyId, key.id);
+                            setDraggingKey(null);
+                          }}
+                          onDragEnd={() => {
+                            setDraggingKey(null);
+                          }}
                           onClick={() => (isAdmin ? toggleKey(key.id) : undefined)}
                           className={`w-full flex items-center gap-3 p-2 rounded border transition ${
                             isSelected
                               ? "bg-yellow-900/20 border-yellow-600/50"
                               : "border-gray-800"
-                          }`}
+                          } ${isDraggingKey ? "opacity-70 border-yellow-500/70" : ""}`}
                         >
+                          <GripVertical size={12} className="text-gray-600" />
                           <div
                             className={`w-4 h-4 rounded border flex items-center justify-center ${
                               isSelected
@@ -367,7 +619,7 @@ export const RuleEditorModal = ({
                 priority: Number(priority) || 0,
                 strategy,
                 is_active: rule?.is_active ?? true,
-                target_key_ids: Array.from(selectedKeyIds),
+                target_key_ids: orderedSelectedKeyIds,
                 dump_enabled: dumpEnabled,
                 dump_path: dumpEnabled && dumpPath.trim() ? dumpPath.trim() : null,
               })

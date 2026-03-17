@@ -211,7 +211,6 @@ async def _proxy_openai_request(
             .where(
                 APIKey.is_active.is_(True),
                 Endpoint.is_active.is_(True),
-                APIKey.rule_group == effective_group,
             )
             .order_by(APIKey.id)
         )
@@ -232,6 +231,11 @@ async def _proxy_openai_request(
             fallback_rows = fallback_result.all()
 
         for api_key, endpoint in fallback_rows:
+            if hasattr(api_key, "in_rule_group"):
+                if not api_key.in_rule_group(effective_group):
+                    continue
+            elif getattr(api_key, "rule_group", "default") != effective_group:
+                continue
             if not await router_service._is_key_available(api_key):
                 continue
             candidates.append(

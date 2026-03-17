@@ -30,7 +30,8 @@ def test_weighted_round_robin_sequence() -> None:
     router_module._wrr_state.clear()
     candidates = build_candidates([2, 1])
     order = [
-        ModelRouter._order_candidates(candidates)[0].api_key.id for _ in range(6)
+        ModelRouter._order_candidates(candidates, "weighted_round_robin", "ctx")[0].api_key.id
+        for _ in range(6)
     ]
     assert order == [1, 2, 1, 1, 2, 1]
 
@@ -39,6 +40,35 @@ def test_weighted_round_robin_zero_weight_defaults_to_one() -> None:
     router_module._wrr_state.clear()
     candidates = build_candidates([0, 0])
     order = [
-        ModelRouter._order_candidates(candidates)[0].api_key.id for _ in range(4)
+        ModelRouter._order_candidates(candidates, "weighted_round_robin", "ctx")[0].api_key.id
+        for _ in range(4)
     ]
     assert order == [1, 2, 1, 2]
+
+
+def test_sequential_strategy_respects_target_key_order() -> None:
+    candidates = build_candidates([1, 1, 1])
+    target_key_ids = [3, 1, 2]
+    ordered = ModelRouter._order_candidates(
+        candidates, strategy="sequential", context="", target_key_ids=target_key_ids
+    )
+    assert [candidate.api_key.id for candidate in ordered] == [3, 1, 2]
+
+
+def test_sequential_strategy_falls_back_to_id_sort_without_target_key_ids() -> None:
+    candidates = build_candidates([1, 1, 1])
+    ordered = ModelRouter._order_candidates(
+        candidates, strategy="sequential", context="", target_key_ids=None
+    )
+    assert [candidate.api_key.id for candidate in ordered] == [1, 2, 3]
+
+
+def test_sequential_strategy_places_unknown_keys_last() -> None:
+    candidates = build_candidates([1, 1, 1, 1])
+    target_key_ids = [4, 2]
+    ordered = ModelRouter._order_candidates(
+        candidates, strategy="sequential", context="", target_key_ids=target_key_ids
+    )
+    key_ids = [candidate.api_key.id for candidate in ordered]
+    assert key_ids[:2] == [4, 2]
+    assert sorted(key_ids[2:]) == [1, 3]

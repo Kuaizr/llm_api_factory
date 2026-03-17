@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import routes as routes_module
@@ -221,7 +222,14 @@ async def test_manual_probe_records_success_status(monkeypatch: pytest.MonkeyPat
     assert payload["probe_status"] == "success"
     assert payload["probe_status_code"] == 200
     assert payload["discovered_models"] == ["gpt-4o-mini"]
-    assert payload["manual_models"] == []
+    assert len(payload["manual_models"]) == 1
+    assert payload["manual_models"][0]["model_alias"] == "gpt-4o-mini"
+    assert payload["manual_models"][0]["real_model"] == "gpt-4o-mini"
+    assert payload["manual_models"][0]["probe_managed"] is True
+
+    synced_models = (await session.execute(select(ModelMap).where(ModelMap.endpoint_id == endpoint.id))).scalars().all()
+    assert len(synced_models) == 1
+    assert synced_models[0].probe_managed is True
 
     probe = await probe_store.read(api_key.id)
     assert probe is not None
@@ -231,6 +239,115 @@ async def test_manual_probe_records_success_status(monkeypatch: pytest.MonkeyPat
     breaker = CircuitBreaker(redis, settings=settings)
     breaker_status = await breaker.get_status(api_key.id)
     assert breaker_status.state == "closed"
+
+    await upstream_client.aclose()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_probe_sync_overwrites_auto_keeps_manual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(name="OpenAI", base_url="https://api.openai.com", is_active=True)
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-probe", is_active=True)
+    session.add(api_key)
+    session.add_all(
+        [
+            ModelMap(
+                endpoint_id=endpoint.id,
+                model_alias="manual-kept",
+                real_model="gpt-4o-mini",
+                probe_managed=False,
+            ),
+            ModelMap(
+                endpoint_id=endpoint.id,
+                model_alias="old-auto",
+                real_model="gpt-3.5-old",
+                probe_managed=True,
+            ),
+            ModelMap(
+                endpoint_id=endpoint.id,
+                model_alias="stale-alias",
+                real_model="gpt-4.1-mini",
+                probe_managed=True,
+            ),
+        ]
+    )
+    await session.commit()
+    await session.refresh(api_key)
+
+    settings = Settings(
+        master_auth_token="token",
+        circuit_breaker_failures=1,
+        circuit_breaker_ttl_seconds=90,
+    )
+    redis = MemoryRedis()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "gpt-4.1-mini"}, {"id": "gpt-4o-mini"}]},
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_redis():
+        return redis
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/probe",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["discovered_models"] == ["gpt-4.1-mini", "gpt-4o-mini"]
+    assert len(payload["manual_models"]) == 2
+
+    synced_models = (
+        await session.execute(
+            select(ModelMap).where(ModelMap.endpoint_id == endpoint.id).order_by(ModelMap.id)
+        )
+    ).scalars().all()
+    assert len(synced_models) == 2
+
+    manual_model = next(model for model in synced_models if model.real_model == "gpt-4o-mini")
+    assert manual_model.model_alias == "manual-kept"
+    assert manual_model.probe_managed is False
+
+    auto_model = next(model for model in synced_models if model.real_model == "gpt-4.1-mini")
+    assert auto_model.model_alias == "gpt-4.1-mini"
+    assert auto_model.probe_managed is True
+
+    assert all(model.real_model != "gpt-3.5-old" for model in synced_models)
 
     await upstream_client.aclose()
     await session.close()
@@ -391,6 +508,7 @@ async def test_manual_probe_anthropic_uses_messages(monkeypatch: pytest.MonkeyPa
     assert response_payload["discovered_models"] == []
     assert len(response_payload["manual_models"]) == 1
     assert response_payload["manual_models"][0]["model_alias"] == "claude-3-5-haiku-latest"
+    assert response_payload["manual_models"][0]["probe_managed"] is False
     assert "不支持 /v1/models" in (response_payload["probe_message"] or "")
 
     assert captured_requests

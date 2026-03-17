@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import json
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -42,6 +43,7 @@ class APIKey(Base):
     name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     key: Mapped[str] = mapped_column(Text)
     rule_group: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    rule_groups_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     weight: Mapped[int] = mapped_column(Integer, default=1)
     rpm_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -54,6 +56,74 @@ class APIKey(Base):
     )
 
     endpoint: Mapped[Endpoint] = relationship(back_populates="api_keys")
+
+    @staticmethod
+    def normalize_rule_groups(
+        raw_groups: object = None,
+        *,
+        fallback: str | None = None,
+    ) -> list[str]:
+        values: list[object] = []
+        if isinstance(raw_groups, (list, tuple, set)):
+            values.extend(raw_groups)
+        elif isinstance(raw_groups, str):
+            values.extend(raw_groups.split(","))
+        elif raw_groups is not None:
+            values.append(raw_groups)
+
+        if fallback:
+            values.append(fallback)
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            value = str(item or "").strip()
+            if not value:
+                continue
+            lower = value.lower()
+            canonical = "default" if lower == "default" else value
+            token = canonical.lower()
+            if token in seen:
+                continue
+            seen.add(token)
+            normalized.append(canonical)
+
+        if "default" not in seen:
+            normalized.insert(0, "default")
+        elif normalized and normalized[0].lower() != "default":
+            normalized = ["default", *[item for item in normalized if item.lower() != "default"]]
+
+        return normalized or ["default"]
+
+    @property
+    def rule_groups(self) -> list[str]:
+        parsed: object = None
+        if self.rule_groups_json:
+            try:
+                parsed = json.loads(self.rule_groups_json)
+            except (TypeError, ValueError):
+                parsed = None
+        return APIKey.normalize_rule_groups(parsed, fallback=self.rule_group)
+
+    @property
+    def primary_rule_group(self) -> str:
+        for group in self.rule_groups:
+            if group.lower() != "default":
+                return group
+        return "default"
+
+    def assign_rule_groups(self, groups: object) -> list[str]:
+        normalized = APIKey.normalize_rule_groups(groups)
+        self.rule_group = next(
+            (group for group in normalized if group.lower() != "default"),
+            "default",
+        )
+        self.rule_groups_json = json.dumps(normalized, ensure_ascii=False)
+        return normalized
+
+    def in_rule_group(self, group_name: str) -> bool:
+        target = str(group_name or "").strip().lower() or "default"
+        return any(group.lower() == target for group in self.rule_groups)
 
 
 class RoutingRule(Base):
@@ -98,6 +168,7 @@ class ModelMap(Base):
     endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
     model_alias: Mapped[str] = mapped_column(String(128), index=True)
     real_model: Mapped[str] = mapped_column(String(128))
+    probe_managed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

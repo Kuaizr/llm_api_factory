@@ -47,6 +47,8 @@ from app.api.v1.route_models import (
     RuleAccessKeyOut,
     RuleAccessKeyPreviewOut,
     RuleAccessKeyUpdate,
+    RuleGroupEligibilityCheck,
+    RuleGroupEligibilityOut,
 )
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
@@ -118,6 +120,304 @@ def _resolve_probe_message(
     if discovered_models:
         return None
     return "上游不支持 /v1/models 接口，请在右侧手动新增模型映射。"
+
+
+def _dedupe_discovered_models(raw_models: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for model in raw_models:
+        normalized = str(model or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+async def _sync_probe_model_maps(
+    *,
+    session: AsyncSession,
+    endpoint_id: int,
+    existing_models: list[ModelMap],
+    discovered_models: list[str],
+) -> list[ModelMap]:
+    normalized_discovered = _dedupe_discovered_models(discovered_models)
+    if not normalized_discovered:
+        return existing_models
+
+    discovered_set = set(normalized_discovered)
+    manual_real_models = {
+        (model.real_model or "").strip()
+        for model in existing_models
+        if not model.probe_managed and (model.real_model or "").strip()
+    }
+
+    auto_models_by_real: dict[str, list[ModelMap]] = {}
+    auto_models: list[ModelMap] = []
+    for model in existing_models:
+        if not model.probe_managed:
+            continue
+        real_model = (model.real_model or "").strip()
+        if not real_model:
+            continue
+        auto_models.append(model)
+        auto_models_by_real.setdefault(real_model, []).append(model)
+
+    delete_ids: set[int] = set()
+
+    for real_model in manual_real_models:
+        for auto_model in auto_models_by_real.get(real_model, []):
+            delete_ids.add(auto_model.id)
+
+    for discovered_model in normalized_discovered:
+        if discovered_model in manual_real_models:
+            continue
+        same_real_models = auto_models_by_real.get(discovered_model, [])
+        if same_real_models:
+            keeper = same_real_models[0]
+            keeper.model_alias = discovered_model
+            keeper.real_model = discovered_model
+            keeper.probe_managed = True
+            for duplicated in same_real_models[1:]:
+                delete_ids.add(duplicated.id)
+            continue
+        session.add(
+            ModelMap(
+                endpoint_id=endpoint_id,
+                model_alias=discovered_model,
+                real_model=discovered_model,
+                probe_managed=True,
+            )
+        )
+
+    for auto_model in auto_models:
+        real_model = (auto_model.real_model or "").strip()
+        if not real_model or real_model in manual_real_models or real_model not in discovered_set:
+            delete_ids.add(auto_model.id)
+
+    if delete_ids:
+        for model in existing_models:
+            if model.id in delete_ids:
+                await session.delete(model)
+
+    await session.commit()
+
+    refreshed_result = await session.execute(
+        select(ModelMap).where(ModelMap.endpoint_id == endpoint_id).order_by(ModelMap.id)
+    )
+    return refreshed_result.scalars().all()
+
+
+def _normalize_rule_group_key(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return "default"
+    return "default" if normalized.lower() == "default" else normalized
+
+
+async def _validate_rule_groups(session: AsyncSession, groups: list[str]) -> list[str]:
+    normalized = APIKey.normalize_rule_groups(groups)
+    await _ensure_default_rule_group(session)
+    non_default_groups = [group for group in normalized if not _is_default_rule_group(group)]
+    if not non_default_groups:
+        return normalized
+
+    result = await session.execute(select(RoutingRule.group_name))
+    existing = {
+        _normalize_rule_group_key(item)
+        for item in result.scalars().all()
+        if isinstance(item, str) and item.strip()
+    }
+    missing = [group for group in non_default_groups if _normalize_rule_group_key(group) not in existing]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rule group not found: {', '.join(missing)}",
+        )
+    return normalized
+
+
+async def _sync_rule_targets_for_api_key(
+    *,
+    session: AsyncSession,
+    api_key_id: int,
+    previous_groups: list[str],
+    current_groups: list[str],
+) -> None:
+    previous_lookup = {_normalize_rule_group_key(group).lower() for group in previous_groups}
+    current_lookup = {_normalize_rule_group_key(group).lower() for group in current_groups}
+    affected_lookup = previous_lookup | current_lookup
+    if not affected_lookup:
+        return
+
+    result = await session.execute(select(RoutingRule))
+    rules = result.scalars().all()
+    for rule in rules:
+        group_lookup = _normalize_rule_group_key(rule.group_name).lower()
+        if group_lookup not in affected_lookup:
+            continue
+
+        target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+        target_key_set = set(target_key_ids)
+        should_select = group_lookup in current_lookup
+        changed = False
+        if should_select and api_key_id not in target_key_set:
+            target_key_set.add(api_key_id)
+            changed = True
+        elif not should_select and api_key_id in target_key_set:
+            target_key_set.remove(api_key_id)
+            changed = True
+
+        if changed:
+            rule.target_key_ids_json = _serialize_rule_config(
+                sorted(target_key_set), strategy
+            )
+
+
+async def _sync_api_key_groups_for_rule_targets(
+    *,
+    session: AsyncSession,
+    group_name: str,
+    previous_target_key_ids: list[int],
+    current_target_key_ids: list[int],
+) -> None:
+    normalized_group = _normalize_rule_group_key(group_name)
+    group_lookup = normalized_group.lower()
+
+    previous_key_ids: set[int] = set()
+    for item in previous_target_key_ids:
+        try:
+            previous_key_ids.add(int(item))
+        except (TypeError, ValueError):
+            continue
+
+    current_key_ids: set[int] = set()
+    for item in current_target_key_ids:
+        try:
+            current_key_ids.add(int(item))
+        except (TypeError, ValueError):
+            continue
+
+    affected_key_ids = previous_key_ids | current_key_ids
+    if not affected_key_ids:
+        return
+
+    result = await session.execute(select(APIKey).where(APIKey.id.in_(affected_key_ids)))
+    api_keys = result.scalars().all()
+
+    for api_key in api_keys:
+        previous_groups = api_key.rule_groups
+        has_group = any(
+            _normalize_rule_group_key(group).lower() == group_lookup
+            for group in previous_groups
+        )
+        should_have_group = api_key.id in current_key_ids
+        if has_group == should_have_group:
+            continue
+
+        if should_have_group:
+            next_groups = APIKey.normalize_rule_groups([*previous_groups, normalized_group])
+        else:
+            next_groups = APIKey.normalize_rule_groups(
+                [
+                    group
+                    for group in previous_groups
+                    if _normalize_rule_group_key(group).lower() != group_lookup
+                ]
+            )
+
+        api_key.assign_rule_groups(next_groups)
+        await _sync_rule_targets_for_api_key(
+            session=session,
+            api_key_id=api_key.id,
+            previous_groups=previous_groups,
+            current_groups=next_groups,
+        )
+
+
+def _extract_model_aliases(model_maps: list[ModelMap]) -> list[str]:
+    return sorted(
+        {
+            str(item.model_alias or "").strip()
+            for item in model_maps
+            if str(item.model_alias or "").strip()
+        }
+    )
+
+
+async def _resolve_probe_key_for_eligibility(
+    *,
+    session: AsyncSession,
+    endpoint_id: int,
+    payload: RuleGroupEligibilityCheck,
+) -> str | None:
+    if payload.api_key_id is not None:
+        api_key = await session.get(APIKey, payload.api_key_id)
+        if not api_key:
+            raise HTTPException(status_code=404, detail="API key not found")
+        if api_key.endpoint_id != endpoint_id:
+            raise HTTPException(status_code=400, detail="API key does not belong to endpoint")
+        return api_key.key
+
+    raw_key = str(payload.api_key or "").strip()
+    if raw_key:
+        return raw_key
+
+    fallback_key = await session.scalar(
+        select(APIKey.key)
+        .where(APIKey.endpoint_id == endpoint_id, APIKey.is_active.is_(True))
+        .order_by(APIKey.id)
+    )
+    return fallback_key
+
+
+async def _probe_endpoint_models_with_key(
+    *,
+    endpoint: Endpoint,
+    api_key_value: str,
+) -> tuple[list[str], int | None]:
+    provider = _normalize_endpoint_provider(endpoint.provider)
+    if provider == "anthropic":
+        return [], None
+
+    settings = get_settings()
+    client = await get_http_client()
+    url = _build_provider_probe_url(endpoint, default_suffix="/v1/models")
+    header_name = endpoint.auth_header_name or "Authorization"
+    header_prefix = endpoint.auth_header_prefix or "Bearer"
+    headers = (
+        {header_name: f"{header_prefix} {api_key_value}"}
+        if header_prefix
+        else {header_name: api_key_value}
+    )
+
+    response = None
+    try:
+        response = await client.get(
+            url,
+            headers=headers,
+            timeout=settings.health_probe_timeout_seconds,
+        )
+        status_code = response.status_code
+        if status_code >= 400:
+            return [], status_code
+        payload = response.json()
+        payload_models = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(payload_models, list):
+            return [], status_code
+        discovered_models = _dedupe_discovered_models(
+            [
+                str(item.get("id"))
+                for item in payload_models
+                if isinstance(item, dict) and item.get("id")
+            ]
+        )
+        return discovered_models, status_code
+    except Exception:
+        return [], None
+    finally:
+        if response is not None:
+            await response.aclose()
 
 
 async def list_endpoints(session: AsyncSession = Depends(get_session)) -> list[EndpointDetailOut]:
@@ -308,11 +608,13 @@ async def probe_endpoint(
                 payload = response.json()
                 payload_models = payload.get("data") if isinstance(payload, dict) else None
                 if isinstance(payload_models, list):
-                    discovered_models = [
-                        str(item.get("id"))
-                        for item in payload_models
-                        if isinstance(item, dict) and item.get("id")
-                    ]
+                    discovered_models = _dedupe_discovered_models(
+                        [
+                            str(item.get("id"))
+                            for item in payload_models
+                            if isinstance(item, dict) and item.get("id")
+                        ]
+                    )
     except Exception:
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         status = "error"
@@ -337,6 +639,14 @@ async def probe_endpoint(
             checked_at=datetime.now(timezone.utc),
         )
     )
+
+    if status == "success" and provider != "anthropic" and discovered_models:
+        existing_models = await _sync_probe_model_maps(
+            session=session,
+            endpoint_id=endpoint_id,
+            existing_models=existing_models,
+            discovered_models=discovered_models,
+        )
 
     probe_message = _resolve_probe_message(
         status_code=status_code,
@@ -374,8 +684,28 @@ async def create_endpoint_key(
     endpoint = await session.get(Endpoint, endpoint_id)
     if not endpoint:
         raise HTTPException(status_code=404, detail="Endpoint not found")
-    api_key = APIKey(endpoint_id=endpoint_id, **payload.model_dump())
+
+    data = payload.model_dump()
+    raw_rule_groups = data.pop("rule_groups", None)
+    normalized_groups = await _validate_rule_groups(
+        session,
+        APIKey.normalize_rule_groups(raw_rule_groups, fallback=data.get("rule_group")),
+    )
+    data["rule_group"] = next(
+        (group for group in normalized_groups if not _is_default_rule_group(group)),
+        "default",
+    )
+
+    api_key = APIKey(endpoint_id=endpoint_id, **data)
+    api_key.assign_rule_groups(normalized_groups)
     session.add(api_key)
+    await session.flush()
+    await _sync_rule_targets_for_api_key(
+        session=session,
+        api_key_id=api_key.id,
+        previous_groups=[],
+        current_groups=normalized_groups,
+    )
     await session.commit()
     await session.refresh(api_key)
     return api_key
@@ -389,10 +719,18 @@ async def list_api_keys(
     stmt = select(APIKey).order_by(APIKey.id)
     if endpoint_id is not None:
         stmt = stmt.where(APIKey.endpoint_id == endpoint_id)
-    if rule_group is not None:
-        stmt = stmt.where(APIKey.rule_group == rule_group)
+
     result = await session.execute(stmt)
     api_keys = result.scalars().all()
+
+    if rule_group is not None:
+        target_group = _normalize_rule_group_key(rule_group).lower()
+        api_keys = [
+            api_key
+            for api_key in api_keys
+            if api_key.in_rule_group(target_group)
+        ]
+
     today = _today_utc_date()
     changed = False
     for api_key in api_keys:
@@ -403,11 +741,200 @@ async def list_api_keys(
     return api_keys
 
 
+async def check_key_rule_group_eligibility(
+    endpoint_id: int,
+    payload: RuleGroupEligibilityCheck,
+    session: AsyncSession = Depends(get_session),
+) -> RuleGroupEligibilityOut:
+    endpoint = await session.get(Endpoint, endpoint_id)
+    if not endpoint:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+
+    group_name = _normalize_rule_group_key(payload.group_name)
+    if _is_default_rule_group(group_name):
+        return RuleGroupEligibilityOut(
+            group_name="default",
+            eligible=True,
+            reason=None,
+            probed=False,
+            required_patterns=[],
+            matched_models=[],
+        )
+
+    rules_result = await session.execute(
+        select(RoutingRule)
+        .where(RoutingRule.group_name == group_name, RoutingRule.is_active.is_(True))
+        .order_by(RoutingRule.priority.desc(), RoutingRule.id)
+    )
+    group_rules = rules_result.scalars().all()
+    if not group_rules:
+        return RuleGroupEligibilityOut(
+            group_name=group_name,
+            eligible=False,
+            reason="分组暂无启用规则，无法校验。",
+            probed=False,
+            required_patterns=[],
+            matched_models=[],
+        )
+
+    required_patterns = [rule.model_pattern for rule in group_rules]
+    matchers: list[re.Pattern[str]] = []
+    for pattern in required_patterns:
+        try:
+            matchers.append(re.compile(pattern))
+        except re.error:
+            continue
+
+    if not matchers:
+        return RuleGroupEligibilityOut(
+            group_name=group_name,
+            eligible=False,
+            reason="分组规则正则无效，无法校验。",
+            probed=False,
+            required_patterns=required_patterns,
+            matched_models=[],
+        )
+
+    maps_result = await session.execute(
+        select(ModelMap).where(ModelMap.endpoint_id == endpoint_id).order_by(ModelMap.id)
+    )
+    model_maps = maps_result.scalars().all()
+    probed = False
+
+    if not model_maps:
+        probe_key = await _resolve_probe_key_for_eligibility(
+            session=session,
+            endpoint_id=endpoint_id,
+            payload=payload,
+        )
+        if not probe_key:
+            return RuleGroupEligibilityOut(
+                group_name=group_name,
+                eligible=False,
+                reason="缺少可用 API Key，无法执行模型探测。",
+                probed=False,
+                required_patterns=required_patterns,
+                matched_models=[],
+            )
+
+        discovered_models, _ = await _probe_endpoint_models_with_key(
+            endpoint=endpoint,
+            api_key_value=probe_key,
+        )
+        if discovered_models:
+            model_maps = await _sync_probe_model_maps(
+                session=session,
+                endpoint_id=endpoint_id,
+                existing_models=model_maps,
+                discovered_models=discovered_models,
+            )
+            probed = True
+
+    aliases = _extract_model_aliases(model_maps)
+    if not aliases:
+        return RuleGroupEligibilityOut(
+            group_name=group_name,
+            eligible=False,
+            reason="该端点暂无模型映射，请先完成模型探测后再选择分组。",
+            probed=probed,
+            required_patterns=required_patterns,
+            matched_models=[],
+        )
+
+    matched_models = sorted(
+        {
+            alias
+            for alias in aliases
+            if any(matcher.match(alias) for matcher in matchers)
+        }
+    )
+    if not matched_models:
+        return RuleGroupEligibilityOut(
+            group_name=group_name,
+            eligible=False,
+            reason="该 Key 对应端点模型与分组规则不匹配。",
+            probed=probed,
+            required_patterns=required_patterns,
+            matched_models=[],
+        )
+
+    return RuleGroupEligibilityOut(
+        group_name=group_name,
+        eligible=True,
+        reason=None,
+        probed=probed,
+        required_patterns=required_patterns,
+        matched_models=matched_models,
+    )
+
+
 async def create_api_key(
     payload: APIKeyCreate, session: AsyncSession = Depends(get_session)
 ) -> APIKeyOut:
-    api_key = APIKey(**payload.model_dump())
+    endpoint = await session.get(Endpoint, payload.endpoint_id)
+    if not endpoint:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+
+    data = payload.model_dump()
+    raw_rule_groups = data.pop("rule_groups", None)
+    normalized_groups = await _validate_rule_groups(
+        session,
+        APIKey.normalize_rule_groups(raw_rule_groups, fallback=data.get("rule_group")),
+    )
+    data["rule_group"] = next(
+        (group for group in normalized_groups if not _is_default_rule_group(group)),
+        "default",
+    )
+
+    api_key = APIKey(**data)
+    api_key.assign_rule_groups(normalized_groups)
     session.add(api_key)
+    await session.flush()
+    await _sync_rule_targets_for_api_key(
+        session=session,
+        api_key_id=api_key.id,
+        previous_groups=[],
+        current_groups=normalized_groups,
+    )
+    await session.commit()
+    await session.refresh(api_key)
+    return api_key
+
+
+async def _update_api_key_record(
+    *,
+    api_key: APIKey,
+    payload: APIKeyUpdate,
+    session: AsyncSession,
+) -> APIKeyOut:
+    data = payload.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    previous_groups = api_key.rule_groups
+    raw_rule_groups = data.pop("rule_groups", None)
+    has_rule_group_update = raw_rule_groups is not None or "rule_group" in data
+    if has_rule_group_update:
+        fallback_group = data.pop("rule_group", api_key.primary_rule_group)
+        normalized_groups = await _validate_rule_groups(
+            session,
+            APIKey.normalize_rule_groups(raw_rule_groups, fallback=fallback_group),
+        )
+        api_key.assign_rule_groups(normalized_groups)
+    else:
+        normalized_groups = previous_groups
+
+    for field, value in data.items():
+        setattr(api_key, field, value)
+
+    if has_rule_group_update:
+        await _sync_rule_targets_for_api_key(
+            session=session,
+            api_key_id=api_key.id,
+            previous_groups=previous_groups,
+            current_groups=normalized_groups,
+        )
+
     await session.commit()
     await session.refresh(api_key)
     return api_key
@@ -421,14 +948,7 @@ async def update_key(
     api_key = await session.get(APIKey, api_key_id)
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
-    data = payload.model_dump(exclude_unset=True)
-    if not data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    for field, value in data.items():
-        setattr(api_key, field, value)
-    await session.commit()
-    await session.refresh(api_key)
-    return api_key
+    return await _update_api_key_record(api_key=api_key, payload=payload, session=session)
 
 
 async def update_api_key(
@@ -439,14 +959,7 @@ async def update_api_key(
     api_key = await session.get(APIKey, api_key_id)
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
-    data = payload.model_dump(exclude_unset=True)
-    if not data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    for field, value in data.items():
-        setattr(api_key, field, value)
-    await session.commit()
-    await session.refresh(api_key)
-    return api_key
+    return await _update_api_key_record(api_key=api_key, payload=payload, session=session)
 
 
 async def delete_api_key(
@@ -455,6 +968,13 @@ async def delete_api_key(
     api_key = await session.get(APIKey, api_key_id)
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
+
+    await _sync_rule_targets_for_api_key(
+        session=session,
+        api_key_id=api_key.id,
+        previous_groups=api_key.rule_groups,
+        current_groups=[],
+    )
     await session.delete(api_key)
     await session.commit()
     return DeleteResponse()
@@ -494,7 +1014,11 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
         tps_count = 0
         if matcher:
             for log, api_key in log_rows:
-                log_group = log.rule_group or api_key.rule_group or "default"
+                log_group = (
+                    log.rule_group
+                    or getattr(api_key, "primary_rule_group", api_key.rule_group)
+                    or "default"
+                )
                 if log_group != rule.group_name:
                     continue
                 if not matcher.match(log.model_alias):
@@ -543,6 +1067,13 @@ async def create_rule(
         ),
     )
     session.add(rule)
+    await session.flush()
+    await _sync_api_key_groups_for_rule_targets(
+        session=session,
+        group_name=group_name,
+        previous_target_key_ids=[],
+        current_target_key_ids=payload.target_key_ids,
+    )
     await session.commit()
     await session.refresh(rule)
     target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
@@ -566,6 +1097,11 @@ async def update_rule(
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    previous_group_name = rule.group_name
+    current_targets, current_strategy = _deserialize_rule_config(rule.target_key_ids_json)
+    next_targets = current_targets
+    next_strategy = current_strategy
+
     if _is_default_rule_group(rule.group_name):
         if data.get("group_name") is not None and not _is_default_rule_group(
             data["group_name"]
@@ -584,15 +1120,43 @@ async def update_rule(
         data["group_name"] = await _ensure_rule_group_available(
             session, data["group_name"], exclude_rule_id=rule.id
         )
-    if "target_key_ids" in data or "strategy" in data:
-        current_targets, current_strategy = _deserialize_rule_config(
-            rule.target_key_ids_json
-        )
+
+    has_target_update = "target_key_ids" in data
+    if has_target_update or "strategy" in data:
         next_targets = data.pop("target_key_ids", current_targets)
         next_strategy = data.pop("strategy", current_strategy)
         rule.target_key_ids_json = _serialize_rule_config(next_targets, next_strategy)
+
     for field, value in data.items():
         setattr(rule, field, value)
+
+    current_group_name = rule.group_name
+    if has_target_update or _normalize_rule_group_key(previous_group_name).lower() != _normalize_rule_group_key(
+        current_group_name
+    ).lower():
+        if _normalize_rule_group_key(previous_group_name).lower() == _normalize_rule_group_key(
+            current_group_name
+        ).lower():
+            await _sync_api_key_groups_for_rule_targets(
+                session=session,
+                group_name=current_group_name,
+                previous_target_key_ids=current_targets,
+                current_target_key_ids=next_targets,
+            )
+        else:
+            await _sync_api_key_groups_for_rule_targets(
+                session=session,
+                group_name=previous_group_name,
+                previous_target_key_ids=current_targets,
+                current_target_key_ids=[],
+            )
+            await _sync_api_key_groups_for_rule_targets(
+                session=session,
+                group_name=current_group_name,
+                previous_target_key_ids=[],
+                current_target_key_ids=next_targets,
+            )
+
     await session.commit()
     await session.refresh(rule)
     target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
@@ -623,6 +1187,15 @@ async def delete_rule(
             status_code=400,
             detail="Default rule group cannot be deleted",
         )
+
+    target_key_ids, _ = _deserialize_rule_config(rule.target_key_ids_json)
+    await _sync_api_key_groups_for_rule_targets(
+        session=session,
+        group_name=rule.group_name,
+        previous_target_key_ids=target_key_ids,
+        current_target_key_ids=[],
+    )
+
     await session.delete(rule)
     await session.commit()
     return DeleteResponse()
@@ -771,7 +1344,7 @@ async def list_model_maps(
 async def create_model_map(
     payload: ModelMapCreate, session: AsyncSession = Depends(get_session)
 ) -> ModelMapOut:
-    model_map = ModelMap(**payload.model_dump())
+    model_map = ModelMap(**payload.model_dump(), probe_managed=False)
     session.add(model_map)
     await session.commit()
     await session.refresh(model_map)
@@ -791,6 +1364,8 @@ async def update_model_map(
         raise HTTPException(status_code=400, detail="No fields to update")
     for field, value in data.items():
         setattr(model_map, field, value)
+    # 用户手动保存后，条目转为手动维护，不再被自动探测覆盖。
+    model_map.probe_managed = False
     await session.commit()
     await session.refresh(model_map)
     return model_map

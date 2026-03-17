@@ -14,10 +14,38 @@ const buildJsonResponse = (payload: unknown) =>
     })
   );
 
-const buildFetchMock = () =>
-  vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+const buildFetchMock = (options?: { canaryEligible?: boolean }) => {
+  const canaryEligible = options?.canaryEligible ?? true;
+
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/admin/endpoints/1/keys") && init?.method === "POST") {
+
+    if (url.includes("/admin/endpoints/1/keys/check-rule-group") && init?.method === "POST") {
+      if (canaryEligible) {
+        return buildJsonResponse({
+          group_name: "canary",
+          eligible: true,
+          reason: null,
+          probed: true,
+          required_patterns: ["claude-3.*"],
+          matched_models: ["claude-3-5-sonnet"],
+        });
+      }
+      return buildJsonResponse({
+        group_name: "canary",
+        eligible: false,
+        reason: "该 Key 对应端点模型与分组规则不匹配。",
+        probed: false,
+        required_patterns: ["claude-3.*"],
+        matched_models: [],
+      });
+    }
+
+    if (
+      url.includes("/admin/endpoints/1/keys") &&
+      !url.includes("/check-rule-group") &&
+      init?.method === "POST"
+    ) {
       return buildJsonResponse({ status: "ok" });
     }
     if (url.includes("/admin/endpoints")) {
@@ -39,6 +67,7 @@ const buildFetchMock = () =>
               id: 10,
               key_preview: "sk-...1234",
               rule_group: "default",
+              rule_groups: ["default"],
               name: "Main",
               rpm_limit: 100,
               daily_limit: 1000,
@@ -49,6 +78,7 @@ const buildFetchMock = () =>
               id: 11,
               key_preview: "sk-...5678",
               rule_group: "canary",
+              rule_groups: ["default", "canary"],
               name: "Canary",
               rpm_limit: 60,
               daily_limit: 500,
@@ -92,6 +122,7 @@ const buildFetchMock = () =>
     }
     return buildJsonResponse([]);
   });
+};
 
 const createLocalStorageMock = (): Storage => {
   const store = new Map<string, string>();
@@ -144,7 +175,7 @@ describe("Console endpoints", () => {
     expect(await screen.findByText("管理 Keys")).toBeInTheDocument();
   });
 
-  it("creates endpoint key with selected rule group", async () => {
+  it("creates endpoint key with eligible multi rule groups", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("llm_admin_token", "token");
 
@@ -163,14 +194,39 @@ describe("Console endpoints", () => {
     await user.click(screen.getByRole("button", { name: "添加新 Key" }));
     await user.type(screen.getByRole("textbox", { name: "API Key" }), "sk-new-key");
     await user.type(screen.getByRole("textbox", { name: "Key 备注名称" }), "Canary B");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Key 分组" }), "canary");
+
+    const defaultGroupCheckbox = screen.getByRole("checkbox", {
+      name: "Key 分组 default",
+    });
+    expect(defaultGroupCheckbox).toBeChecked();
+    expect(defaultGroupCheckbox).toBeDisabled();
+
+    await user.click(screen.getByRole("checkbox", { name: "Key 分组 canary" }));
+    expect(await screen.findByText("分组 canary 校验前已自动补充模型探测")).toBeInTheDocument();
+
     await user.type(screen.getByRole("spinbutton", { name: "每日配额" }), "300");
     await user.type(screen.getByRole("spinbutton", { name: "RPM 限额" }), "30");
     await user.click(screen.getByRole("button", { name: "保存" }));
 
+    const checkCalls = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url.toString().includes("/admin/endpoints/1/keys/check-rule-group") &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+    expect(checkCalls.length).toBeGreaterThan(0);
+    const checkInit = checkCalls[0]?.[1] as RequestInit | undefined;
+    expect(checkInit?.body).toBeDefined();
+    expect(JSON.parse(checkInit?.body as string)).toEqual(
+      expect.objectContaining({
+        group_name: "canary",
+        api_key: "sk-new-key",
+      })
+    );
+
     const createCall = fetchMock.mock.calls.find(
       ([url, init]) =>
         url.toString().includes("/admin/endpoints/1/keys") &&
+        !url.toString().includes("/check-rule-group") &&
         (init as RequestInit | undefined)?.method === "POST"
     );
     expect(createCall).toBeDefined();
@@ -181,8 +237,35 @@ describe("Console endpoints", () => {
         key: "sk-new-key",
         name: "Canary B",
         rule_group: "canary",
+        rule_groups: ["default", "canary"],
       })
     );
+  });
+
+  it("shows error and blocks selecting ineligible rule group", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("llm_admin_token", "token");
+
+    fetchMock = buildFetchMock({ canaryEligible: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Console />);
+
+    await user.click(await screen.findByRole("button", { name: "管理 Keys" }));
+    await user.click(screen.getByRole("button", { name: "添加新 Key" }));
+    await user.type(screen.getByRole("textbox", { name: "API Key" }), "sk-new-key");
+    await user.click(screen.getByRole("checkbox", { name: "Key 分组 canary" }));
+
+    expect(await screen.findByText("该 Key 对应端点模型与分组规则不匹配。")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Key 分组 canary" })).not.toBeChecked();
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        url.toString().includes("/admin/endpoints/1/keys") &&
+        !url.toString().includes("/check-rule-group") &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+    expect(createCall).toBeUndefined();
   });
 
   it("validates empty api key when creating", async () => {
@@ -200,6 +283,7 @@ describe("Console endpoints", () => {
     const createCall = fetchMock.mock.calls.find(
       ([url, init]) =>
         url.toString().includes("/admin/endpoints/1/keys") &&
+        !url.toString().includes("/check-rule-group") &&
         (init as RequestInit | undefined)?.method === "POST"
     );
     expect(createCall).toBeUndefined();

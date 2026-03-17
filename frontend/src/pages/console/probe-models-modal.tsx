@@ -152,14 +152,14 @@ export const ProbeModelsModal = ({
             )}
 
             <p className="text-[11px] text-gray-500">
-              重新探测只更新此区域结果，不会改动右侧手动模型映射。
+              重新探测会自动同步右侧映射；手动新增或手动保存过的条目不会被覆盖。
             </p>
           </section>
 
           <section className={`${sectionClass} rounded-lg p-4 space-y-3`}>
             <div className="h-8 flex items-center">
               <h4 className={`text-sm font-semibold ${isLight ? "text-gray-800" : "text-gray-200"}`}>
-                手动模型映射
+                模型映射（自动 + 手动）
               </h4>
             </div>
 
@@ -191,7 +191,7 @@ export const ProbeModelsModal = ({
               </button>
             </div>
 
-            {models.length === 0 && <div className="text-sm text-gray-500">暂无手动模型映射</div>}
+            {models.length === 0 && <div className="text-sm text-gray-500">暂无模型映射</div>}
 
             {models.length > 0 && (
               <ul className="space-y-2">
@@ -206,7 +206,20 @@ export const ProbeModelsModal = ({
                       disabled={!isAdmin}
                       className={`${inputClass} h-7 rounded px-2 text-xs font-mono focus:border-blue-500 focus:outline-none disabled:opacity-50`}
                     />
-                    <div className="text-xs text-gray-500 font-mono truncate">{model.real_model}</div>
+                    <div className="text-xs text-gray-500 font-mono flex items-center gap-1.5 min-w-0">
+                      <span className="truncate">{model.real_model}</span>
+                      {model.probe_managed && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] leading-none border shrink-0 ${
+                            isLight
+                              ? "text-blue-700 border-blue-200 bg-blue-50"
+                              : "text-blue-300 border-blue-500/40 bg-blue-500/10"
+                          }`}
+                        >
+                          自动
+                        </span>
+                      )}
+                    </div>
                     <button
                       onClick={() => onSaveAlias(model)}
                       disabled={!isAdmin}

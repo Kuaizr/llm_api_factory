@@ -9,6 +9,7 @@ import { RuleAccessKeysModal, RuleEditorModal, RulesView } from "@/pages/console
 import { SettingsView } from "@/pages/console/settings-panel";
 import {
   consoleThemeStorageKey,
+  normalizeRuleGroups,
   type AgentBootstrapResult,
   type AgentDeployFormState,
   type AgentNode,
@@ -105,10 +106,9 @@ export const Console = () => {
     });
     endpoints.forEach((endpoint) => {
       endpoint.keys.forEach((key) => {
-        const group = key.rule_group?.trim();
-        if (group) {
+        normalizeRuleGroups(key.rule_groups, key.rule_group).forEach((group) => {
           groups.add(group);
-        }
+        });
       });
     });
     return Array.from(groups).sort((left, right) => {
@@ -424,6 +424,7 @@ export const Console = () => {
         <ManageKeysModal
           endpoint={manageKeysEndpoint}
           isAdmin={isAdmin}
+          authToken={token}
           healthStatusMap={healthStatusMap}
           availableRuleGroups={availableRuleGroups}
           onClose={() => setManageKeysEndpoint(null)}

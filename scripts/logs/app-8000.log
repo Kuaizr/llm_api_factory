@@ -1,0 +1,13 @@
+INFO:     Started server process [1597801]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-03-17 21:36:11,855 INFO [httpx] HTTP Request: GET http://api.freestyle.cc.cd/v1/models "HTTP/1.1 301 Moved Permanently"
+2026-03-17 21:36:11,982 INFO [httpx] HTTP Request: GET https://api.qnaigc.com/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:12,351 INFO [httpx] HTTP Request: GET https://integrate.api.nvidia.com/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:12,594 INFO [httpx] HTTP Request: GET https://api.42w.shop/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:13,015 INFO [httpx] HTTP Request: GET https://laoxi.ethan010203.online/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:13,593 INFO [httpx] HTTP Request: GET https://api.chengmo.cc.cd/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:14,659 INFO [httpx] HTTP Request: GET https://api.missblog.net/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:15,365 INFO [httpx] HTTP Request: GET https://elysiver.h-e.top/v1/models "HTTP/1.1 200 OK"
+2026-03-17 21:36:15,642 INFO [httpx] HTTP Request: GET https://codex.xxworld.org/v1/models "HTTP/1.1 200 OK"

@@ -305,7 +305,12 @@ def _build_endpoint_detail(
             id=key.id,
             key_preview=_mask_key(key.key),
             name=key.name,
-            rule_group=key.rule_group,
+            rule_group=getattr(key, "primary_rule_group", key.rule_group),
+            rule_groups=getattr(
+                key,
+                "rule_groups",
+                APIKey.normalize_rule_groups(fallback=getattr(key, "rule_group", "default")),
+            ),
             rpm_limit=key.rpm_limit,
             daily_limit=key.daily_limit,
             used_today=key.used_today,

@@ -80,3 +80,23 @@
 
 ## 8. 已知问题与优化
 - [x] 旧 `/v1/*` 接口已完全移除，统一使用 `/openai/v1/{path}` 与 `/anthropic/v1/{path}` 标准入口
+
+## 9. API Key 分组双向同步（2026-03-18）
+### 9.1 需求说明
+- API Key 管理界面支持为 Key 分配多个 Rule Group（多选 Checkbox），其中 `default` 分组为必选
+- 路由规则编辑界面支持选择多个 API Key 作为目标
+- 两处的选择状态需双向同步：任一端变更，另一端自动更新
+
+### 9.2 实现要点
+- 后端 `APIKey` 模型新增 `rule_groups_json` 字段存储多分组，并保留 `rule_group` 兼容旧数据
+- 后端 `_sync_rule_targets_for_api_key` 负责 Key 变更时同步到 `RoutingRule.target_key_ids_json`
+- 后端 `_sync_api_key_groups_for_rule_targets` 负责 Rule 变更时同步到 `APIKey.rule_groups_json`
+- 前端 Key 编辑弹窗提供资格校验接口，未探测模型时自动触发探测
+
+### 9.3 完成状态
+- [x] 数据模型扩展与 `assign_rule_groups` 逻辑修正
+- [x] Key 界面分组变更 -> 同步到路由规则（正向）
+- [x] 规则界面 Key 选择变更 -> 同步到 API Key 分组（反向）
+- [x] 双向同步回归测试覆盖（`test_update_rule_target_keys_syncs_api_key_rule_groups`）
+- [x] 前端 Key 编辑多选 UI 与资格校验集成
+

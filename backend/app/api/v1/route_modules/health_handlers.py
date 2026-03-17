@@ -191,7 +191,7 @@ async def admin_health_status(
                 api_key_id=api_key.id,
                 endpoint_id=endpoint.id,
                 endpoint_name=endpoint.name,
-                rule_group=api_key.rule_group,
+                rule_group=getattr(api_key, "primary_rule_group", api_key.rule_group),
                 is_active=api_key.is_active,
                 probe_status=probe.status if probe else "unknown",
                 probe_status_code=probe.status_code if probe else None,

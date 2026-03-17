@@ -71,6 +71,7 @@ export const useConsoleActions = ({
   const refreshKeys = async () => {
     await loadEndpoints(token);
     await loadHealthStatus(token);
+    await loadRules(token);
   };
 
   const resetProbeState = () => {
@@ -166,6 +167,7 @@ export const useConsoleActions = ({
           key: payload.key,
           name: payload.name,
           rule_group: payload.rule_group || "default",
+          rule_groups: payload.rule_groups,
           rpm_limit: payload.rpm_limit,
           daily_limit: payload.daily_limit,
           used_today: payload.used_today ?? 0,
@@ -190,6 +192,7 @@ export const useConsoleActions = ({
         key: payload.key,
         name: payload.name,
         rule_group: payload.rule_group,
+        rule_groups: payload.rule_groups,
         rpm_limit: payload.rpm_limit,
         daily_limit: payload.daily_limit,
         is_active: payload.is_active,
@@ -252,12 +255,12 @@ export const useConsoleActions = ({
         });
         setProbeAliasEdits(aliasSeed);
       } else {
-        const manualModels = payload.manual_models ?? [];
-        setProbeModels(manualModels);
+        const mappingModels = payload.manual_models ?? [];
+        setProbeModels(mappingModels);
         setProbeDiscoveredModels(payload.discovered_models ?? []);
         setProbeError(payload.probe_message || null);
         const aliasSeed: Record<number, string> = {};
-        manualModels.forEach((model) => {
+        mappingModels.forEach((model) => {
           aliasSeed[model.id] = model.model_alias;
         });
         setProbeAliasEdits(aliasSeed);
@@ -303,11 +306,12 @@ export const useConsoleActions = ({
       setProbeError("别名保存失败，请稍后再试。");
       return;
     }
+    const updated = (await response.json()) as ModelMap;
     setProbeModels((prev) =>
-      prev.map((item) =>
-        item.id === model.id ? { ...item, model_alias: nextAlias } : item
-      )
+      prev.map((item) => (item.id === updated.id ? updated : item))
     );
+    setProbeAliasEdits((prev) => ({ ...prev, [updated.id]: updated.model_alias }));
+    setProbeError(null);
   };
 
   const handleCreateProbeModel = async (

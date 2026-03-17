@@ -2,11 +2,17 @@ import { Edit2, Key, Plus, RefreshCw, Settings, Trash2, XCircle } from "lucide-r
 import { useMemo, useState } from "react";
 
 import {
+  apiBase,
+  buildHeaders,
+  getPrimaryRuleGroup,
+  keyHasRuleGroup,
+  normalizeRuleGroups,
   type AgentNode,
   type ApiKey,
   type Endpoint,
   type EndpointFormState,
   type HealthStatus,
+  type RuleGroupEligibilityResult,
   resolveKeyStatus,
 } from "./shared";
 
@@ -347,12 +353,16 @@ export const EditEndpointModal = ({
 
 const KeyConfigModal = ({
   keyData,
+  endpointId,
+  authToken,
   isAdmin,
   availableRuleGroups,
   onClose,
   onSave,
 }: {
   keyData?: ApiKey;
+  endpointId: number;
+  authToken: string | null;
   isAdmin: boolean;
   availableRuleGroups: string[];
   onClose: () => void;
@@ -360,16 +370,136 @@ const KeyConfigModal = ({
 }) => {
   const [keyValue, setKeyValue] = useState("");
   const [name, setName] = useState(keyData?.name ?? "");
-  const [ruleGroup, setRuleGroup] = useState(
-    keyData?.rule_group ?? availableRuleGroups[0] ?? "default"
+  const [ruleGroups, setRuleGroups] = useState<string[]>(() =>
+    normalizeRuleGroups(keyData?.rule_groups, keyData?.rule_group)
   );
   const [dailyLimit, setDailyLimit] = useState(String(keyData?.daily_limit ?? ""));
   const [rpmLimit, setRpmLimit] = useState(String(keyData?.rpm_limit ?? ""));
   const [isActive, setIsActive] = useState(keyData?.is_active ?? true);
+  const [checkingGroup, setCheckingGroup] = useState<string | null>(null);
+  const [groupNotice, setGroupNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const handleSave = () => {
-    const normalizedRuleGroup = ruleGroup.trim() || "default";
+  const groupOptions = useMemo(() => {
+    const groups = new Set<string>(["default"]);
+    availableRuleGroups.forEach((group) => {
+      const normalized = String(group || "").trim();
+      if (normalized) {
+        groups.add(normalized.toLowerCase() === "default" ? "default" : normalized);
+      }
+    });
+    normalizeRuleGroups(keyData?.rule_groups, keyData?.rule_group).forEach((group) => {
+      groups.add(group);
+    });
+    return Array.from(groups).sort((left, right) => {
+      if (left === "default") return -1;
+      if (right === "default") return 1;
+      return left.localeCompare(right);
+    });
+  }, [availableRuleGroups, keyData]);
+
+  const checkRuleGroup = async (
+    group: string,
+    options?: { showNotice?: boolean }
+  ): Promise<RuleGroupEligibilityResult | null> => {
+    const groupName = String(group || "").trim() || "default";
+    if (groupName.toLowerCase() === "default") {
+      return {
+        group_name: "default",
+        eligible: true,
+        reason: null,
+        probed: false,
+        required_patterns: [],
+        matched_models: [],
+      };
+    }
+    if (!authToken) {
+      setFormError("请先登录管理员");
+      return null;
+    }
+    if (!keyData && !keyValue.trim()) {
+      setFormError("请先填写 API Key 后再选择分组");
+      return null;
+    }
+
+    setCheckingGroup(groupName);
+    try {
+      const response = await fetch(
+        `${apiBase}/admin/endpoints/${endpointId}/keys/check-rule-group`,
+        {
+          method: "POST",
+          headers: buildHeaders(authToken, true),
+          body: JSON.stringify({
+            group_name: groupName,
+            api_key_id: keyData?.id,
+            api_key: keyData ? undefined : keyValue.trim() || undefined,
+          }),
+        }
+      );
+      if (!response.ok) {
+        let message = "分组校验失败";
+        try {
+          const payload = (await response.json()) as { detail?: string };
+          if (payload.detail) {
+            message = payload.detail;
+          }
+        } catch {
+          // ignore
+        }
+        setFormError(message);
+        return null;
+      }
+      const data = (await response.json()) as RuleGroupEligibilityResult;
+      if (data.eligible && options?.showNotice !== false) {
+        if (data.probed) {
+          setGroupNotice(`分组 ${groupName} 校验前已自动补充模型探测`);
+        } else {
+          setGroupNotice(null);
+        }
+      }
+      return data;
+    } catch {
+      setFormError("分组校验失败，请稍后再试");
+      return null;
+    } finally {
+      setCheckingGroup(null);
+    }
+  };
+
+  const toggleRuleGroup = async (group: string) => {
+    const normalized = String(group || "").trim() || "default";
+    const lower = normalized.toLowerCase();
+    if (lower === "default") {
+      return;
+    }
+    setFormError(null);
+    setGroupNotice(null);
+
+    const isSelected = ruleGroups.some((item) => item.toLowerCase() === lower);
+    if (isSelected) {
+      setRuleGroups((prev) =>
+        normalizeRuleGroups(
+          prev.filter((item) => item.toLowerCase() !== lower),
+          "default"
+        )
+      );
+      return;
+    }
+
+    const eligibility = await checkRuleGroup(normalized, { showNotice: true });
+    if (!eligibility) {
+      return;
+    }
+    if (!eligibility.eligible) {
+      setFormError(eligibility.reason || `分组 ${normalized} 与该 Key 不匹配`);
+      return;
+    }
+
+    setRuleGroups((prev) => normalizeRuleGroups([...prev, normalized], "default"));
+  };
+
+  const handleSave = async () => {
+    const normalizedRuleGroups = normalizeRuleGroups(ruleGroups, "default");
     const parsedDailyLimit = dailyLimit === "" ? null : Number(dailyLimit);
     const parsedRpmLimit = rpmLimit === "" ? null : Number(rpmLimit);
 
@@ -392,11 +522,29 @@ const KeyConfigModal = ({
       return;
     }
 
+    for (const group of normalizedRuleGroups) {
+      if (group.toLowerCase() === "default") {
+        continue;
+      }
+      const eligibility = await checkRuleGroup(group, { showNotice: false });
+      if (!eligibility) {
+        return;
+      }
+      if (!eligibility.eligible) {
+        setFormError(eligibility.reason || `分组 ${group} 与该 Key 不匹配`);
+        return;
+      }
+    }
+
+    const primaryRuleGroup =
+      normalizedRuleGroups.find((group) => group.toLowerCase() !== "default") || "default";
+
     setFormError(null);
     onSave({
       key: keyValue.trim() || undefined,
       name: name.trim() || undefined,
-      rule_group: normalizedRuleGroup,
+      rule_group: primaryRuleGroup,
+      rule_groups: normalizedRuleGroups,
       daily_limit: parsedDailyLimit,
       rpm_limit: parsedRpmLimit,
       is_active: isActive,
@@ -405,7 +553,7 @@ const KeyConfigModal = ({
 
   return (
     <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-[2px]">
-      <div className="bg-[#1a1d24] border border-gray-700 rounded-lg w-[400px] shadow-2xl p-5 animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-[#1a1d24] border border-gray-700 rounded-lg w-[440px] shadow-2xl p-5 animate-in fade-in zoom-in-95 duration-200">
         <h4 className="text-md font-bold text-white mb-4 flex items-center gap-2">
           <Key size={16} className="text-green-500" />
           {keyData ? "编辑 API Key 限制" : "添加新 API Key"}
@@ -423,6 +571,9 @@ const KeyConfigModal = ({
                   setKeyValue(event.target.value);
                   if (formError) {
                     setFormError(null);
+                  }
+                  if (groupNotice) {
+                    setGroupNotice(null);
                   }
                 }}
                 placeholder="sk-..."
@@ -448,24 +599,36 @@ const KeyConfigModal = ({
             <label className="block text-xs font-medium text-gray-400 mb-1">
               分组 (Rule Group)
             </label>
-            <select
-              aria-label="Key 分组"
-              value={ruleGroup}
-              onChange={(event) => {
-                setRuleGroup(event.target.value);
-                if (formError) {
-                  setFormError(null);
-                }
-              }}
-              className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"
-              disabled={!isAdmin}
-            >
-              {availableRuleGroups.map((group) => (
-                <option key={group} value={group}>
-                  {group}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-1.5 rounded border border-gray-700 bg-gray-900/50 p-2 max-h-40 overflow-y-auto">
+              {groupOptions.map((group) => {
+                const lower = group.toLowerCase();
+                const checked = ruleGroups.some((item) => item.toLowerCase() === lower);
+                const disabled = !isAdmin || checkingGroup === group || lower === "default";
+                return (
+                  <label
+                    key={group}
+                    className={`flex items-center justify-between px-1.5 py-1 rounded ${
+                      checked ? "bg-green-900/15" : ""
+                    }`}
+                  >
+                    <span className="text-sm text-gray-200">{group}</span>
+                    <input
+                      type="checkbox"
+                      aria-label={`Key 分组 ${group}`}
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => {
+                        void toggleRuleGroup(group);
+                      }}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-green-500 focus:ring-offset-gray-900"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] text-gray-500">
+              default 为必选；选择其他分组会即时校验该 Key 对应端点是否满足模型匹配规则。
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -516,6 +679,7 @@ const KeyConfigModal = ({
             <span className="text-sm text-gray-300">启用此 Key</span>
           </div>
         </div>
+        {groupNotice && <p className="mt-3 text-xs text-blue-300">{groupNotice}</p>}
         {formError && <p className="mt-3 text-xs text-red-400">{formError}</p>}
         <div className="flex justify-end gap-2 mt-6">
           <button
@@ -525,8 +689,10 @@ const KeyConfigModal = ({
             取消
           </button>
           <button
-            onClick={handleSave}
-            disabled={!isAdmin}
+            onClick={() => {
+              void handleSave();
+            }}
+            disabled={!isAdmin || checkingGroup !== null}
             className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded disabled:opacity-50"
           >
             保存
@@ -540,6 +706,7 @@ const KeyConfigModal = ({
 export const ManageKeysModal = ({
   endpoint,
   isAdmin,
+  authToken,
   healthStatusMap,
   availableRuleGroups,
   onClose,
@@ -550,6 +717,7 @@ export const ManageKeysModal = ({
 }: {
   endpoint: Endpoint;
   isAdmin: boolean;
+  authToken: string | null;
   healthStatusMap: Record<number, HealthStatus>;
   availableRuleGroups: string[];
   onClose: () => void;
@@ -754,6 +922,8 @@ export const ManageKeysModal = ({
       {(editingKey || isAddingKey) && (
         <KeyConfigModal
           keyData={editingKey || undefined}
+          endpointId={endpoint.id}
+          authToken={authToken}
           isAdmin={isAdmin}
           availableRuleGroups={availableRuleGroups}
           onClose={() => {

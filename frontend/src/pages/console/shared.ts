@@ -12,6 +12,7 @@ export type ApiKey = {
   id: number;
   key_preview: string;
   rule_group?: string;
+  rule_groups?: string[];
   rpm_limit: number | null;
   daily_limit: number | null;
   used_today: number;
@@ -34,6 +35,7 @@ export type ModelMap = {
   endpoint_id: number;
   model_alias: string;
   real_model: string;
+  probe_managed?: boolean;
   created_at: string;
 };
 
@@ -132,6 +134,15 @@ export type RoutingRuleSavePayload = {
   dump_path: string | null;
 };
 
+export type RuleGroupEligibilityResult = {
+  group_name: string;
+  eligible: boolean;
+  reason: string | null;
+  probed: boolean;
+  required_patterns: string[];
+  matched_models: string[];
+};
+
 export type AgentNode = {
   id: number;
   name: string;
@@ -202,6 +213,57 @@ export type EndpointFormState = {
 
 export type AgentDeployFormState = {
   name: string;
+};
+
+export const normalizeRuleGroups = (
+  groups: string[] | null | undefined,
+  fallback?: string | null
+) => {
+  const values: string[] = [];
+  if (Array.isArray(groups)) {
+    values.push(...groups);
+  }
+  if (fallback) {
+    values.push(fallback);
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  values.forEach((raw) => {
+    const trimmed = String(raw ?? "").trim();
+    if (!trimmed) {
+      return;
+    }
+    const canonical = trimmed.toLowerCase() === "default" ? "default" : trimmed;
+    const key = canonical.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    normalized.push(canonical);
+  });
+
+  if (!seen.has("default")) {
+    normalized.unshift("default");
+  } else if (normalized[0]?.toLowerCase() !== "default") {
+    return ["default", ...normalized.filter((item) => item.toLowerCase() !== "default")];
+  }
+  return normalized;
+};
+
+export const getPrimaryRuleGroup = (key: Pick<ApiKey, "rule_group" | "rule_groups">) => {
+  const groups = normalizeRuleGroups(key.rule_groups, key.rule_group);
+  return groups.find((group) => group.toLowerCase() !== "default") || "default";
+};
+
+export const keyHasRuleGroup = (
+  key: Pick<ApiKey, "rule_group" | "rule_groups">,
+  group: string
+) => {
+  const target = String(group || "").trim().toLowerCase() || "default";
+  return normalizeRuleGroups(key.rule_groups, key.rule_group).some(
+    (item) => item.toLowerCase() === target
+  );
 };
 
 export const buildHeaders = (token: string | null, jsonBody = false) => {

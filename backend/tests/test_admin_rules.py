@@ -1,12 +1,13 @@
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.models import APIKey, Endpoint, RequestLog
+from app.db.models import APIKey, Endpoint, ModelMap, RequestLog
 from app.db.session import get_session
 
 
@@ -256,5 +257,390 @@ async def test_admin_default_rule_access_keys_and_guards(
             == "Default rule group cannot be deleted"
         )
 
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_endpoint_key_syncs_multi_rule_group_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="OpenAI",
+        base_url="https://api.openai.com/v1",
+        provider="openai",
+        strategy="weighted_round_robin",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_canary_rule = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4.*",
+                "group_name": "canary",
+                "priority": 20,
+                "is_active": True,
+                "target_key_ids": [],
+            },
+        )
+        assert create_canary_rule.status_code == 200
+
+        create_beta_rule = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4o-mini",
+                "group_name": "beta",
+                "priority": 15,
+                "is_active": True,
+                "target_key_ids": [],
+            },
+        )
+        assert create_beta_rule.status_code == 200
+
+        create_key_response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/keys",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "key": "sk-grouped",
+                "name": "Grouped Key",
+                "rule_groups": ["default", "canary"],
+                "daily_limit": 100,
+                "rpm_limit": 20,
+                "is_active": True,
+            },
+        )
+        assert create_key_response.status_code == 200
+        create_payload = create_key_response.json()
+        key_id = create_payload["id"]
+        assert create_payload["rule_group"] == "canary"
+        assert create_payload["rule_groups"] == ["default", "canary"]
+
+        rules_response = await client.get(
+            "/admin/rules", headers={"Authorization": "Bearer token"}
+        )
+        assert rules_response.status_code == 200
+        rules_payload = rules_response.json()
+
+    default_rule = next(item for item in rules_payload if item["group_name"] == "default")
+    canary_rule = next(item for item in rules_payload if item["group_name"] == "canary")
+    beta_rule = next(item for item in rules_payload if item["group_name"] == "beta")
+
+    assert key_id in default_rule["target_key_ids"]
+    assert key_id in canary_rule["target_key_ids"]
+    assert key_id not in beta_rule["target_key_ids"]
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_update_key_resyncs_rule_group_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="OpenAI",
+        base_url="https://api.openai.com/v1",
+        provider="openai",
+        strategy="weighted_round_robin",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_canary_rule = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4.*",
+                "group_name": "canary",
+                "priority": 20,
+                "is_active": True,
+                "target_key_ids": [],
+            },
+        )
+        assert create_canary_rule.status_code == 200
+
+        create_beta_rule = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4o-mini",
+                "group_name": "beta",
+                "priority": 15,
+                "is_active": True,
+                "target_key_ids": [],
+            },
+        )
+        assert create_beta_rule.status_code == 200
+
+        create_key_response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/keys",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "key": "sk-grouped",
+                "name": "Grouped Key",
+                "rule_groups": ["default", "canary"],
+                "is_active": True,
+            },
+        )
+        assert create_key_response.status_code == 200
+        key_id = create_key_response.json()["id"]
+
+        update_key_response = await client.put(
+            f"/admin/keys/{key_id}",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "rule_groups": ["default", "beta"],
+                "rule_group": "beta",
+            },
+        )
+        assert update_key_response.status_code == 200
+        update_payload = update_key_response.json()
+        assert update_payload["rule_group"] == "beta"
+        assert update_payload["rule_groups"] == ["default", "beta"]
+
+        rules_response = await client.get(
+            "/admin/rules", headers={"Authorization": "Bearer token"}
+        )
+        assert rules_response.status_code == 200
+        rules_payload = rules_response.json()
+
+    default_rule = next(item for item in rules_payload if item["group_name"] == "default")
+    canary_rule = next(item for item in rules_payload if item["group_name"] == "canary")
+    beta_rule = next(item for item in rules_payload if item["group_name"] == "beta")
+
+    assert key_id in default_rule["target_key_ids"]
+    assert key_id not in canary_rule["target_key_ids"]
+    assert key_id in beta_rule["target_key_ids"]
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_update_rule_target_keys_syncs_api_key_rule_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="OpenAI",
+        base_url="https://api.openai.com/v1",
+        provider="openai",
+        strategy="weighted_round_robin",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_key_response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/keys",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "key": "sk-rule-sync",
+                "name": "Rule Sync Key",
+                "rule_groups": ["default"],
+                "is_active": True,
+            },
+        )
+        assert create_key_response.status_code == 200
+        key_id = create_key_response.json()["id"]
+
+        create_rule_response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4.*",
+                "group_name": "canary",
+                "priority": 20,
+                "is_active": True,
+                "target_key_ids": [],
+            },
+        )
+        assert create_rule_response.status_code == 200
+        rule_id = create_rule_response.json()["id"]
+
+        add_key_response = await client.patch(
+            f"/admin/rules/{rule_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"target_key_ids": [key_id]},
+        )
+        assert add_key_response.status_code == 200
+
+        keys_after_add = await client.get(
+            f"/admin/api-keys?endpoint_id={endpoint.id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert keys_after_add.status_code == 200
+        key_after_add = next(item for item in keys_after_add.json() if item["id"] == key_id)
+        assert key_after_add["rule_group"] == "canary"
+        assert key_after_add["rule_groups"] == ["default", "canary"]
+
+        remove_key_response = await client.patch(
+            f"/admin/rules/{rule_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"target_key_ids": []},
+        )
+        assert remove_key_response.status_code == 200
+
+        keys_after_remove = await client.get(
+            f"/admin/api-keys?endpoint_id={endpoint.id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert keys_after_remove.status_code == 200
+        key_after_remove = next(item for item in keys_after_remove.json() if item["id"] == key_id)
+        assert key_after_remove["rule_group"] == "default"
+        assert key_after_remove["rule_groups"] == ["default"]
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rule_group_eligibility_auto_probes_when_model_maps_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="OpenAI",
+        base_url="https://api.openai.com/v1",
+        provider="openai",
+        strategy="weighted_round_robin",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    captured_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_paths.append(request.url.path)
+        return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_rule_response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4.*",
+                "group_name": "canary",
+                "priority": 20,
+                "is_active": True,
+                "target_key_ids": [],
+            },
+        )
+        assert create_rule_response.status_code == 200
+
+        eligibility_response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/keys/check-rule-group",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "group_name": "canary",
+                "api_key": "sk-probe-check",
+            },
+        )
+
+    assert eligibility_response.status_code == 200
+    payload = eligibility_response.json()
+    assert payload["group_name"] == "canary"
+    assert payload["eligible"] is True
+    assert payload["probed"] is True
+    assert payload["matched_models"] == ["gpt-4o-mini"]
+    assert payload["required_patterns"] == ["gpt-4.*"]
+    assert captured_paths == ["/v1/models"]
+
+    model_maps = (
+        await session.execute(select(ModelMap).where(ModelMap.endpoint_id == endpoint.id))
+    ).scalars().all()
+    assert len(model_maps) == 1
+    assert model_maps[0].model_alias == "gpt-4o-mini"
+    assert model_maps[0].probe_managed is True
+
+    await upstream_client.aclose()
     await session.close()
     await engine.dispose()

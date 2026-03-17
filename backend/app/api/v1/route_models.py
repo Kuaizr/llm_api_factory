@@ -69,6 +69,7 @@ class APIKeyCreate(BaseModel):
     key: str = Field(..., min_length=1)
     name: str | None = None
     rule_group: str = "default"
+    rule_groups: list[str] | None = None
     weight: int = 1
     rpm_limit: int | None = None
     daily_limit: int | None = None
@@ -81,6 +82,7 @@ class EndpointKeyCreate(BaseModel):
     key: str = Field(..., min_length=1)
     name: str | None = None
     rule_group: str = "default"
+    rule_groups: list[str] | None = None
     weight: int = 1
     rpm_limit: int | None = None
     daily_limit: int | None = None
@@ -93,6 +95,7 @@ class APIKeyUpdate(BaseModel):
     key: str | None = None
     name: str | None = None
     rule_group: str | None = None
+    rule_groups: list[str] | None = None
     weight: int | None = None
     rpm_limit: int | None = None
     daily_limit: int | None = None
@@ -107,6 +110,7 @@ class APIKeyOut(BaseModel):
     key: str
     name: str | None
     rule_group: str
+    rule_groups: list[str] = Field(default_factory=list)
     weight: int
     rpm_limit: int | None
     daily_limit: int | None
@@ -123,6 +127,7 @@ class EndpointKeyOut(BaseModel):
     key_preview: str
     name: str | None
     rule_group: str
+    rule_groups: list[str] = Field(default_factory=list)
     rpm_limit: int | None
     daily_limit: int | None
     used_today: int
@@ -201,6 +206,21 @@ class RoutingRuleOut(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RuleGroupEligibilityCheck(BaseModel):
+    group_name: str = Field(..., min_length=1)
+    api_key_id: int | None = None
+    api_key: str | None = None
+
+
+class RuleGroupEligibilityOut(BaseModel):
+    group_name: str
+    eligible: bool
+    reason: str | None = None
+    probed: bool = False
+    required_patterns: list[str] = Field(default_factory=list)
+    matched_models: list[str] = Field(default_factory=list)
 
 
 class AuthLoginRequest(BaseModel):
@@ -290,6 +310,7 @@ class ModelMapOut(BaseModel):
     endpoint_id: int
     model_alias: str
     real_model: str
+    probe_managed: bool = False
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

@@ -54,12 +54,16 @@ class ModelRouter:
         )
         if target_key_ids:
             stmt = stmt.where(APIKey.id.in_(target_key_ids))
-        else:
-            stmt = stmt.where(APIKey.rule_group == effective_group)
 
         result = await session.execute(stmt)
         candidates: list[RouteCandidate] = []
         for api_key, endpoint, model_map in result.all():
+            if not target_key_ids:
+                if hasattr(api_key, "in_rule_group"):
+                    if not api_key.in_rule_group(effective_group):
+                        continue
+                elif getattr(api_key, "rule_group", "default") != effective_group:
+                    continue
             if not await self._is_key_available(api_key):
                 continue
             candidates.append(
@@ -68,7 +72,9 @@ class ModelRouter:
                 )
             )
         context_key = f"{model_alias}:{effective_group}:{strategy}"
-        ordered = self._order_candidates(candidates, strategy, context_key)
+        ordered = self._order_candidates(
+            candidates, strategy, context_key, target_key_ids
+        )
         return ordered, effective_group
 
     async def _is_key_available(self, api_key: APIKey) -> bool:
@@ -175,11 +181,18 @@ class ModelRouter:
         candidates: Sequence[RouteCandidate],
         strategy: str = DEFAULT_RULE_STRATEGY,
         context: str = "",
+        target_key_ids: list[int] | None = None,
     ) -> list[RouteCandidate]:
         if not candidates:
             return []
         normalized = strategy or DEFAULT_RULE_STRATEGY
         if normalized == "sequential":
+            if target_key_ids:
+                key_order = {key_id: index for index, key_id in enumerate(target_key_ids)}
+                return sorted(
+                    candidates,
+                    key=lambda candidate: key_order.get(candidate.api_key.id, len(target_key_ids)),
+                )
             return sorted(candidates, key=lambda candidate: candidate.api_key.id)
         selected = ModelRouter._select_wrr_candidate(candidates, context)
         remaining = [

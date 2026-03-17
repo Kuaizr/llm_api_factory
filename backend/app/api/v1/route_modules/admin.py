@@ -12,8 +12,10 @@ from app.api.v1.route_models import (
     RoutingRuleOut,
     RuleAccessKeyIssueOut,
     RuleAccessKeyOut,
+    RuleGroupEligibilityOut,
 )
 from app.api.v1.route_modules.admin_handlers import (
+    check_key_rule_group_eligibility,
     create_api_key,
     create_endpoint,
     create_endpoint_key,
@@ -85,6 +87,13 @@ router.add_api_route(
     create_endpoint_key,
     methods=["POST"],
     response_model=APIKeyOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/endpoints/{endpoint_id}/keys/check-rule-group",
+    check_key_rule_group_eligibility,
+    methods=["POST"],
+    response_model=RuleGroupEligibilityOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(

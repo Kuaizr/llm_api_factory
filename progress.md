@@ -3,9 +3,47 @@
 ## 当前阶段
 
 - 时间：2026-03-16
-- 阶段目标：以 `task.md` 为唯一核心任务，继续推进“API Key 分组路由 + default 分组落地 + 回归稳定”。
+- 阶段目标：以 `task.md` 为唯一核心任务，继续推进"API Key 分组路由 + default 分组落地 + 回归稳定"。
 
 ## ✅ 本轮已完成
+
+### API Key 分组多选功能（2026-03-16 新增）
+
+- **数据模型扩展**：
+  - `APIKey` 模型新增 `rule_groups_json` 字段存储多分组，保留 `rule_group` 字段兼容旧数据。
+  - 新增 `normalize_rule_groups()` 静态方法统一处理分组规范化（去重、排序、default 必选）。
+  - 新增 `rule_groups` 属性解析 JSON 并合并旧字段，`primary_rule_group` 属性返回主要分组。
+  - 新增 `assign_rule_groups()` 方法批量设置分组，`in_rule_group()` 方法判断归属。
+
+- **后端跨表同步**：
+  - `backend/app/api/v1/route_modules/admin_handlers.py` 实现 `_sync_rule_targets_for_api_key()` 函数：
+    - 创建/更新 API Key 时，自动将其 ID 添加到对应分组的 `RoutingRule.target_key_ids_json`。
+    - 删除 API Key 时，自动从所有分组的 `target_key_ids_json` 中移除。
+    - 事务内保证数据一致性。
+
+- **分组资格校验与自动探测**：
+  - 新增 `POST /admin/endpoints/{endpoint_id}/keys/check-rule-group` 接口：
+    - 校验 API Key/端点是否满足分组的模型匹配规则。
+    - 若无 ModelMap 记录，自动调用 `/v1/models` 探测并持久化。
+    - 返回 `eligible`、`probed`、`matched_models`、`required_patterns` 等信息。
+  - 新增 `RuleGroupEligibilityCheck` 和 `RuleGroupEligibilityOut` 数据模型。
+
+- **前端交互增强**：
+  - Key 管理弹窗分组由下拉单选改为 Checkbox 多选。
+  - `default` 分组 Checkbox 默认选中且禁用（必选）。
+  - 切换分组 Checkbox 时触发后端资格校验 API，不满足则阻止选中并显示错误提示。
+  - 自动探测成功时显示 toast 通知（"分组 xxx 校验前已自动补充模型探测"）。
+  - 创建/更新请求体携带 `rule_groups` 数组字段。
+
+- **回归测试补齐**：
+  - `backend/tests/test_admin_rules.py` 新增：
+    - `test_create_endpoint_key_syncs_multi_rule_group_targets`：验证创建 Key 时多分组目标同步。
+    - `test_update_key_resyncs_rule_group_targets`：验证更新 Key 分组时目标列表重新同步。
+    - `test_rule_group_eligibility_auto_probes_when_model_maps_missing`：验证无 ModelMap 时自动探测逻辑。
+  - `frontend/src/pages/Assets.test.tsx` 新增：
+    - `"creates endpoint key with eligible multi rule groups"`：多选 UI + 资格校验通过流程。
+    - `"shows error and blocks selecting ineligible rule group"`：资格校验失败阻止选中流程。
+    - `"validates empty api key when creating"`：空 Key 校验。
 
 - 任务驱动约束保持：
   - 继续只按 `task.md` 推进，不再维护 `next.md`。
@@ -38,11 +76,11 @@
 - 后端关键回归：
   - `cd backend && pytest -q tests/test_admin_endpoints_detail.py tests/test_admin_rules.py tests/test_auth_routes.py tests/test_openai_proxy_routes.py --maxfail=1` => `28 passed`
 - 后端增量校验：
-  - `cd backend && pytest -q tests/test_admin_rules.py tests/test_admin_endpoints_detail.py --maxfail=1` => `6 passed`
+  - `cd backend && pytest -q tests/test_admin_rules.py tests/test_admin_endpoints_detail.py --maxfail=1` => `9 passed`（含多分组同步测试）
 - 后端全量回归：
   - `cd backend && pytest -q` => `72 passed`
 - 前端关键页面定向：
-  - `cd frontend && npm test -- src/pages/AgentsView.test.tsx src/pages/Assets.test.tsx src/pages/Dashboard.test.tsx src/pages/RouterLab.test.tsx` => `4 files passed, 12 tests passed`
+  - `cd frontend && npm test -- src/pages/Assets.test.tsx` => `5 tests passed`（含多选分组校验测试）
   - 注：仍有 React `act(...)` warning，但不影响用例通过。
 
 ## ⏳ 当前任务进度（以 task.md 为准）
@@ -52,7 +90,7 @@
 | 1. 代码解耦（后端） | 已完成 | P0 | 路由/处理器拆分与兼容层收敛已完成 |
 | 1. 代码解耦（前端） | 进行中 | P1 | 数据加载、操作事件、端点主视图、Probe 弹窗均已拆分；仍可继续拆导航/模态同步逻辑 |
 | 2. 标准端点透明透传 | 已完成 | P0 | `/openai/v1/*` 与 `/anthropic/v1/*` 已覆盖并回归通过 |
-| 3. API Key 绑定分组路由 | 已完成（核心） | P0 | default 分组自动初始化+保护 + 前端按分组管理/校验已联通 |
+| 3. API Key 绑定分组路由 | 已完成 | P0 | default 分组自动初始化+保护 + 多选分组 + 跨表同步 + 资格校验已联通 |
 | 4. 鉴权头兼容（Bearer + x-api-key） | 已完成 | P0 | 网关鉴权与认证接口均已兼容 |
 | 5. Dump Chat Records 开关与持久化 | 已完成（核心） | P0 | 后端流式拼接与异步落库在位，前端开关联调与断言已补齐 |
 | 6. 交付整理与分批提交 | 进行中 | P1 | 需继续收敛运行态/日志类噪音改动 |
