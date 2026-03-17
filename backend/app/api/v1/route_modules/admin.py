@@ -1,0 +1,229 @@
+from fastapi import APIRouter, Depends
+
+from app.api.v1.route_helpers import _require_master_auth
+from app.api.v1.route_models import (
+    APIKeyOut,
+    DeleteResponse,
+    EndpointDetailOut,
+    EndpointOut,
+    EndpointProbeOut,
+    ModelMapOut,
+    RequestLogOut,
+    RoutingRuleOut,
+    RuleAccessKeyIssueOut,
+    RuleAccessKeyOut,
+)
+from app.api.v1.route_modules.admin_handlers import (
+    create_api_key,
+    create_endpoint,
+    create_endpoint_key,
+    create_model_map,
+    create_rule,
+    create_rule_access_key,
+    delete_api_key,
+    delete_endpoint,
+    delete_model_map,
+    delete_rule,
+    delete_rule_access_key,
+    list_api_keys,
+    list_endpoints,
+    list_model_maps,
+    list_request_logs,
+    list_rule_access_keys,
+    list_rules,
+    probe_endpoint,
+    rotate_rule_access_key,
+    scan_rule_models,
+    update_api_key,
+    update_endpoint,
+    update_key,
+    update_model_map,
+    update_rule,
+    update_rule_access_key,
+)
+
+router = APIRouter()
+_admin_dependencies = [Depends(_require_master_auth)]
+
+router.add_api_route(
+    "/admin/endpoints",
+    list_endpoints,
+    methods=["GET"],
+    response_model=list[EndpointDetailOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/endpoints",
+    create_endpoint,
+    methods=["POST"],
+    response_model=EndpointOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/endpoints/{endpoint_id}",
+    update_endpoint,
+    methods=["PATCH"],
+    response_model=EndpointOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/endpoints/{endpoint_id}/probe",
+    probe_endpoint,
+    methods=["POST"],
+    response_model=EndpointProbeOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/endpoints/{endpoint_id}",
+    delete_endpoint,
+    methods=["DELETE"],
+    response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/endpoints/{endpoint_id}/keys",
+    create_endpoint_key,
+    methods=["POST"],
+    response_model=APIKeyOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/api-keys",
+    list_api_keys,
+    methods=["GET"],
+    response_model=list[APIKeyOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/api-keys",
+    create_api_key,
+    methods=["POST"],
+    response_model=APIKeyOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/keys/{api_key_id}",
+    update_key,
+    methods=["PUT"],
+    response_model=APIKeyOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/api-keys/{api_key_id}",
+    update_api_key,
+    methods=["PATCH"],
+    response_model=APIKeyOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/api-keys/{api_key_id}",
+    delete_api_key,
+    methods=["DELETE"],
+    response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules",
+    list_rules,
+    methods=["GET"],
+    response_model=list[RoutingRuleOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules",
+    create_rule,
+    methods=["POST"],
+    response_model=RoutingRuleOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/{rule_id}",
+    update_rule,
+    methods=["PATCH"],
+    response_model=RoutingRuleOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/{rule_id}",
+    delete_rule,
+    methods=["DELETE"],
+    response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/{rule_id}/access-keys",
+    list_rule_access_keys,
+    methods=["GET"],
+    response_model=list[RuleAccessKeyOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/{rule_id}/access-keys",
+    create_rule_access_key,
+    methods=["POST"],
+    response_model=RuleAccessKeyIssueOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/access-keys/{access_key_id}",
+    update_rule_access_key,
+    methods=["PATCH"],
+    response_model=RuleAccessKeyOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/access-keys/{access_key_id}/rotate",
+    rotate_rule_access_key,
+    methods=["POST"],
+    response_model=RuleAccessKeyIssueOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/access-keys/{access_key_id}",
+    delete_rule_access_key,
+    methods=["DELETE"],
+    response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/scan",
+    scan_rule_models,
+    methods=["GET"],
+    response_model=list[str],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/model-maps",
+    list_model_maps,
+    methods=["GET"],
+    response_model=list[ModelMapOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/model-maps",
+    create_model_map,
+    methods=["POST"],
+    response_model=ModelMapOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/model-maps/{model_map_id}",
+    update_model_map,
+    methods=["PATCH"],
+    response_model=ModelMapOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/model-maps/{model_map_id}",
+    delete_model_map,
+    methods=["DELETE"],
+    response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/request-logs",
+    list_request_logs,
+    methods=["GET"],
+    response_model=list[RequestLogOut],
+    dependencies=_admin_dependencies,
+)

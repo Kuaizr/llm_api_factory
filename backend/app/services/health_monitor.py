@@ -56,7 +56,7 @@ class HealthProbeResult:
     @classmethod
     def from_payload(cls, payload: dict[str, str | int | None]) -> "HealthProbeResult":
         checked_at_raw = payload.get("checked_at")
-        checked_at = datetime.utcnow()
+        checked_at = datetime.now(timezone.utc)
         if isinstance(checked_at_raw, str):
             cleaned = checked_at_raw
             if cleaned.endswith("Z"):
@@ -64,7 +64,7 @@ class HealthProbeResult:
             try:
                 checked_at = datetime.fromisoformat(cleaned)
             except ValueError:
-                checked_at = datetime.utcnow()
+                checked_at = datetime.now(timezone.utc)
         if checked_at.tzinfo is None:
             checked_at = checked_at.replace(tzinfo=timezone.utc)
         return cls(
@@ -194,10 +194,47 @@ class HealthProbeStore:
             await self.redis.expire(key, self.series_ttl_seconds)
 
 
-def build_probe_url(base_url: str) -> str:
+SUPPORTED_PROBE_PROVIDERS = {"openai", "anthropic", "custom"}
+ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
+
+
+def _normalize_probe_provider(raw: object) -> str:
+    if not isinstance(raw, str):
+        return "openai"
+    normalized = raw.strip().lower()
+    if not normalized:
+        return "openai"
+    if normalized in SUPPORTED_PROBE_PROVIDERS:
+        return normalized
+    return "custom"
+
+
+def _normalize_probe_suffix(raw: object) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    trimmed = raw.strip()
+    if not trimmed:
+        return None
+    return trimmed if trimmed.startswith("/") else f"/{trimmed}"
+
+
+def build_probe_url(
+    base_url: str,
+    *,
+    provider: str = "openai",
+    url_path_suffix: str | None = None,
+) -> str:
+    normalized_suffix = _normalize_probe_suffix(url_path_suffix)
+    if normalized_suffix:
+        return f"{base_url.rstrip('/')}{normalized_suffix}"
+
     cleaned = base_url.rstrip("/")
     if cleaned.endswith("/v1"):
         cleaned = cleaned[:-3]
+
+    normalized_provider = _normalize_probe_provider(provider)
+    if normalized_provider == "anthropic":
+        return f"{cleaned}/v1/messages"
     return f"{cleaned}/v1/models"
 
 
@@ -247,35 +284,55 @@ class HealthMonitor:
         if not targets:
             return
 
+        probe_store = await self._get_probe_store()
         for target in targets:
-            await self.probe_target(target)
+            if not await self._should_probe_target(target, probe_store):
+                continue
+            await self.probe_target(target, probe_store=probe_store)
 
-    async def probe_target(self, target: HealthTarget) -> None:
+    async def probe_target(
+        self, target: HealthTarget, probe_store: HealthProbeStore | None = None
+    ) -> None:
         client = await self._get_client()
         redis = await self._get_redis()
         notifier = self._notifier or get_notifier()
         circuit_breaker = self._circuit_breaker or CircuitBreaker(redis, notifier=notifier)
-        probe_store = self._probe_store or HealthProbeStore(
-            redis,
-            ttl_seconds=self.settings.health_probe_result_ttl_seconds,
-            series_ttl_seconds=self.settings.health_probe_series_ttl_seconds,
-            series_max_entries=self.settings.health_probe_series_max_entries,
-        )
-        alert_store = AlertPolicyStore(probe_store.redis)
+        resolved_probe_store = probe_store or await self._get_probe_store()
+        alert_store = AlertPolicyStore(resolved_probe_store.redis)
 
-        url = build_probe_url(target.endpoint.base_url)
+        provider = _normalize_probe_provider(getattr(target.endpoint, "provider", "openai"))
+        url = build_probe_url(
+            target.endpoint.base_url,
+            provider=provider,
+            url_path_suffix=getattr(target.endpoint, "url_path_suffix", None),
+        )
         headers = self._build_headers(target)
         start = time.perf_counter()
         status_code: int | None = None
         latency_ms: int | None = None
         status = "error"
 
+        probe_payload = {
+            "model": target.real_model or ANTHROPIC_PROBE_FALLBACK_MODEL,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+
         try:
-            response = await client.get(
-                url,
-                headers=headers,
-                timeout=self.settings.health_probe_timeout_seconds,
-            )
+            if provider == "anthropic":
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    json=probe_payload,
+                    timeout=self.settings.health_probe_timeout_seconds,
+                )
+            else:
+                response = await client.get(
+                    url,
+                    headers=headers,
+                    timeout=self.settings.health_probe_timeout_seconds,
+                )
             latency_ms = int((time.perf_counter() - start) * 1000)
             status_code = response.status_code
             await response.aclose()
@@ -298,9 +355,9 @@ class HealthMonitor:
             status=status,
             status_code=status_code,
             latency_ms=latency_ms,
-            checked_at=datetime.utcnow(),
+            checked_at=datetime.now(timezone.utc),
         )
-        await probe_store.write(result)
+        await resolved_probe_store.write(result)
 
         policy = await alert_store.get_policy("probe_latency")
         threshold_ms = (
@@ -376,3 +433,35 @@ class HealthMonitor:
         if self._redis is not None:
             return self._redis
         return await get_redis()
+
+    async def _get_probe_store(self) -> HealthProbeStore:
+        if self._probe_store is not None:
+            return self._probe_store
+        redis = await self._get_redis()
+        self._probe_store = HealthProbeStore(
+            redis,
+            ttl_seconds=self.settings.health_probe_result_ttl_seconds,
+            series_ttl_seconds=self.settings.health_probe_series_ttl_seconds,
+            series_max_entries=self.settings.health_probe_series_max_entries,
+        )
+        return self._probe_store
+
+    async def _should_probe_target(
+        self, target: HealthTarget, probe_store: HealthProbeStore
+    ) -> bool:
+        interval_seconds = target.endpoint.probe_interval_seconds
+        if interval_seconds == -1:
+            return False
+        if interval_seconds is None or interval_seconds <= 0:
+            interval_seconds = self.settings.health_probe_interval_seconds
+        if interval_seconds <= 0:
+            return True
+
+        last_result = await probe_store.read(target.api_key.id)
+        if last_result is None:
+            return True
+        last_checked = last_result.checked_at
+        if last_checked.tzinfo is None:
+            last_checked = last_checked.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - last_checked).total_seconds()
+        return elapsed >= interval_seconds

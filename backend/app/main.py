@@ -13,6 +13,7 @@ from app.core.http_client import close_http_client
 from app.core.logging import setup_logging
 from app.core.redis import close_redis
 from app.db.base import Base
+from app.db.migrations import apply_schema_updates
 from app.db.session import engine
 from app.services.health_monitor import HealthMonitor
 
@@ -33,7 +34,14 @@ def _frontend_dist_dir() -> Path:
 FRONTEND_DIST_DIR = _frontend_dist_dir()
 FRONTEND_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
 FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
-RESERVED_API_PREFIXES = ("v1/", "admin/", "agent/", "auth/")
+RESERVED_API_PREFIXES = (
+    "v1/",
+    "openai/",
+    "anthropic/",
+    "admin/",
+    "agent/",
+    "auth/",
+)
 
 app = FastAPI(title="LLM API Factory")
 origins = _parse_origins(settings.cors_allow_origins)
@@ -94,6 +102,7 @@ async def on_startup() -> None:
     setup_logging()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await apply_schema_updates(engine)
 
     if settings.health_probe_enabled:
         monitor = HealthMonitor()

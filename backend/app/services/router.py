@@ -172,7 +172,9 @@ class ModelRouter:
 
     @staticmethod
     def _order_candidates(
-        candidates: Sequence[RouteCandidate], strategy: str, context: str
+        candidates: Sequence[RouteCandidate],
+        strategy: str = DEFAULT_RULE_STRATEGY,
+        context: str = "",
     ) -> list[RouteCandidate]:
         if not candidates:
             return []

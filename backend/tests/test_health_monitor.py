@@ -21,7 +21,10 @@ class EndpointStub:
     base_url: str
     auth_header_name: str = "Authorization"
     auth_header_prefix: str = "Bearer"
+    probe_interval_seconds: int | None = None
     is_active: bool = True
+    provider: str = "openai"
+    url_path_suffix: str | None = None
 
 
 @dataclass
@@ -98,18 +101,36 @@ class FakeNotifier:
 
 
 def test_build_probe_url_handles_base_paths() -> None:
+    assert build_probe_url("https://api.openai.com") == "https://api.openai.com/v1/models"
+    assert build_probe_url("https://api.openai.com/v1") == "https://api.openai.com/v1/models"
+    assert build_probe_url("https://api.openai.com/v1/") == "https://api.openai.com/v1/models"
     assert (
-        build_probe_url("https://api.openai.com")
-        == "https://api.openai.com/v1/chat/completions"
+        build_probe_url("https://api.anthropic.com", provider="anthropic")
+        == "https://api.anthropic.com/v1/messages"
     )
     assert (
-        build_probe_url("https://api.openai.com/v1")
-        == "https://api.openai.com/v1/chat/completions"
+        build_probe_url("https://gateway.example.com/v1", url_path_suffix="/healthz")
+        == "https://gateway.example.com/v1/healthz"
     )
-    assert (
-        build_probe_url("https://api.openai.com/v1/")
-        == "https://api.openai.com/v1/chat/completions"
+
+
+@pytest.mark.asyncio
+async def test_should_probe_target_supports_disable_interval() -> None:
+    endpoint = EndpointStub(
+        id=101,
+        name="OpenAI",
+        base_url="https://api.test.com",
+        probe_interval_seconds=-1,
     )
+    api_key = APIKeyStub(id=102, key="sk-disabled")
+    target = HealthTarget(endpoint=endpoint, api_key=api_key, real_model="gpt-4o")
+    redis = MemoryRedis()
+    store = HealthProbeStore(redis)
+    monitor = HealthMonitor(probe_store=store)
+
+    should_probe = await monitor._should_probe_target(target, store)
+
+    assert should_probe is False
 
 
 @pytest.mark.asyncio
@@ -134,9 +155,7 @@ async def test_probe_target_records_success_and_store() -> None:
             probe_store=store,
             settings=settings,
         )
-        respx.post(build_probe_url(endpoint.base_url)).mock(
-            return_value=httpx.Response(200)
-        )
+        respx.get(build_probe_url(endpoint.base_url)).mock(return_value=httpx.Response(200))
 
         await monitor.probe_target(target)
 
@@ -151,7 +170,12 @@ async def test_probe_target_records_success_and_store() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_probe_target_records_failure_and_opens_circuit() -> None:
-    endpoint = EndpointStub(id=9, name="Anthropic", base_url="https://api.example.com/v1")
+    endpoint = EndpointStub(
+        id=9,
+        name="Anthropic",
+        base_url="https://api.example.com/v1",
+        provider="anthropic",
+    )
     api_key = APIKeyStub(id=3, key="sk-open")
     target = HealthTarget(endpoint=endpoint, api_key=api_key, real_model="claude")
     redis = MemoryRedis()
@@ -172,9 +196,9 @@ async def test_probe_target_records_failure_and_opens_circuit() -> None:
             probe_store=store,
             settings=settings,
         )
-        respx.post(build_probe_url(endpoint.base_url)).mock(
-            return_value=httpx.Response(401)
-        )
+        respx.post(
+            build_probe_url(endpoint.base_url, provider=endpoint.provider)
+        ).mock(return_value=httpx.Response(401))
 
         await monitor.probe_target(target)
 
@@ -210,9 +234,7 @@ async def test_probe_target_failure_sends_alert() -> None:
             probe_store=store,
             settings=settings,
         )
-        respx.post(build_probe_url(endpoint.base_url)).mock(
-            return_value=httpx.Response(503)
-        )
+        respx.get(build_probe_url(endpoint.base_url)).mock(return_value=httpx.Response(503))
 
         await monitor.probe_target(target)
 
@@ -243,7 +265,7 @@ async def test_probe_target_error_sends_alert() -> None:
             probe_store=store,
             settings=settings,
         )
-        respx.post(build_probe_url(endpoint.base_url)).mock(
+        respx.get(build_probe_url(endpoint.base_url)).mock(
             side_effect=httpx.ConnectError("boom")
         )
 

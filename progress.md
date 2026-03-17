@@ -1,104 +1,70 @@
 # 进度总结
 
-## ✅ 已完成
+## 当前阶段
 
-### 后端（FastAPI）
-- 完成基础服务骨架与配置管理（含 CORS、Redis、HTTP 客户端、数据库连接）。
-- 建模完成：`Endpoint` / `APIKey` / `RoutingRule` / `ModelMap` / `RequestLog` / `Agent`，并扩展 provider/strategy/配额字段。
-- 实现 OpenAI 兼容透明代理：
-  - `POST /v1/chat/completions` 全透传 + 流式转发。
-  - `POST /v1/completions` 与 `POST /v1/embeddings` 透明代理。
-  - 支持失败重试、熔断、使用量落库。
-- 实现模型路由与熔断：
-  - 平滑加权轮询排序候选 Key。
-  - Redis 熔断状态与失败计数。
-- 管理端 API 完整 CRUD：
-  - `/admin/endpoints`、`/admin/api-keys`、`/admin/model-maps`。
-  - `/admin/request-logs` 支持筛选（model/endpoint/key/status/time）。
-  - `/admin/overview` 统计总览。
-  - `/admin/route-test` 路由候选预览。
-- v2 管理与认证接口：
-  - `/auth/login` / `/auth/me`。
-  - `/v1/status/dashboard` 公共看板数据。
-  - `/admin/rules` 路由规则（正则匹配 + 规则组）。
-  - `/admin/stats/usage` 规则组与 Top Key 使用量。
-  - `/admin/endpoints/{id}/probe` 模型探测。
-  - `/admin/endpoints` / `/admin/{id}/keys/keys/{id}` 端点 Key 管理。
-- Agent 通道与状态管理：
-  - Agent 一键部署流程（`/admin/agents/bootstrap` API）。
-  - Agent 独立 Token 管理与鉴权（每个节点单独 Token）。
-  - Agent 名称重复校验。
-  - `/agent/ws` WebSocket 注册与请求回传。
-  - `/agent/heartbeat` 心跳上报与 `/admin/agents` 列表。
-  - Master-Agent 请求转发（支持流式）。
-  - Agent 能力/区域/基础延迟自动探测并上报。
-  - Agent Token 轮换（仅限未部署节点）。
-  - API 端点配置中 Agent 代理选择。
-  - Agent 客户端与 worker（`agent_client` / `agent_worker`）。
-  - Agent 运行入口（`llm-agent`）支持信号优雅退出。
-- 指标与健康：
-  - `/admin/metrics/timeseries` 请求与 Token 趋势聚合。
-  - `/admin/health-status` 健康探针 + 熔断状态聚合。
-  - `/admin/health-status/timeseries` 健康探针趋势数据。
-  - 健康探针结果存 Redis（TTL + 时序存储）。
-- 告警与通知：
-  - Telegram 告警发送（熔断、探针延迟/失败/异常）。
-  - `/admin/alerts` 告警订阅与静默配置（Redis 策略）。
-  - 告警阈值管理（探针延迟阈值）。
-- 调试增强：
-  - 请求响应头返回 `x-request-id / trace-id / endpoint / key / real model`。
-- 可观测性：
-  - 请求链路追踪（trace_id）生成与日志落库。
-  - RequestLog 增加 `ttft_ms` / `tps` / `rule_group` 字段并写入。
-  - 透明代理流式响应统计 TTFT/TPS。
-  - 规则卡片聚合调用次数、Token、TTFT/TPS。
-  - Usage 统计按实际 `rule_group` 聚合。
+- 时间：2026-03-16
+- 阶段目标：以 `task.md` 为唯一核心任务，继续推进“API Key 分组路由 + default 分组落地 + 回归稳定”。
 
-### 前端（React + Tailwind）
-- 重构为 VPS Probe 风格控制台（端点/节点/规则/统计/设置五大页签）。
-- 端点管理卡片化展示：状态、策略、延迟、Key 管理弹窗。
-- 路由规则拓扑展示与规则编辑器。
-- Agent 节点网络展示：
-  - 在线状态、心跳信息。
-  - 部署新节点入口（Token 生成 + 一键部署命令）。
-  - Token 按钮（未部署可重新生成，已部署显示状态）。
-  - 删除节点功能。
-- API 端点编辑时 Agent 代理选择。
-- 用量统计视图（规则组占比 + Top Key）。
-- 系统设置提供管理员登录与告警配置入口（RBAC 控制编辑按钮）。
-- 端点卡片展示基础连通延迟/通道健康度与 Key 负载池。
-- 路由规则卡片展示 TTFT、TPS、调用次数与 Token 消耗。
-- 用量趋势支持区间切换与刷新。
+## ✅ 本轮已完成
 
----
+- 任务驱动约束保持：
+  - 继续只按 `task.md` 推进，不再维护 `next.md`。
+- 鉴权与标准透传（已完成项）保持稳定：
+  - `Authorization: Bearer <key>` 与 `x-api-key: <key>` 双头兼容仍可用。
+  - `/openai/v1/*` 与 `/anthropic/v1/*` 标准透传路径保持通过。
+- API Key 按分组管理（task.md 第 3 项）继续落地：
+  - `backend/app/api/v1/route_models.py` 与 `backend/app/api/v1/route_helpers.py` 的 endpoint key 输出补充 `rule_group` 字段。
+  - `frontend/src/pages/console/endpoint-modals.tsx` 的 Key 管理弹窗支持：
+    - 按分组筛选（全部/指定分组）。
+    - 新建/编辑时选择分组并按分组排序展示。
+    - `default` 分组显示 `System Group` 标识。
+    - 新建时 API Key 必填、Quota/RPM 非负校验。
+  - `frontend/src/pages/Console.tsx` 的 Key 创建/更新请求体补充 `rule_group`。
+- Dump 开关联调（task.md 第 5 项）补强：
+  - `frontend/src/pages/RouterLab.test.tsx` 增加规则编辑后提交 `dump_enabled/dump_path` 的联调断言。
+  - `backend/tests/test_admin_rules.py` 增加规则创建/查询时 dump 字段断言。
+- 前端解耦（task.md 第 1 项）继续推进：
+  - 新增 `frontend/src/pages/console/use-console-data.ts`，承接 Console 的鉴权、列表拉取、趋势与健康状态轮询。
+  - 新增 `frontend/src/pages/console/use-console-actions.ts`，抽离端点/规则/Agent/Probe 的操作事件逻辑。
+  - 新增 `frontend/src/pages/console/endpoints-panel.tsx`，拆出端点总览统计与 Endpoint 卡片视图。
+  - 新增 `frontend/src/pages/console/probe-models-modal.tsx`，拆出模型探测结果弹窗。
+  - `frontend/src/pages/Console.tsx` 改为消费 `useConsoleData` + `useConsoleActions` 与新子组件，移除内嵌的大段数据加载/展示/操作逻辑。
+- 测试补强与修正：
+  - `frontend/src/pages/Assets.test.tsx` 新增“按分组创建 Key”与“空 Key 校验”测试。
+  - `backend/tests/test_admin_endpoints_detail.py` 补充 `rule_group` 返回字段断言。
 
-## ⏳ 待完成（建议优先级）
+## ✅ 回归结果
 
-### 功能完善
-- 告警渠道扩展（邮件、Slack、飞书、企业微信、Webhook 等）。
-- 用户体系与多租户支持（不同团队/项目隔离）。
-- API Key 批量导入/导出。
-- 端点/Key 的定时健康探测配置。
-- 请求日志的在线搜索与详情查看。
+- 后端关键回归：
+  - `cd backend && pytest -q tests/test_admin_endpoints_detail.py tests/test_admin_rules.py tests/test_auth_routes.py tests/test_openai_proxy_routes.py --maxfail=1` => `28 passed`
+- 后端增量校验：
+  - `cd backend && pytest -q tests/test_admin_rules.py tests/test_admin_endpoints_detail.py --maxfail=1` => `6 passed`
+- 后端全量回归：
+  - `cd backend && pytest -q` => `72 passed`
+- 前端关键页面定向：
+  - `cd frontend && npm test -- src/pages/AgentsView.test.tsx src/pages/Assets.test.tsx src/pages/Dashboard.test.tsx src/pages/RouterLab.test.tsx` => `4 files passed, 12 tests passed`
+  - 注：仍有 React `act(...)` warning，但不影响用例通过。
 
-### 可观测性增强
-- 实时请求日志流查看。
-- 告警历史记录查看。
-- 自定义仪表盘配置。
+## ⏳ 当前任务进度（以 task.md 为准）
 
-### 部署运维
-- Docker Compose 一键部署配置。
-- Kubernetes Helm Chart。
-- 配置热加载（无需重启）。
-- 优雅停机与滚动更新。
+| 任务 | 状态 | 优先级 | 备注 |
+| --- | --- | --- | --- |
+| 1. 代码解耦（后端） | 已完成 | P0 | 路由/处理器拆分与兼容层收敛已完成 |
+| 1. 代码解耦（前端） | 进行中 | P1 | 数据加载、操作事件、端点主视图、Probe 弹窗均已拆分；仍可继续拆导航/模态同步逻辑 |
+| 2. 标准端点透明透传 | 已完成 | P0 | `/openai/v1/*` 与 `/anthropic/v1/*` 已覆盖并回归通过 |
+| 3. API Key 绑定分组路由 | 已完成（核心） | P0 | default 分组自动初始化+保护 + 前端按分组管理/校验已联通 |
+| 4. 鉴权头兼容（Bearer + x-api-key） | 已完成 | P0 | 网关鉴权与认证接口均已兼容 |
+| 5. Dump Chat Records 开关与持久化 | 已完成（核心） | P0 | 后端流式拼接与异步落库在位，前端开关联调与断言已补齐 |
+| 6. 交付整理与分批提交 | 进行中 | P1 | 需继续收敛运行态/日志类噪音改动 |
 
-### 安全性
-- HTTPS/TLS 支持。
-- API Key 加密存储。
-- 请求/响应日志脱敏。
-- 速率限制（Rate Limiting）。
+## 当前阻塞/风险
 
-### 文档与生态
-- 完整的 API 文档（OpenAPI/Swagger）。
-- 部署文档与最佳实践。
-- 贡献指南。
+- 工作区历史改动较多，提交分组仍需谨慎，避免混入无关变更。
+- `frontend` 的 `npm test` 默认会扫到 Playwright E2E 文件（`tests/e2e/*.spec.ts`），需使用定向命令或拆分脚本，避免与 Vitest 混跑。
+- IDE linter 仍存在环境级 import warning（`fastapi/sqlalchemy/httpx/pytest` 解析），不影响运行与测试结果。
+
+## 下一步建议
+
+1. 继续推进 `task.md` 第 1 项前端解耦：可再拆导航区与弹窗状态同步逻辑，进一步压缩 `Console.tsx`。
+2. 收敛前端测试中的 React `act(...)` warning，减少 CI 噪音。
+3. 已完成后端全量 + 前端关键回归；下一步聚焦清理日志/构建噪音改动并分批提交。

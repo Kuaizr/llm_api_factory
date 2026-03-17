@@ -4,13 +4,23 @@
 LLM API Factory 是一个面向个人或小团队的 LLM API 聚合分发与监控服务：统一管理多家模型 API Key，按模型名进行路由与降级，并提供健康探针、熔断与可视化控制台。核心理念是“模型名是一等公民”，请求只需指定模型，系统会自动选择可用端点。
 
 ## 主要能力
-- OpenAI 兼容透明代理（支持流式），并记录请求用量与耗时。
-- 按模型 + 规则组路由，熔断不可用 Key。
+- OpenAI / Anthropic 标准入口透传（支持流式），并记录请求用量与耗时。
+- 按模型 + 规则组路由，熔断不可用 Key，并支持多 Key 负载策略。
+- 通用 Provider 扩展：自定义 URL 后缀、额外 Header/Cookie/Query、请求体模板变量替换。
+- OAuth Client Credentials：自动取 Token、Redis 缓存、401 自动刷新重试。
 - 健康探针与趋势可视化，告警策略配置（Telegram）。
 - 管理控制台：资产管理、路由测试、日志导出与筛选。
 - 可选 Agent 节点（用于跨境代理，支持请求代理加速）。
 
 ## 快速开始
+
+### 推荐：单入口启动（后端托管前端）
+
+```bash
+bash scripts/start_all.sh --rebuild-frontend
+```
+
+默认访问地址：`http://127.0.0.1:8000`
 
 ### 1. 后端
 进入后端目录：
@@ -147,26 +157,20 @@ curl -fsSL https://raw.githubusercontent.com/your-repo/llm-api-factory/main/scri
 
 ## 接口示例
 
-模型列表：
+OpenAI 标准入口（推荐）：
 
 ```
-GET /v1/models
+GET  /openai/v1/models
+POST /openai/v1/chat/completions
+POST /openai/v1/completions
+POST /openai/v1/embeddings
+POST /openai/v1/responses
 ```
 
-聊天代理：
+Anthropic 标准入口：
 
 ```
-POST /v1/chat/completions
+POST /anthropic/v1/messages
 ```
 
-文本补全：
-
-```
-POST /v1/completions
-```
-
-向量嵌入：
-
-```
-POST /v1/embeddings
-```
+> 说明：旧的 `/v1/*` 兼容入口已移除，请统一迁移到 `/openai/v1/*` 或 `/anthropic/v1/*`。

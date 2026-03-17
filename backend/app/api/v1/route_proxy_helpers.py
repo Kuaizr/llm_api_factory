@@ -1,0 +1,636 @@
+from typing import AsyncGenerator
+import asyncio
+import json
+import re
+import time
+
+from fastapi import Request
+
+from app.api.v1.route_helpers import _dump_proxy_record
+from app.db.models import RoutingRule
+from app.services.billing import RequestMetrics, extract_usage, write_request_log
+from app.services.router import RouteCandidate
+
+OAUTH_CACHE_PREFIX = "oauth:endpoint"
+DEFAULT_OAUTH_EXPIRES_IN_SECONDS = 3600
+DEFAULT_OAUTH_REFRESH_LEEWAY_SECONDS = 120
+DEFAULT_OAUTH_LOCK_TTL_SECONDS = 10
+OAUTH_LOCK_WAIT_STEP_SECONDS = 0.1
+OAUTH_LOCK_WAIT_ROUNDS = 20
+
+# 请求体模板变量替换的正则模式
+# 先匹配被双引号包裹的占位符，避免字符串转义问题
+QUOTED_TEMPLATE_VARIABLE_PATTERN = re.compile(r'"\{\{(\w+)}}"')
+TEMPLATE_VARIABLE_PATTERN = re.compile(r"\{\{(\w+)}}")
+
+
+def _json_encode_template_value(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _render_request_body_template(
+    template: str,
+    variables: dict[str, object],
+) -> str:
+    """渲染请求体模板，替换 {{variable}} 占位符。"""
+
+    def quoted_replacer(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        if var_name not in variables:
+            return match.group(0)
+        return _json_encode_template_value(variables[var_name])
+
+    rendered = QUOTED_TEMPLATE_VARIABLE_PATTERN.sub(quoted_replacer, template)
+
+    def replacer(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        if var_name not in variables:
+            return match.group(0)
+        return _json_encode_template_value(variables[var_name])
+
+    return TEMPLATE_VARIABLE_PATTERN.sub(replacer, rendered)
+
+
+def _extract_template_variables(payload: dict[str, object]) -> dict[str, object]:
+    """从请求体中提取模板变量值。
+
+    支持：
+    - {{model}} -> payload.get("model")
+    - {{prompt}} -> 从 messages 或 prompt 字段提取
+    - 其他字段直接从 payload 获取
+    """
+    variables: dict[str, object] = dict(payload)
+
+    # 提取 prompt 变量（从 messages 或 prompt 字段）
+    if "messages" in payload and isinstance(payload["messages"], list):
+        messages = payload["messages"]
+        if messages and isinstance(messages[-1], dict):
+            last_message = messages[-1]
+            content = last_message.get("content")
+            if isinstance(content, str):
+                variables["prompt"] = content
+            elif isinstance(content, list):
+                # 多模态消息，提取第一个文本内容
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text = part.get("text")
+                        if isinstance(text, str):
+                            variables["prompt"] = text
+                            break
+    elif "prompt" in payload:
+        variables["prompt"] = payload["prompt"]
+
+    return variables
+
+
+def _apply_request_body_template(
+    endpoint: object,
+    payload: dict[str, object],
+    real_model: str,
+) -> dict[str, object] | None:
+    """如果 endpoint 配置了请求体模板，则使用模板渲染新请求体。
+
+    Args:
+        endpoint: Endpoint 对象
+        payload: 原始请求体
+        real_model: 实际模型名（已重写）
+
+    Returns:
+        - None: 不使用模板，保持原始 payload
+        - dict: 使用模板渲染后的新 payload
+    """
+    template = getattr(endpoint, "request_body_template", None)
+    if not template or not isinstance(template, str) or not template.strip():
+        return None
+
+    variables = _extract_template_variables(payload)
+    variables["model"] = real_model
+
+    try:
+        rendered = _render_request_body_template(template, variables)
+        parsed = json.loads(rendered)
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+    except (json.JSONDecodeError, TypeError):
+        # 模板渲染结果不是合法 JSON，忽略模板
+        return None
+
+
+def _build_upstream_headers(
+    incoming_headers: dict, endpoint: object, api_key: str
+) -> dict:
+    headers = {}
+    skip_headers = {"host", "content-length", "authorization", "x-api-key"}
+    for key, value in incoming_headers.items():
+        if key.lower() in skip_headers:
+            continue
+        headers[key] = value
+
+    header_name = getattr(endpoint, "auth_header_name", "Authorization") or "Authorization"
+    header_prefix = getattr(endpoint, "auth_header_prefix", "Bearer") or ""
+    if header_prefix:
+        headers[header_name] = f"{header_prefix} {api_key}"
+    else:
+        headers[header_name] = api_key
+
+    # 处理扩展字段：extra_headers
+    extra_headers_json = getattr(endpoint, "extra_headers", None)
+    if extra_headers_json:
+        try:
+            extra_headers = json.loads(extra_headers_json)
+            if isinstance(extra_headers, dict):
+                for key, value in extra_headers.items():
+                    headers[key] = str(value)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 处理扩展字段：extra_cookies
+    extra_cookies = getattr(endpoint, "extra_cookies", None)
+    if extra_cookies:
+        existing_cookie = headers.get("Cookie", "")
+        if existing_cookie:
+            headers["Cookie"] = f"{existing_cookie}; {extra_cookies}"
+        else:
+            headers["Cookie"] = extra_cookies
+
+    return headers
+
+
+def _get_agent_name(endpoint: object) -> str | None:
+    name = getattr(endpoint, "agent_node", None)
+    if not name:
+        return None
+    trimmed = str(name).strip()
+    return trimmed or None
+
+
+def _build_target_url(
+    base_url: str, request: Request, path_prefix: str | None = None, endpoint: object | None = None
+) -> str:
+    base = base_url.rstrip("/")
+    path = request.url.path
+    if path_prefix and path.startswith(path_prefix):
+        path = path[len(path_prefix) :]
+        if not path.startswith("/"):
+            path = f"/{path}"
+
+    # 如果 endpoint 配置了自定义 url_path_suffix，则使用它替代默认路径
+    url_path_suffix = None
+    if endpoint is not None:
+        url_path_suffix = getattr(endpoint, "url_path_suffix", None)
+
+    if url_path_suffix:
+        # 使用自定义后缀路径
+        path = url_path_suffix if url_path_suffix.startswith("/") else f"/{url_path_suffix}"
+    else:
+        # 默认路径处理逻辑
+        if base.endswith("/v1") and path.startswith("/v1/"):
+            path = path[3:]
+
+    url = f"{base}{path}"
+
+    # 处理扩展字段：extra_query_params
+    if endpoint is not None:
+        extra_query_params_json = getattr(endpoint, "extra_query_params", None)
+        if extra_query_params_json:
+            try:
+                extra_query_params = json.loads(extra_query_params_json)
+                if isinstance(extra_query_params, dict) and extra_query_params:
+                    import urllib.parse
+                    query_parts = list(urllib.parse.parse_qsl(request.url.query))
+                    for key, value in extra_query_params.items():
+                        query_parts.append((str(key), str(value)))
+                    new_query = urllib.parse.urlencode(query_parts)
+                    url = f"{url}?{new_query}" if new_query else url
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    if request.url.query and "?" not in url:
+        url = f"{url}?{request.url.query}"
+    return url
+
+
+def _coerce_positive_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value if value > 0 else default
+    if isinstance(value, float):
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed.isdigit():
+            parsed = int(trimmed)
+            return parsed if parsed > 0 else default
+    return default
+
+
+def _parse_json_object(raw: object) -> dict[str, object] | None:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _extract_oauth_config(endpoint: object) -> dict[str, object] | None:
+    config = _parse_json_object(getattr(endpoint, "oauth_config", None))
+    if not config:
+        return None
+
+    token_url = str(config.get("token_url") or "").strip()
+    client_id = str(config.get("client_id") or "").strip()
+    client_secret = str(config.get("client_secret") or "").strip()
+    if not token_url or not client_id or not client_secret:
+        return None
+
+    normalized = dict(config)
+    normalized["token_url"] = token_url
+    normalized["client_id"] = client_id
+    normalized["client_secret"] = client_secret
+    return normalized
+
+
+def _oauth_cache_key(endpoint: object) -> str:
+    endpoint_id = getattr(endpoint, "id", "unknown")
+    return f"{OAUTH_CACHE_PREFIX}:{endpoint_id}:token"
+
+
+def _oauth_lock_key(endpoint: object) -> str:
+    endpoint_id = getattr(endpoint, "id", "unknown")
+    return f"{OAUTH_CACHE_PREFIX}:{endpoint_id}:lock"
+
+
+def _decode_cached_oauth_token(raw: str) -> tuple[str, int] | None:
+    parsed = _parse_json_object(raw)
+    if not parsed:
+        return None
+
+    access_token = parsed.get("access_token")
+    expires_at = parsed.get("expires_at")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None
+    if not isinstance(expires_at, int):
+        return None
+    return access_token.strip(), expires_at
+
+
+def _is_oauth_token_expiring(expires_at: int, refresh_leeway_seconds: int) -> bool:
+    return expires_at - int(time.time()) <= refresh_leeway_seconds
+
+
+async def _read_cached_oauth_token(
+    redis: object,
+    cache_key: str,
+    refresh_leeway_seconds: int,
+) -> str | None:
+    cached_value = await redis.get(cache_key)
+    if not cached_value:
+        return None
+    if not isinstance(cached_value, str):
+        return None
+
+    decoded = _decode_cached_oauth_token(cached_value)
+    if not decoded:
+        return None
+    access_token, expires_at = decoded
+    if _is_oauth_token_expiring(expires_at, refresh_leeway_seconds):
+        return None
+    return access_token
+
+
+def _build_oauth_request_form(config: dict[str, object]) -> dict[str, str]:
+    form = {
+        "grant_type": str(config.get("grant_type") or "client_credentials"),
+        "client_id": str(config["client_id"]),
+        "client_secret": str(config["client_secret"]),
+    }
+
+    scope = config.get("scope")
+    if scope is not None and str(scope).strip():
+        form["scope"] = str(scope).strip()
+
+    audience = config.get("audience")
+    if audience is not None and str(audience).strip():
+        form["audience"] = str(audience).strip()
+
+    resource = config.get("resource")
+    if resource is not None and str(resource).strip():
+        form["resource"] = str(resource).strip()
+
+    return form
+
+
+async def _fetch_oauth_token(
+    http_client: object,
+    config: dict[str, object],
+) -> tuple[str, int]:
+    token_url = str(config["token_url"])
+    form = _build_oauth_request_form(config)
+    response = await http_client.post(
+        token_url,
+        data=form,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        if response.status_code >= 400:
+            raise RuntimeError(f"OAuth token request failed with status {response.status_code}")
+        payload = response.json()
+    finally:
+        await response.aclose()
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("OAuth token response must be a JSON object")
+
+    access_token = payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise RuntimeError("OAuth token response missing access_token")
+
+    expires_at_raw = payload.get("expires_at")
+    if isinstance(expires_at_raw, (int, float)):
+        expires_at = int(expires_at_raw)
+    else:
+        expires_in_default = _coerce_positive_int(
+            config.get("default_expires_in_seconds"),
+            DEFAULT_OAUTH_EXPIRES_IN_SECONDS,
+        )
+        expires_in = _coerce_positive_int(payload.get("expires_in"), expires_in_default)
+        expires_at = int(time.time()) + expires_in
+
+    return access_token.strip(), expires_at
+
+
+async def _write_cached_oauth_token(
+    redis: object,
+    cache_key: str,
+    access_token: str,
+    expires_at: int,
+) -> None:
+    ttl_seconds = max(1, expires_at - int(time.time()))
+    payload = json.dumps({"access_token": access_token, "expires_at": expires_at})
+    await redis.set(cache_key, payload, ex=ttl_seconds)
+
+
+async def _wait_for_oauth_token(
+    redis: object,
+    cache_key: str,
+    refresh_leeway_seconds: int,
+) -> str | None:
+    for _ in range(OAUTH_LOCK_WAIT_ROUNDS):
+        cached_token = await _read_cached_oauth_token(
+            redis, cache_key, refresh_leeway_seconds
+        )
+        if cached_token:
+            return cached_token
+        await asyncio.sleep(OAUTH_LOCK_WAIT_STEP_SECONDS)
+    return None
+
+
+async def _resolve_oauth_access_token(
+    endpoint: object,
+    redis: object,
+    http_client: object,
+    *,
+    force_refresh: bool = False,
+) -> str | None:
+    config = _extract_oauth_config(endpoint)
+    if not config:
+        return None
+
+    refresh_leeway_seconds = _coerce_positive_int(
+        config.get("refresh_leeway_seconds"),
+        DEFAULT_OAUTH_REFRESH_LEEWAY_SECONDS,
+    )
+    lock_ttl_seconds = _coerce_positive_int(
+        config.get("lock_ttl_seconds"),
+        DEFAULT_OAUTH_LOCK_TTL_SECONDS,
+    )
+
+    cache_key = _oauth_cache_key(endpoint)
+    lock_key = _oauth_lock_key(endpoint)
+
+    if not force_refresh:
+        cached_token = await _read_cached_oauth_token(
+            redis, cache_key, refresh_leeway_seconds
+        )
+        if cached_token:
+            return cached_token
+
+    has_lock = await redis.set(lock_key, "1", ex=lock_ttl_seconds, nx=True)
+    if not has_lock:
+        cached_token = await _wait_for_oauth_token(
+            redis, cache_key, refresh_leeway_seconds
+        )
+        if cached_token:
+            return cached_token
+        has_lock = await redis.set(lock_key, "1", ex=lock_ttl_seconds, nx=True)
+        if not has_lock:
+            raise RuntimeError("OAuth token refresh lock timeout")
+
+    try:
+        if not force_refresh:
+            cached_token = await _read_cached_oauth_token(
+                redis, cache_key, refresh_leeway_seconds
+            )
+            if cached_token:
+                return cached_token
+
+        access_token, expires_at = await _fetch_oauth_token(http_client, config)
+        await _write_cached_oauth_token(redis, cache_key, access_token, expires_at)
+        return access_token
+    finally:
+        await redis.delete(lock_key)
+
+
+async def _apply_oauth_access_token(
+    headers: dict[str, str],
+    endpoint: object,
+    redis: object,
+    http_client: object,
+    *,
+    force_refresh: bool = False,
+) -> tuple[dict[str, str], bool]:
+    access_token = await _resolve_oauth_access_token(
+        endpoint,
+        redis,
+        http_client,
+        force_refresh=force_refresh,
+    )
+    if not access_token:
+        return headers, False
+
+    header_name = getattr(endpoint, "auth_header_name", "Authorization") or "Authorization"
+    header_prefix = getattr(endpoint, "auth_header_prefix", "Bearer") or ""
+    if header_prefix:
+        headers[header_name] = f"{header_prefix} {access_token}"
+    else:
+        headers[header_name] = access_token
+    return headers, True
+
+
+def _filter_response_headers(headers: dict) -> dict:
+    excluded = {
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "content-type",
+    }
+    return {key: value for key, value in headers.items() if key.lower() not in excluded}
+
+
+def _build_debug_headers(
+    request_id: str,
+    trace_id: str,
+    candidate: RouteCandidate,
+    model_alias: str,
+) -> dict:
+    return {
+        "x-request-id": request_id,
+        "x-trace-id": trace_id,
+        "x-endpoint-id": str(candidate.endpoint.id),
+        "x-endpoint-name": candidate.endpoint.name,
+        "x-api-key-id": str(candidate.api_key.id),
+        "x-model-alias": model_alias,
+        "x-real-model": candidate.real_model,
+    }
+
+
+def _merge_headers(base: dict, extra: dict) -> dict:
+    merged = dict(base)
+    merged.update(extra)
+    sanitized: dict[str, str] = {}
+    for key, value in merged.items():
+        try:
+            key_text = str(key)
+            value_text = str(value)
+            key_text.encode("latin-1")
+            value_text.encode("latin-1")
+        except UnicodeEncodeError:
+            continue
+        sanitized[key_text] = value_text
+    return sanitized
+
+
+async def _stream_response(
+    response,
+    request_id: str,
+    trace_id: str,
+    model_alias: str,
+    endpoint_id: int,
+    api_key_id: int,
+    rule_group: str,
+    status_code: int,
+    latency_ms: int,
+    request_start: float,
+    dump_rule: RoutingRule | None = None,
+    dump_endpoint_name: str | None = None,
+    dump_request_body: bytes | None = None,
+    dump_session_id: str | None = None,
+    dump_request_path: str | None = None,
+) -> AsyncGenerator[bytes, None]:
+    buffer = ""
+    usage_payload = None
+    first_data_at: float | None = None
+    chunks: list[bytes] = []
+    try:
+        async for chunk in response.aiter_bytes():
+            if chunk:
+                chunks.append(chunk)
+                buffer, usage_payload, data_seen = _inspect_stream_chunk(
+                    buffer, usage_payload, chunk
+                )
+                if data_seen and first_data_at is None:
+                    first_data_at = time.perf_counter()
+            yield chunk
+    finally:
+        stream_end = time.perf_counter()
+        await response.aclose()
+        ttft_ms = (
+            int((first_data_at - request_start) * 1000)
+            if first_data_at is not None
+            else None
+        )
+        prompt_tokens, completion_tokens, total_tokens = extract_usage(usage_payload)
+        tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
+        resolved_latency_ms = ttft_ms if ttft_ms is not None else latency_ms
+        metrics = RequestMetrics(
+            request_id=request_id,
+            trace_id=trace_id,
+            model_alias=model_alias,
+            endpoint_id=endpoint_id,
+            api_key_id=api_key_id,
+            rule_group=rule_group,
+            status_code=status_code,
+            latency_ms=resolved_latency_ms,
+            ttft_ms=ttft_ms,
+            tps=tps,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        asyncio.create_task(write_request_log(metrics))
+        if dump_rule is not None and dump_endpoint_name:
+            asyncio.create_task(
+                _dump_proxy_record(
+                    dump_rule,
+                    request_id,
+                    trace_id,
+                    dump_endpoint_name,
+                    model_alias,
+                    dump_request_body or b"",
+                    b"".join(chunks),
+                    status_code,
+                    session_id=dump_session_id,
+                    request_path=dump_request_path,
+                )
+            )
+
+
+def _calculate_tps(
+    first_data_at: float | None, stream_end: float, completion_tokens: int | None
+) -> float | None:
+    if first_data_at is None or completion_tokens is None:
+        return None
+    if completion_tokens <= 0:
+        return None
+    duration = stream_end - first_data_at
+    if duration <= 0:
+        return None
+    return completion_tokens / duration
+
+
+def _inspect_stream_chunk(
+    buffer: str, usage_payload: dict | None, chunk: bytes
+) -> tuple[str, dict | None, bool]:
+    try:
+        text = chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        return buffer, usage_payload, False
+
+    buffer += text
+    lines = buffer.split("\n")
+    buffer = lines.pop()
+    data_seen = False
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        data_seen = True
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if "usage" in payload:
+            usage_payload = payload
+    return buffer, usage_payload, data_seen
+

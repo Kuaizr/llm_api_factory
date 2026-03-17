@@ -314,7 +314,7 @@ export const RouterLab = () => {
       if (ruleGroup) {
         headers["X-Rule-Group"] = ruleGroup;
       }
-      const response = await fetch(`${apiBase}/v1/chat/completions`, {
+      const response = await fetch(`${apiBase}/openai/v1/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({

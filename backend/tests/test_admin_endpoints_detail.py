@@ -109,9 +109,52 @@ async def test_admin_endpoints_detail_includes_keys(monkeypatch: pytest.MonkeyPa
     assert payload
     assert payload[0]["model_count"] == 1
     assert payload[0]["keys"][0]["name"] == "Main"
+    assert payload[0]["keys"][0]["rule_group"] == "default"
     assert payload[0]["is_active"] is True
     assert payload[0]["latency"] == 120
     assert payload[0]["uptime"] == 50.0
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoint_accepts_disable_probe_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/admin/endpoints",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "name": "OpenAI",
+                "base_url": "https://api.openai.com/v1",
+                "provider": "openai",
+                "probe_interval_seconds": -1,
+                "is_active": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["probe_interval_seconds"] == -1
 
     await session.close()
     await engine.dispose()
@@ -175,8 +218,10 @@ async def test_manual_probe_records_success_status(monkeypatch: pytest.MonkeyPat
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload
-    assert payload[0]["model_alias"] == "gpt-4o-mini"
+    assert payload["probe_status"] == "success"
+    assert payload["probe_status_code"] == 200
+    assert payload["discovered_models"] == ["gpt-4o-mini"]
+    assert payload["manual_models"] == []
 
     probe = await probe_store.read(api_key.id)
     assert probe is not None
@@ -248,7 +293,12 @@ async def test_manual_probe_records_failure_status(monkeypatch: pytest.MonkeyPat
             headers={"Authorization": "Bearer token"},
         )
 
-    assert response.status_code == 502
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["probe_status"] == "failure"
+    assert payload["probe_status_code"] == 503
+    assert payload["discovered_models"] == []
+    assert "不支持 /v1/models" in (payload["probe_message"] or "")
 
     probe = await probe_store.read(api_key.id)
     assert probe is not None
@@ -258,6 +308,102 @@ async def test_manual_probe_records_failure_status(monkeypatch: pytest.MonkeyPat
     breaker = CircuitBreaker(redis, settings=settings)
     breaker_status = await breaker.get_status(api_key.id)
     assert breaker_status.state == "open"
+
+    await upstream_client.aclose()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_probe_anthropic_uses_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="Anthropic",
+        base_url="https://api.anthropic.com/v1",
+        provider="anthropic",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-anthropic", is_active=True)
+    session.add(api_key)
+    session.add(
+        ModelMap(
+            endpoint_id=endpoint.id,
+            model_alias="claude-3-5-haiku-latest",
+            real_model="claude-3-5-haiku-latest",
+        )
+    )
+    await session.commit()
+    await session.refresh(api_key)
+
+    settings = Settings(
+        master_auth_token="token",
+        circuit_breaker_failures=1,
+        circuit_breaker_ttl_seconds=90,
+    )
+    redis = MemoryRedis()
+    probe_store = HealthProbeStore(redis)
+    captured_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        return httpx.Response(200, json={"id": "msg_1", "type": "message"})
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_redis():
+        return redis
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/probe",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    response_payload = response.json()
+    assert response_payload["probe_status"] == "success"
+    assert response_payload["probe_status_code"] == 200
+    assert response_payload["discovered_models"] == []
+    assert len(response_payload["manual_models"]) == 1
+    assert response_payload["manual_models"][0]["model_alias"] == "claude-3-5-haiku-latest"
+    assert "不支持 /v1/models" in (response_payload["probe_message"] or "")
+
+    assert captured_requests
+    sent_request = captured_requests[0]
+    assert sent_request.method == "POST"
+    assert sent_request.url.path == "/v1/messages"
+    sent_payload = sent_request.read().decode("utf-8")
+    assert "claude-3-5-haiku-latest" in sent_payload
+
+    probe = await probe_store.read(api_key.id)
+    assert probe is not None
+    assert probe.status == "success"
+    assert probe.status_code == 200
 
     await upstream_client.aclose()
     await session.close()

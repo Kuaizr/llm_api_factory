@@ -5,3 +5,104 @@
 body {
   font-family: "Inter", system-ui, -apple-system, sans-serif;
 }
+
+.theme-light .bg-\[\#050505\] {
+  background-color: #f3f4f6 !important;
+}
+
+.theme-light .bg-\[\#0a0a0a\]\/80 {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.theme-light .bg-\[\#0f1117\],
+.theme-light .bg-\[\#0f1117\]\/95,
+.theme-light .bg-gray-950,
+.theme-light .bg-gray-900,
+.theme-light .bg-gray-900\/50,
+.theme-light .bg-gray-900\/60,
+.theme-light .bg-gray-900\/30 {
+  background-color: #ffffff !important;
+}
+
+.theme-light .bg-black\/70 {
+  background-color: rgba(255, 255, 255, 0.72) !important;
+}
+
+.theme-light .border-gray-900\/20,
+.theme-light .border-gray-900\/30,
+.theme-light .border-gray-800,
+.theme-light .border-gray-700 {
+  border-color: #d1d5db !important;
+}
+
+.theme-light .text-white,
+.theme-light .text-gray-100,
+.theme-light .text-gray-200,
+.theme-light .text-gray-300,
+.theme-light .text-gray-400 {
+  color: #1f2937 !important;
+}
+
+.theme-light .text-gray-500,
+.theme-light .text-gray-600 {
+  color: #6b7280 !important;
+}
+
+.theme-light .hover\:bg-gray-800:hover,
+.theme-light .hover\:bg-gray-700:hover,
+.theme-light .hover\:bg-gray-900\/30:hover {
+  background-color: #f3f4f6 !important;
+}
+
+.theme-light .bg-gray-800,
+.theme-light .bg-gray-800\/40,
+.theme-light .bg-gray-800\/30,
+.theme-light .bg-gray-800\/20,
+.theme-light .bg-gray-700,
+.theme-light .bg-gray-600 {
+  background-color: #f3f4f6 !important;
+}
+
+.theme-light .bg-blue-900\/20,
+.theme-light .bg-blue-900\/10,
+.theme-light .bg-blue-600\/20,
+.theme-light .bg-purple-900\/20,
+.theme-light .bg-green-900\/20,
+.theme-light .bg-green-900\/10,
+.theme-light .bg-yellow-900\/20,
+.theme-light .bg-yellow-900\/10,
+.theme-light .bg-amber-900\/20 {
+  background-color: #eff6ff !important;
+}
+
+.theme-light .border-blue-700\/50,
+.theme-light .border-blue-800\/30,
+.theme-light .border-blue-600\/50,
+.theme-light .border-purple-700\/40,
+.theme-light .border-green-900\/30,
+.theme-light .border-yellow-900\/30,
+.theme-light .border-yellow-600\/50,
+.theme-light .border-gray-600 {
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .text-blue-500,
+.theme-light .text-blue-400,
+.theme-light .text-blue-300,
+.theme-light .text-purple-500,
+.theme-light .text-purple-400,
+.theme-light .text-purple-300,
+.theme-light .text-green-500,
+.theme-light .text-green-400,
+.theme-light .text-green-300,
+.theme-light .text-yellow-500,
+.theme-light .text-yellow-400,
+.theme-light .text-yellow-300,
+.theme-light .text-yellow-200\/60,
+.theme-light .text-amber-400 {
+  color: #1d4ed8 !important;
+}
+
+.theme-light .hover\:text-white:hover {
+  color: #111827 !important;
+}

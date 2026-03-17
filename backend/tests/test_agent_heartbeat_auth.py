@@ -19,14 +19,14 @@ class AgentStub:
     name: str
     region: str | None
     endpoint_url: str | None
+    is_active: bool
+    last_seen_at: datetime | None
+    auth_token_hash: str | None
     supports_gpt: bool | None = None
     supports_gemini: bool | None = None
     supports_claude: bool | None = None
     probe_latency_ms: int | None = None
     probe_checked_at: datetime | None = None
-    is_active: bool
-    last_seen_at: datetime | None
-    auth_token_hash: str | None
 
 
 class FakeSession:
