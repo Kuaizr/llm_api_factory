@@ -351,7 +351,7 @@ export const EditEndpointModal = ({
   );
 };
 
-const KeyConfigModal = ({
+export const KeyConfigModal = ({
   keyData,
   endpointId,
   authToken,

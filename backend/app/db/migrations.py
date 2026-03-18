@@ -13,6 +13,7 @@ def _is_ignorable_error(exc: Exception) -> bool:
         "duplicate key",
         "already an index",
         "relation",
+        "no such table: rule_access_keys",
     )
     return any(token in message for token in ignored_tokens)
 
@@ -51,19 +52,33 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
             SELECT 1 FROM routing_rules WHERE group_name = 'default'
         )
         """,
+        # 新建 factory_access_keys 表
         """
-        CREATE TABLE IF NOT EXISTS rule_access_keys (
+        CREATE TABLE IF NOT EXISTS factory_access_keys (
             id INTEGER PRIMARY KEY,
-            rule_id INTEGER NOT NULL,
             name VARCHAR(128),
             key VARCHAR(128) NOT NULL UNIQUE,
+            rule_groups_json TEXT DEFAULT '[]',
             is_active BOOLEAN DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(rule_id) REFERENCES routing_rules(id)
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """,
-        "CREATE INDEX IF NOT EXISTS ix_rule_access_keys_rule_id ON rule_access_keys(rule_id)",
-        "CREATE INDEX IF NOT EXISTS ix_rule_access_keys_key ON rule_access_keys(key)",
+        "CREATE INDEX IF NOT EXISTS ix_factory_access_keys_key ON factory_access_keys(key)",
+        # 迁移旧 rule_access_keys 数据到 factory_access_keys
+        """
+        INSERT INTO factory_access_keys (name, key, rule_groups_json, is_active, created_at)
+        SELECT
+            old.name,
+            old.key,
+            json_array(rr.group_name),
+            old.is_active,
+            old.created_at
+        FROM rule_access_keys AS old
+        JOIN routing_rules AS rr ON rr.id = old.rule_id
+        WHERE NOT EXISTS (SELECT 1 FROM factory_access_keys WHERE key = old.key)
+        """,
+        # 清理旧表
+        "DROP TABLE IF EXISTS rule_access_keys",
         """
         UPDATE api_keys
         SET rule_groups_json = '["default"]'

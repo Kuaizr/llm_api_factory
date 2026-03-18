@@ -180,14 +180,6 @@ class RoutingRuleUpdate(BaseModel):
     target_key_ids: list[int] | None = None
 
 
-class RuleAccessKeyPreviewOut(BaseModel):
-    id: int
-    name: str | None
-    key_preview: str
-    is_active: bool
-    created_at: datetime
-
-
 class RoutingRuleOut(BaseModel):
     id: int
     model_pattern: str
@@ -198,7 +190,6 @@ class RoutingRuleOut(BaseModel):
     dump_enabled: bool = False
     dump_path: str | None = None
     target_key_ids: list[int]
-    access_keys: list[RuleAccessKeyPreviewOut] = []
     request_count: int = 0
     total_tokens: int = 0
     avg_ttft_ms: int | None = None
@@ -206,6 +197,38 @@ class RoutingRuleOut(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class FactoryAccessKeyCreate(BaseModel):
+    name: str | None = None
+    rule_groups: list[str] = Field(default_factory=lambda: ["default"])
+
+
+class FactoryAccessKeyUpdate(BaseModel):
+    name: str | None = None
+    rule_groups: list[str] | None = None
+    is_active: bool | None = None
+
+
+class FactoryAccessKeyOut(BaseModel):
+    id: int
+    name: str | None
+    key_preview: str
+    key: str | None = None
+    rule_groups: list[str] = Field(default_factory=list)
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FactoryAccessKeyIssueOut(BaseModel):
+    id: int
+    name: str | None
+    key: str
+    rule_groups: list[str] = Field(default_factory=list)
+    is_active: bool
+    created_at: datetime
 
 
 class RuleGroupEligibilityCheck(BaseModel):

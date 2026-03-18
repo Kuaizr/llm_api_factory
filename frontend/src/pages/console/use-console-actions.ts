@@ -24,8 +24,6 @@ type UseConsoleActionsOptions = {
   setManageKeysEndpoint: Dispatch<SetStateAction<Endpoint | null>>;
   editingRule: RoutingRule | undefined | null;
   setEditingRule: Dispatch<SetStateAction<RoutingRule | undefined | null>>;
-  manageRuleAccessRule: RoutingRule | null;
-  setManageRuleAccessRule: Dispatch<SetStateAction<RoutingRule | null>>;
   probeAliasEdits: Record<number, string>;
   setProbeEndpoint: Dispatch<SetStateAction<Endpoint | null>>;
   setProbeModels: Dispatch<SetStateAction<ModelMap[]>>;
@@ -51,8 +49,6 @@ export const useConsoleActions = ({
   setManageKeysEndpoint,
   editingRule,
   setEditingRule,
-  manageRuleAccessRule,
-  setManageRuleAccessRule,
   probeAliasEdits,
   setProbeEndpoint,
   setProbeModels,
@@ -156,29 +152,34 @@ export const useConsoleActions = ({
     setEditingEndpoint(null);
   };
 
-  const handleCreateKey = async (payload: Partial<ApiKey> & { key?: string }) => {
-    if (!manageKeysEndpoint) return;
-    const response = await fetch(
-      `${apiBase}/admin/endpoints/${manageKeysEndpoint.id}/keys`,
-      {
-        method: "POST",
-        headers: buildHeaders(token, true),
-        body: JSON.stringify({
-          key: payload.key,
-          name: payload.name,
-          rule_group: payload.rule_group || "default",
-          rule_groups: payload.rule_groups,
-          rpm_limit: payload.rpm_limit,
-          daily_limit: payload.daily_limit,
-          used_today: payload.used_today ?? 0,
-          total_usage: 0,
-          is_active: payload.is_active ?? true,
-        }),
-      }
-    );
+  const handleCreateKeyForEndpoint = async (
+    endpointId: number,
+    payload: Partial<ApiKey> & { key?: string }
+  ) => {
+    if (!isAdmin || endpointId <= 0) return;
+    const response = await fetch(`${apiBase}/admin/endpoints/${endpointId}/keys`, {
+      method: "POST",
+      headers: buildHeaders(token, true),
+      body: JSON.stringify({
+        key: payload.key,
+        name: payload.name,
+        rule_group: payload.rule_group || "default",
+        rule_groups: payload.rule_groups,
+        rpm_limit: payload.rpm_limit,
+        daily_limit: payload.daily_limit,
+        used_today: payload.used_today ?? 0,
+        total_usage: 0,
+        is_active: payload.is_active ?? true,
+      }),
+    });
     if (response.ok) {
       await refreshKeys();
     }
+  };
+
+  const handleCreateKey = async (payload: Partial<ApiKey> & { key?: string }) => {
+    if (!manageKeysEndpoint) return;
+    await handleCreateKeyForEndpoint(manageKeysEndpoint.id, payload);
   };
 
   const handleUpdateKey = async (
@@ -415,9 +416,6 @@ export const useConsoleActions = ({
     if (editingRule?.id === rule.id) {
       setEditingRule(null);
     }
-    if (manageRuleAccessRule?.id === rule.id) {
-      setManageRuleAccessRule(null);
-    }
   };
 
   const handleDeleteAgent = async (agent: AgentNode) => {
@@ -469,6 +467,7 @@ export const useConsoleActions = ({
     resetProbeState,
     handleAgentBootstrap,
     handleSaveEndpoint,
+    handleCreateKeyForEndpoint,
     handleCreateKey,
     handleUpdateKey,
     handleDeleteKey,

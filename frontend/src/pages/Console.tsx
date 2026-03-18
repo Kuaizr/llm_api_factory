@@ -1,11 +1,12 @@
-import { ChevronDown, LogIn, LogOut, Moon, Server, Settings, Sun } from "lucide-react";
+import { ChevronDown, Key, LogIn, LogOut, Moon, Server, Settings, Sun } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentDeployModal, AgentsView } from "@/pages/console/agents-panel";
 import { EditEndpointModal, ManageKeysModal } from "@/pages/console/endpoint-modals";
 import { EndpointsPanel } from "@/pages/console/endpoints-panel";
+import { FactoryKeysPanel } from "@/pages/console/factory-keys-panel";
 import { ProbeModelsModal } from "@/pages/console/probe-models-modal";
-import { RuleAccessKeysModal, RuleEditorModal, RulesView } from "@/pages/console/rules-panel";
+import { RuleEditorModal, RulesView } from "@/pages/console/rules-panel";
 import { SettingsView } from "@/pages/console/settings-panel";
 import {
   consoleThemeStorageKey,
@@ -25,7 +26,7 @@ export { AgentsView } from "@/pages/console/agents-panel";
 
 export const Console = () => {
   const [activeTab, setActiveTab] = useState<
-    "endpoints" | "agents" | "rules" | "usage" | "settings"
+    "endpoints" | "agents" | "factory-keys" | "rules" | "usage" | "settings"
   >("endpoints");
   const {
     endpoints,
@@ -62,9 +63,6 @@ export const Console = () => {
     Endpoint | undefined | null
   >(null);
   const [editingRule, setEditingRule] = useState<RoutingRule | undefined | null>(
-    null
-  );
-  const [manageRuleAccessRule, setManageRuleAccessRule] = useState<RoutingRule | null>(
     null
   );
   const [probeEndpoint, setProbeEndpoint] = useState<Endpoint | null>(null);
@@ -128,10 +126,11 @@ export const Console = () => {
 
   const isLight = theme === "light";
 
-  const visibleTabs: Array<{ id: typeof activeTab; label: string }> = isAdmin
+  const visibleTabs: Array<{ id: typeof activeTab; label: string; icon?: typeof Key }> = isAdmin
     ? [
         { id: "endpoints", label: "端点管理" },
         { id: "agents", label: "节点管理" },
+        { id: "factory-keys", label: "管理key", icon: Key },
         { id: "rules", label: "路由规则" },
         { id: "usage", label: "流量统计" },
       ]
@@ -152,13 +151,6 @@ export const Console = () => {
     }
   }, [endpoints, manageKeysEndpoint]);
 
-  useEffect(() => {
-    if (!manageRuleAccessRule) return;
-    const updated = rules.find((item) => item.id === manageRuleAccessRule.id);
-    if (updated) {
-      setManageRuleAccessRule(updated);
-    }
-  }, [rules, manageRuleAccessRule]);
 
   useEffect(() => {
     if (
@@ -215,8 +207,6 @@ export const Console = () => {
     setManageKeysEndpoint,
     editingRule,
     setEditingRule,
-    manageRuleAccessRule,
-    setManageRuleAccessRule,
     probeAliasEdits,
     setProbeEndpoint,
     setProbeModels,
@@ -259,12 +249,13 @@ export const Console = () => {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`text-sm font-medium transition-colors h-full border-b-2 pt-1 px-1 ${
+                className={`text-sm font-medium transition-colors h-full border-b-2 pt-1 px-1 inline-flex items-center gap-1.5 ${
                   activeTab === tab.id
                     ? "text-white border-blue-500"
                     : "text-gray-500 border-transparent hover:text-gray-300"
                 }`}
               >
+                {tab.icon && <tab.icon size={14} />}
                 {tab.label}
               </button>
             ))}
@@ -383,13 +374,19 @@ export const Console = () => {
             isAdmin={isAdmin}
           />
         )}
+        {activeTab === "factory-keys" && (
+          <FactoryKeysPanel
+            isAdmin={isAdmin}
+            authToken={token}
+            ruleGroups={availableRuleGroups}
+          />
+        )}
         {activeTab === "rules" && (
           <RulesView
             rules={rules}
             isAdmin={isAdmin}
             onEdit={(rule) => setEditingRule(rule ?? undefined)}
             onDelete={handleDeleteRule}
-            onManageAccessKeys={(rule) => setManageRuleAccessRule(rule)}
           />
         )}
         {activeTab === "usage" && (
@@ -452,15 +449,6 @@ export const Console = () => {
           authToken={token}
           onClose={() => setEditingRule(null)}
           onSave={handleSaveRule}
-        />
-      )}
-      {manageRuleAccessRule && (
-        <RuleAccessKeysModal
-          rule={manageRuleAccessRule}
-          isAdmin={isAdmin}
-          authToken={token}
-          onClose={() => setManageRuleAccessRule(null)}
-          onRulesRefresh={() => loadRules(token)}
         />
       )}
       {agentDeployOpen && (

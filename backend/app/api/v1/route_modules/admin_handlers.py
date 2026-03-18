@@ -11,12 +11,10 @@ from app.api.v1.route_helpers import (
     _build_endpoint_detail,
     _build_endpoint_out,
     _build_routing_rule_out,
-    _build_rule_access_key_preview,
     _deserialize_rule_config,
     _ensure_default_rule_group,
     _ensure_rule_group_available,
     _is_default_rule_group,
-    _issue_rule_access_key,
     _mask_key,
     _normalize_api_key_usage,
     _parse_iso_datetime,
@@ -35,6 +33,10 @@ from app.api.v1.route_models import (
     EndpointOut,
     EndpointProbeOut,
     EndpointUpdate,
+    FactoryAccessKeyCreate,
+    FactoryAccessKeyIssueOut,
+    FactoryAccessKeyOut,
+    FactoryAccessKeyUpdate,
     ModelMapCreate,
     ModelMapOut,
     ModelMapUpdate,
@@ -42,18 +44,13 @@ from app.api.v1.route_models import (
     RoutingRuleCreate,
     RoutingRuleOut,
     RoutingRuleUpdate,
-    RuleAccessKeyCreate,
-    RuleAccessKeyIssueOut,
-    RuleAccessKeyOut,
-    RuleAccessKeyPreviewOut,
-    RuleAccessKeyUpdate,
     RuleGroupEligibilityCheck,
     RuleGroupEligibilityOut,
 )
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
-from app.db.models import APIKey, Endpoint, ModelMap, RequestLog, RoutingRule, RuleAccessKey
+from app.db.models import APIKey, Endpoint, FactoryAccessKey, ModelMap, RequestLog, RoutingRule
 from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
@@ -986,14 +983,6 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
         select(RoutingRule).order_by(RoutingRule.priority.desc(), RoutingRule.id)
     )
     rules = result.scalars().all()
-    access_result = await session.execute(
-        select(RuleAccessKey).order_by(RuleAccessKey.rule_id, RuleAccessKey.id)
-    )
-    access_keys_by_rule: dict[int, list[RuleAccessKeyPreviewOut]] = {}
-    for item in access_result.scalars().all():
-        access_keys_by_rule.setdefault(item.rule_id, []).append(
-            _build_rule_access_key_preview(item)
-        )
 
     log_result = await session.execute(
         select(RequestLog, APIKey).join(APIKey, RequestLog.api_key_id == APIKey.id)
@@ -1041,7 +1030,6 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
                 rule,
                 target_key_ids=target_key_ids,
                 strategy=strategy,
-                access_keys=access_keys_by_rule.get(rule.id, []),
                 request_count=request_count,
                 total_tokens=total_tokens,
                 avg_ttft_ms=avg_ttft_ms,
@@ -1081,7 +1069,6 @@ async def create_rule(
         rule,
         target_key_ids=target_key_ids,
         strategy=strategy,
-        access_keys=[],
     )
 
 
@@ -1160,19 +1147,10 @@ async def update_rule(
     await session.commit()
     await session.refresh(rule)
     target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
-    access_result = await session.execute(
-        select(RuleAccessKey)
-        .where(RuleAccessKey.rule_id == rule.id)
-        .order_by(RuleAccessKey.id)
-    )
-    access_keys = [
-        _build_rule_access_key_preview(item) for item in access_result.scalars().all()
-    ]
     return _build_routing_rule_out(
         rule,
         target_key_ids=target_key_ids,
         strategy=strategy,
-        access_keys=access_keys,
     )
 
 
@@ -1201,112 +1179,118 @@ async def delete_rule(
     return DeleteResponse()
 
 
-async def list_rule_access_keys(
-    rule_id: int, session: AsyncSession = Depends(get_session)
-) -> list[RuleAccessKeyOut]:
-    rule = await session.get(RoutingRule, rule_id)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Routing rule not found")
+# ============ Factory Access Keys (对外访问 Key) ============
+
+
+async def list_factory_access_keys(
+    session: AsyncSession = Depends(get_session),
+) -> list[FactoryAccessKeyOut]:
+    """列出所有对外访问 Key。"""
     result = await session.execute(
-        select(RuleAccessKey)
-        .where(RuleAccessKey.rule_id == rule_id)
-        .order_by(RuleAccessKey.id)
+        select(FactoryAccessKey).order_by(FactoryAccessKey.id.desc())
     )
+    items = result.scalars().all()
     return [
-        RuleAccessKeyOut(
+        FactoryAccessKeyOut(
             id=item.id,
-            rule_id=item.rule_id,
             name=item.name,
             key_preview=_mask_key(item.key),
             key=item.key,
+            rule_groups=item.rule_groups,
             is_active=item.is_active,
             created_at=item.created_at,
         )
-        for item in result.scalars().all()
+        for item in items
     ]
 
 
-async def create_rule_access_key(
-    rule_id: int,
-    payload: RuleAccessKeyCreate,
+async def create_factory_access_key(
+    payload: FactoryAccessKeyCreate,
     session: AsyncSession = Depends(get_session),
-) -> RuleAccessKeyIssueOut:
-    rule = await session.get(RoutingRule, rule_id)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Routing rule not found")
+) -> FactoryAccessKeyIssueOut:
+    """创建对外访问 Key。"""
+    import secrets
 
-    raw_key = _issue_rule_access_key()
-    item = RuleAccessKey(
-        rule_id=rule_id,
+    raw_key = f"fk-{secrets.token_urlsafe(24)}"
+    groups = payload.rule_groups or ["default"]
+    item = FactoryAccessKey(
         name=payload.name,
         key=raw_key,
         is_active=True,
     )
+    item.rule_groups = groups
     session.add(item)
     await session.commit()
     await session.refresh(item)
-    return RuleAccessKeyIssueOut(
+    return FactoryAccessKeyIssueOut(
         id=item.id,
-        rule_id=item.rule_id,
         name=item.name,
         key=raw_key,
+        rule_groups=item.rule_groups,
         is_active=item.is_active,
         created_at=item.created_at,
     )
 
 
-async def update_rule_access_key(
-    access_key_id: int,
-    payload: RuleAccessKeyUpdate,
+async def update_factory_access_key(
+    key_id: int,
+    payload: FactoryAccessKeyUpdate,
     session: AsyncSession = Depends(get_session),
-) -> RuleAccessKeyOut:
-    item = await session.get(RuleAccessKey, access_key_id)
+) -> FactoryAccessKeyOut:
+    """更新对外访问 Key。"""
+    item = await session.get(FactoryAccessKey, key_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Route access key not found")
+        raise HTTPException(status_code=404, detail="Factory access key not found")
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if "rule_groups" in data:
+        item.rule_groups = data.pop("rule_groups")
     for field, value in data.items():
         setattr(item, field, value)
     await session.commit()
     await session.refresh(item)
-    return RuleAccessKeyOut(
+    return FactoryAccessKeyOut(
         id=item.id,
-        rule_id=item.rule_id,
         name=item.name,
         key_preview=_mask_key(item.key),
         key=item.key,
+        rule_groups=item.rule_groups,
         is_active=item.is_active,
         created_at=item.created_at,
     )
 
 
-async def rotate_rule_access_key(
-    access_key_id: int, session: AsyncSession = Depends(get_session)
-) -> RuleAccessKeyIssueOut:
-    item = await session.get(RuleAccessKey, access_key_id)
+async def rotate_factory_access_key(
+    key_id: int, session: AsyncSession = Depends(get_session)
+) -> FactoryAccessKeyIssueOut:
+    """轮换对外访问 Key。"""
+    import secrets
+
+    item = await session.get(FactoryAccessKey, key_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Route access key not found")
-    raw_key = _issue_rule_access_key()
+        raise HTTPException(status_code=404, detail="Factory access key not found")
+    raw_key = f"fk-{secrets.token_urlsafe(24)}"
     item.key = raw_key
     await session.commit()
     await session.refresh(item)
-    return RuleAccessKeyIssueOut(
+    return FactoryAccessKeyIssueOut(
         id=item.id,
-        rule_id=item.rule_id,
         name=item.name,
         key=raw_key,
+        rule_groups=item.rule_groups,
         is_active=item.is_active,
         created_at=item.created_at,
     )
 
 
-async def delete_rule_access_key(
-    access_key_id: int, session: AsyncSession = Depends(get_session)
+async def delete_factory_access_key(
+    key_id: int, session: AsyncSession = Depends(get_session)
 ) -> DeleteResponse:
-    item = await session.get(RuleAccessKey, access_key_id)
+    """删除对外访问 Key。"""
+    item = await session.get(FactoryAccessKey, key_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Route access key not found")
+        raise HTTPException(status_code=404, detail="Factory access key not found")
     await session.delete(item)
     await session.commit()
     return DeleteResponse()

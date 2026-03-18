@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   Check,
-  Copy,
   Database,
   Edit2,
   GripVertical,
@@ -24,8 +23,6 @@ import {
   type ModelMap,
   type RoutingRule,
   type RoutingRuleSavePayload,
-  type RuleAccessKeyIssue,
-  type RuleAccessKeyItem,
 } from "./shared";
 
 export const RuleEditorModal = ({
@@ -640,13 +637,11 @@ export const RulesView = ({
   isAdmin,
   onEdit,
   onDelete,
-  onManageAccessKeys,
 }: {
   rules: RoutingRule[];
   isAdmin: boolean;
   onEdit: (rule?: RoutingRule) => void;
   onDelete: (rule: RoutingRule) => void;
-  onManageAccessKeys: (rule: RoutingRule) => void;
 }) => (
   <div className="space-y-6">
     <div className="flex justify-between items-center">
@@ -743,17 +738,14 @@ export const RulesView = ({
                     {formatTokens(rule.total_tokens ?? 0)}
                   </span>
                 </div>
-                <div className="flex items-center gap-2 col-span-2">
-                  <span className="text-gray-500">访问 Key</span>
-                  <span className="font-mono text-gray-200">
-                    {rule.access_keys?.length ?? 0}
-                  </span>
-                  {rule.dump_enabled && (
+                {rule.dump_enabled && (
+                  <div className="flex items-center gap-2 col-span-2">
+                    <span className="text-gray-500">Dump 路径</span>
                     <span className="text-[10px] text-purple-300 font-mono truncate max-w-[360px]">
                       {rule.dump_path || "未设置路径"}
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -767,14 +759,6 @@ export const RulesView = ({
             >
               {rule.is_active ? "Active" : "Inactive"}
             </div>
-            <button
-              onClick={() => onManageAccessKeys(rule)}
-              disabled={!isAdmin}
-              className="p-2 hover:bg-gray-800 rounded-lg text-blue-300 hover:text-white transition disabled:cursor-not-allowed disabled:opacity-50"
-              title="管理访问 Key"
-            >
-              <Key size={16} />
-            </button>
             <button
               onClick={() => onDelete(rule)}
               disabled={!isAdmin || isDefaultGroup}
@@ -800,306 +784,3 @@ export const RulesView = ({
     </div>
   </div>
 );
-
-export const RuleAccessKeysModal = ({
-  rule,
-  isAdmin,
-  authToken,
-  onClose,
-  onRulesRefresh,
-}: {
-  rule: RoutingRule;
-  isAdmin: boolean;
-  authToken: string | null;
-  onClose: () => void;
-  onRulesRefresh: () => Promise<void>;
-}) => {
-  const [keys, setKeys] = useState<RuleAccessKeyItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [newName, setNewName] = useState("");
-  const [issuedKey, setIssuedKey] = useState<string | null>(null);
-
-  const loadKeys = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch(
-        `${apiBase}/admin/rules/${rule.id}/access-keys`,
-        {
-          headers: buildHeaders(authToken),
-        }
-      );
-      if (!response.ok) {
-        setError("无法加载访问 Key 列表");
-        setKeys([]);
-        return;
-      }
-      const data = (await response.json()) as RuleAccessKeyItem[];
-      setKeys(data);
-    } catch {
-      setError("无法加载访问 Key 列表");
-      setKeys([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void loadKeys();
-  }, [rule.id, authToken]);
-
-  const handleCopy = (value: string | null) => {
-    if (!value) return;
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(value).catch(() => undefined);
-    }
-  };
-
-  const refreshRuleData = async () => {
-    await onRulesRefresh();
-    await loadKeys();
-  };
-
-  const issueKey = async () => {
-    if (!isAdmin) return;
-    setError(null);
-    const response = await fetch(`${apiBase}/admin/rules/${rule.id}/access-keys`, {
-      method: "POST",
-      headers: buildHeaders(authToken, true),
-      body: JSON.stringify({ name: newName.trim() || null }),
-    });
-    if (!response.ok) {
-      setError("创建访问 Key 失败");
-      return;
-    }
-    const data = (await response.json()) as RuleAccessKeyIssue;
-    setIssuedKey(data.key);
-    setNewName("");
-    await refreshRuleData();
-  };
-
-  const updateKey = async (
-    accessKeyId: number,
-    payload: { name?: string | null; is_active?: boolean }
-  ) => {
-    if (!isAdmin) return;
-    const response = await fetch(
-      `${apiBase}/admin/rules/access-keys/${accessKeyId}`,
-      {
-        method: "PATCH",
-        headers: buildHeaders(authToken, true),
-        body: JSON.stringify(payload),
-      }
-    );
-    if (!response.ok) {
-      setError("更新访问 Key 失败");
-      return;
-    }
-    await refreshRuleData();
-  };
-
-  const rotateKey = async (accessKeyId: number) => {
-    if (!isAdmin) return;
-    const response = await fetch(
-      `${apiBase}/admin/rules/access-keys/${accessKeyId}/rotate`,
-      {
-        method: "POST",
-        headers: buildHeaders(authToken),
-      }
-    );
-    if (!response.ok) {
-      setError("轮换访问 Key 失败");
-      return;
-    }
-    const data = (await response.json()) as RuleAccessKeyIssue;
-    setIssuedKey(data.key);
-    await refreshRuleData();
-  };
-
-  const removeKey = async (accessKeyId: number) => {
-    if (!isAdmin) return;
-    if (!window.confirm("确认删除该访问 Key 吗？")) {
-      return;
-    }
-    const response = await fetch(
-      `${apiBase}/admin/rules/access-keys/${accessKeyId}`,
-      {
-        method: "DELETE",
-        headers: buildHeaders(authToken),
-      }
-    );
-    if (!response.ok) {
-      setError("删除访问 Key 失败");
-      return;
-    }
-    await refreshRuleData();
-  };
-
-  return (
-    <div className="fixed inset-0 z-[170] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[860px] max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-        <div className="p-6 border-b border-gray-800 flex justify-between items-center">
-          <div>
-            <h3 className="text-lg font-bold text-white flex items-center gap-2">
-              <Key size={18} className="text-blue-400" />
-              路由访问 Key 管理
-            </h3>
-            <p className="text-xs text-gray-500 mt-1">
-              Rule #{rule.id} · {rule.model_pattern} · Group {rule.group_name}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white">
-            <XCircle size={20} />
-          </button>
-        </div>
-
-        <div className="p-6 flex-1 overflow-y-auto space-y-4">
-          <div className="flex items-center gap-2">
-            <input
-              value={newName}
-              onChange={(event) => setNewName(event.target.value)}
-              placeholder="可选备注名"
-              disabled={!isAdmin}
-              className="flex-1 bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none disabled:opacity-50"
-            />
-            <button
-              onClick={() => void issueKey()}
-              disabled={!isAdmin}
-              className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded disabled:opacity-50"
-            >
-              生成访问 Key
-            </button>
-            <button
-              onClick={() => void loadKeys()}
-              className="p-2 bg-gray-800 border border-gray-700 rounded text-gray-300 hover:text-white"
-              title="刷新"
-            >
-              <RefreshCw size={14} />
-            </button>
-          </div>
-
-          {issuedKey && (
-            <div className="p-3 rounded border border-green-700/40 bg-green-900/20">
-              <div className="flex items-center gap-2 text-green-300 text-sm mb-2">
-                <AlertTriangle size={14} />
-                原始 Key 仅展示一次，请立即保存。
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  value={issuedKey}
-                  readOnly
-                  className="flex-1 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-green-200 font-mono"
-                />
-                <button
-                  onClick={() => handleCopy(issuedKey)}
-                  className="px-2 py-1 text-xs text-green-300 border border-green-700/40 rounded hover:bg-green-800/30"
-                >
-                  <Copy size={12} />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {error && <div className="text-sm text-red-400">{error}</div>}
-
-          <table className="w-full text-left text-sm text-gray-400">
-            <thead className="bg-gray-900/50 text-gray-200 uppercase font-medium">
-              <tr>
-                <th className="px-4 py-3 rounded-l-lg">名称</th>
-                <th className="px-4 py-3">Key 预览</th>
-                <th className="px-4 py-3">状态</th>
-                <th className="px-4 py-3">创建时间</th>
-                <th className="px-4 py-3 rounded-r-lg text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/50">
-              {keys.map((item) => (
-                <tr key={item.id} className="hover:bg-gray-900/30 transition-colors">
-                  <td className="px-4 py-3">{item.name || "-"}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-300">
-                    {item.key_preview}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded border ${
-                        item.is_active
-                          ? "text-green-400 bg-green-900/20 border-green-900/30"
-                          : "text-gray-500 bg-gray-800 border-gray-700"
-                      }`}
-                    >
-                      {item.is_active ? "Active" : "Inactive"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-gray-500">
-                    {formatTimestamp(item.created_at)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="inline-flex items-center gap-2">
-                      <button
-                        onClick={() => handleCopy(item.key ?? null)}
-                        disabled={!item.key}
-                        className="p-1.5 hover:bg-gray-800 rounded text-green-300 transition disabled:opacity-40"
-                        title="复制完整 Key"
-                      >
-                        <Copy size={14} />
-                      </button>
-                      <button
-                        onClick={() => {
-                          const nextName = window.prompt(
-                            "输入新的备注名（留空表示清空）",
-                            item.name ?? ""
-                          );
-                          if (nextName === null) return;
-                          void updateKey(item.id, {
-                            name: nextName.trim() ? nextName.trim() : null,
-                          });
-                        }}
-                        disabled={!isAdmin}
-                        className="p-1.5 hover:bg-gray-800 rounded text-blue-300 transition disabled:opacity-50"
-                        title="重命名"
-                      >
-                        <Edit2 size={14} />
-                      </button>
-                      <button
-                        onClick={() =>
-                          void updateKey(item.id, { is_active: !item.is_active })
-                        }
-                        disabled={!isAdmin}
-                        className="px-2 py-1 text-xs border border-gray-700 rounded hover:bg-gray-800 disabled:opacity-50"
-                        title={item.is_active ? "禁用" : "启用"}
-                      >
-                        {item.is_active ? "禁用" : "启用"}
-                      </button>
-                      <button
-                        onClick={() => void rotateKey(item.id)}
-                        disabled={!isAdmin}
-                        className="p-1.5 hover:bg-gray-800 rounded text-yellow-300 transition disabled:opacity-50"
-                        title="轮换 Key"
-                      >
-                        <RotateCw size={14} />
-                      </button>
-                      <button
-                        onClick={() => void removeKey(item.id)}
-                        disabled={!isAdmin}
-                        className="p-1.5 hover:bg-gray-800 rounded text-red-400 transition disabled:opacity-50"
-                        title="删除"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {!loading && keys.length === 0 && (
-            <div className="text-sm text-gray-500">暂无访问 Key</div>
-          )}
-          {loading && <div className="text-sm text-gray-500">加载中...</div>}
-        </div>
-      </div>
-    </div>
-  );
-};

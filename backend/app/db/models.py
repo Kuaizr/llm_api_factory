@@ -141,24 +141,34 @@ class RoutingRule(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    access_keys: Mapped[list["RuleAccessKey"]] = relationship(
-        back_populates="rule", cascade="all, delete-orphan"
-    )
-
-
-class RuleAccessKey(Base):
-    __tablename__ = "rule_access_keys"
+class FactoryAccessKey(Base):
+    """对外访问 Key，支持绑定多个规则组。"""
+    __tablename__ = "factory_access_keys"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    rule_id: Mapped[int] = mapped_column(ForeignKey("routing_rules.id"), index=True)
     name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    rule_groups_json: Mapped[str] = mapped_column(Text, default="[]")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    rule: Mapped[RoutingRule] = relationship(back_populates="access_keys")
+    @property
+    def rule_groups(self) -> list[str]:
+        try:
+            return json.loads(self.rule_groups_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @rule_groups.setter
+    def rule_groups(self, value: list[str]) -> None:
+        normalized = list(dict.fromkeys([str(g).strip() for g in value if str(g).strip()]))
+        self.rule_groups_json = json.dumps(normalized, ensure_ascii=False)
+
+    def in_rule_group(self, group_name: str) -> bool:
+        target = str(group_name or "").strip().lower() or "default"
+        return any(g.lower() == target for g in self.rule_groups)
 
 
 class ModelMap(Base):

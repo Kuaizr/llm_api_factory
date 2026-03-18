@@ -7,11 +7,11 @@ from app.api.v1.route_models import (
     EndpointDetailOut,
     EndpointOut,
     EndpointProbeOut,
+    FactoryAccessKeyIssueOut,
+    FactoryAccessKeyOut,
     ModelMapOut,
     RequestLogOut,
     RoutingRuleOut,
-    RuleAccessKeyIssueOut,
-    RuleAccessKeyOut,
     RuleGroupEligibilityOut,
 )
 from app.api.v1.route_modules.admin_handlers import (
@@ -19,29 +19,29 @@ from app.api.v1.route_modules.admin_handlers import (
     create_api_key,
     create_endpoint,
     create_endpoint_key,
+    create_factory_access_key,
     create_model_map,
     create_rule,
-    create_rule_access_key,
     delete_api_key,
     delete_endpoint,
+    delete_factory_access_key,
     delete_model_map,
     delete_rule,
-    delete_rule_access_key,
     list_api_keys,
     list_endpoints,
+    list_factory_access_keys,
     list_model_maps,
     list_request_logs,
-    list_rule_access_keys,
     list_rules,
     probe_endpoint,
-    rotate_rule_access_key,
+    rotate_factory_access_key,
     scan_rule_models,
     update_api_key,
     update_endpoint,
+    update_factory_access_key,
     update_key,
     update_model_map,
     update_rule,
-    update_rule_access_key,
 )
 
 router = APIRouter()
@@ -159,41 +159,44 @@ router.add_api_route(
     response_model=DeleteResponse,
     dependencies=_admin_dependencies,
 )
+
+# Factory Access Keys (对外访问 Key)
 router.add_api_route(
-    "/admin/rules/{rule_id}/access-keys",
-    list_rule_access_keys,
+    "/admin/factory-keys",
+    list_factory_access_keys,
     methods=["GET"],
-    response_model=list[RuleAccessKeyOut],
+    response_model=list[FactoryAccessKeyOut],
     dependencies=_admin_dependencies,
 )
 router.add_api_route(
-    "/admin/rules/{rule_id}/access-keys",
-    create_rule_access_key,
+    "/admin/factory-keys",
+    create_factory_access_key,
     methods=["POST"],
-    response_model=RuleAccessKeyIssueOut,
+    response_model=FactoryAccessKeyIssueOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(
-    "/admin/rules/access-keys/{access_key_id}",
-    update_rule_access_key,
+    "/admin/factory-keys/{key_id}",
+    update_factory_access_key,
     methods=["PATCH"],
-    response_model=RuleAccessKeyOut,
+    response_model=FactoryAccessKeyOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(
-    "/admin/rules/access-keys/{access_key_id}/rotate",
-    rotate_rule_access_key,
+    "/admin/factory-keys/{key_id}/rotate",
+    rotate_factory_access_key,
     methods=["POST"],
-    response_model=RuleAccessKeyIssueOut,
+    response_model=FactoryAccessKeyIssueOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(
-    "/admin/rules/access-keys/{access_key_id}",
-    delete_rule_access_key,
+    "/admin/factory-keys/{key_id}",
+    delete_factory_access_key,
     methods=["DELETE"],
     response_model=DeleteResponse,
     dependencies=_admin_dependencies,
 )
+
 router.add_api_route(
     "/admin/rules/scan",
     scan_rule_models,

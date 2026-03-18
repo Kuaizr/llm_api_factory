@@ -19,10 +19,9 @@ from app.api.v1.route_models import (
     HealthProbeBucketOut,
     MetricsBucketOut,
     RoutingRuleOut,
-    RuleAccessKeyPreviewOut,
 )
 from app.core.config import get_settings
-from app.db.models import APIKey, Agent, Endpoint, RequestLog, RoutingRule, RuleAccessKey
+from app.db.models import APIKey, Agent, Endpoint, FactoryAccessKey, RequestLog, RoutingRule
 from app.services.agents import get_agent_by_name, verify_agent_token
 from app.services.health_monitor import HealthProbeResult
 
@@ -103,14 +102,43 @@ def _issue_rule_access_key() -> str:
     return f"rk-{secrets.token_urlsafe(24)}"
 
 
-def _build_rule_access_key_preview(item: RuleAccessKey) -> RuleAccessKeyPreviewOut:
-    return RuleAccessKeyPreviewOut(
-        id=item.id,
-        name=item.name,
-        key_preview=_mask_key(item.key),
-        is_active=item.is_active,
-        created_at=item.created_at,
+async def _resolve_allowed_rule_groups_from_token(
+    session: AsyncSession,
+    request: Request,
+) -> list[str]:
+    """解析对外访问 Key 并返回可访问的规则组列表。"""
+    settings = get_settings()
+    token = _extract_factory_api_key(request.headers)
+    if token and settings.master_auth_token and token == settings.master_auth_token:
+        return ["default"]
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing route API key")
+
+    result = await session.execute(
+        select(FactoryAccessKey).where(
+            FactoryAccessKey.key == token,
+            FactoryAccessKey.is_active.is_(True),
+        )
     )
+    factory_key = result.scalar_one_or_none()
+    if not factory_key:
+        raise HTTPException(status_code=401, detail="Invalid route API key")
+
+    groups: list[str] = []
+    seen: set[str] = set()
+    for raw_group in factory_key.rule_groups:
+        group = str(raw_group or "").strip()
+        if not group:
+            continue
+        canonical = "default" if group.lower() == "default" else group
+        tokenized = canonical.lower()
+        if tokenized in seen:
+            continue
+        seen.add(tokenized)
+        groups.append(canonical)
+
+    return groups or ["default"]
 
 
 async def _resolve_rule_group_from_token(
@@ -118,28 +146,21 @@ async def _resolve_rule_group_from_token(
     request: Request,
     payload_rule_group: str,
 ) -> str:
+    """解析请求中的对外访问 Key，验证权限并返回可用的规则组。"""
     settings = get_settings()
     token = _extract_factory_api_key(request.headers)
+    normalized_payload_group = (payload_rule_group or "default").strip() or "default"
     if token and settings.master_auth_token and token == settings.master_auth_token:
-        return payload_rule_group
+        return normalized_payload_group
 
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing route API key")
+    allowed_groups = await _resolve_allowed_rule_groups_from_token(session, request)
+    allowed_group_map = {group.lower(): group for group in allowed_groups}
+    requested_group = normalized_payload_group.lower()
+    if requested_group in allowed_group_map:
+        return allowed_group_map[requested_group]
 
-    result = await session.execute(
-        select(RuleAccessKey, RoutingRule)
-        .join(RoutingRule, RuleAccessKey.rule_id == RoutingRule.id)
-        .where(
-            RuleAccessKey.key == token,
-            RuleAccessKey.is_active.is_(True),
-            RoutingRule.is_active.is_(True),
-        )
-    )
-    row = result.first()
-    if row is None:
-        raise HTTPException(status_code=401, detail="Invalid route API key")
-    _, rule = row
-    return rule.group_name
+    # 请求组无权限时，返回当前 Key 绑定的首个规则组
+    return allowed_groups[0]
 
 
 async def _find_dump_rule(
@@ -519,7 +540,6 @@ def _build_routing_rule_out(
     rule: RoutingRule,
     target_key_ids: list[int],
     strategy: str,
-    access_keys: list[RuleAccessKeyPreviewOut],
     request_count: int = 0,
     total_tokens: int = 0,
     avg_ttft_ms: int | None = None,
@@ -535,7 +555,6 @@ def _build_routing_rule_out(
         dump_enabled=rule.dump_enabled,
         dump_path=rule.dump_path,
         target_key_ids=target_key_ids,
-        access_keys=access_keys,
         request_count=request_count,
         total_tokens=total_tokens,
         avg_ttft_ms=avg_ttft_ms,

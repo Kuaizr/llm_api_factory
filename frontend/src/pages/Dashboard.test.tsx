@@ -152,6 +152,7 @@ describe("Console layout", () => {
 
     expect(await screen.findByText("端点管理")).toBeInTheDocument();
     expect(screen.queryByText("节点管理")).not.toBeInTheDocument();
+    expect(screen.queryByText("API Key")).not.toBeInTheDocument();
     expect(screen.queryByText("路由规则")).not.toBeInTheDocument();
     expect(screen.queryByText("流量统计")).not.toBeInTheDocument();
     expect(screen.queryByText("系统设置")).not.toBeInTheDocument();
@@ -178,6 +179,15 @@ describe("Console layout", () => {
 
     await user.click(await screen.findByText("节点管理"));
     expect(await screen.findByText("Agent 节点网络")).toBeInTheDocument();
+  });
+
+  it("switches to api keys view", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("llm_admin_token", "token");
+    render(<Console />);
+
+    await user.click(await screen.findByText("API Key"));
+    expect(await screen.findByText("API Key 全局管理")).toBeInTheDocument();
   });
 
   it("switches usage trend range", async () => {

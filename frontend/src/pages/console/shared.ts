@@ -78,33 +78,6 @@ export type Endpoint = {
   request_body_template?: string | null;
 };
 
-export type RuleAccessKeyPreview = {
-  id: number;
-  name?: string | null;
-  key_preview: string;
-  is_active: boolean;
-  created_at: string;
-};
-
-export type RuleAccessKeyItem = {
-  id: number;
-  rule_id: number;
-  name?: string | null;
-  key_preview: string;
-  key?: string | null;
-  is_active: boolean;
-  created_at: string;
-};
-
-export type RuleAccessKeyIssue = {
-  id: number;
-  rule_id: number;
-  name?: string | null;
-  key: string;
-  is_active: boolean;
-  created_at: string;
-};
-
 export type RoutingRule = {
   id: number;
   model_pattern: string;
@@ -115,7 +88,6 @@ export type RoutingRule = {
   is_active: boolean;
   dump_enabled?: boolean;
   dump_path?: string | null;
-  access_keys?: RuleAccessKeyPreview[];
   request_count?: number;
   total_tokens?: number;
   avg_ttft_ms?: number | null;

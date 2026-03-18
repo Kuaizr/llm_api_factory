@@ -1,6 +1,7 @@
 from typing import AsyncGenerator
 import asyncio
 import json
+import re
 import time
 import uuid
 
@@ -9,7 +10,12 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.route_helpers import _dump_proxy_record, _find_dump_rule, _resolve_rule_group_from_token
+from app.api.v1.route_helpers import (
+    _dump_proxy_record,
+    _find_dump_rule,
+    _resolve_allowed_rule_groups_from_token,
+    _resolve_rule_group_from_token,
+)
 from app.api.v1.route_proxy_helpers import (
     _apply_oauth_access_token,
     _apply_request_body_template,
@@ -25,7 +31,7 @@ from app.api.v1.route_proxy_helpers import (
 )
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
-from app.db.models import APIKey, Endpoint, ModelMap
+from app.db.models import APIKey, Endpoint, ModelMap, RoutingRule
 from app.db.session import get_session
 from app.services.agent_transport import AgentRequest, AgentUnavailableError, get_agent_manager
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
@@ -33,7 +39,7 @@ from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
-RETRYABLE_STATUSES = {401, 429, 500, 502, 503, 504}
+RETRYABLE_STATUSES = {401, 403, 429, 500, 502, 503, 504}
 CIRCUIT_BREAKER_STATUSES = {401, 429}
 SESSION_HINT_KEYS = (
     "session_id",
@@ -127,13 +133,85 @@ def _resolve_trace_id(
     return uuid.uuid4().hex
 
 
-async def list_models(session: AsyncSession = Depends(get_session)) -> dict:
-    result = await session.execute(select(ModelMap.model_alias).distinct())
+def _build_models_response(model_aliases: list[str]) -> dict[str, object]:
     models = [
         {"id": model_alias, "object": "model", "owned_by": "proxy"}
-        for (model_alias,) in result.all()
+        for model_alias in model_aliases
     ]
     return {"object": "list", "data": models}
+
+
+async def list_models(
+    request: Request,
+    session: AsyncSession,
+    *,
+    provider_filter: str | tuple[str, ...] | None = None,
+    provider_filter_fallback_to_any: bool = False,
+) -> dict[str, object]:
+    allowed_groups = await _resolve_allowed_rule_groups_from_token(session, request)
+    provider_filters = _normalize_provider_filters(provider_filter)
+
+    result = await session.execute(
+        select(ModelMap.model_alias, Endpoint.provider)
+        .join(Endpoint, ModelMap.endpoint_id == Endpoint.id)
+        .where(Endpoint.is_active.is_(True))
+        .distinct()
+    )
+    rows = result.all()
+    normalized_rows = [
+        (str(model_alias), _normalize_provider_name(provider))
+        for model_alias, provider in rows
+        if model_alias
+    ]
+
+    filtered_rows = (
+        [row for row in normalized_rows if row[1] in provider_filters]
+        if provider_filters
+        else normalized_rows
+    )
+    if provider_filters and not filtered_rows and provider_filter_fallback_to_any:
+        filtered_rows = normalized_rows
+
+    model_aliases = sorted({model_alias for model_alias, _ in filtered_rows})
+    if not model_aliases:
+        return _build_models_response([])
+
+    # default 组拥有全量模型访问权限
+    if any(group.lower() == "default" for group in allowed_groups):
+        return _build_models_response(model_aliases)
+
+    non_default_groups = [group for group in allowed_groups if group.lower() != "default"]
+    if not non_default_groups:
+        return _build_models_response([])
+
+    rule_result = await session.execute(
+        select(RoutingRule)
+        .where(
+            RoutingRule.is_active.is_(True),
+            RoutingRule.group_name.in_(non_default_groups),
+        )
+        .order_by(RoutingRule.priority.desc(), RoutingRule.id)
+    )
+    rules_by_group: dict[str, list[RoutingRule]] = {}
+    for rule in rule_result.scalars().all():
+        rules_by_group.setdefault(rule.group_name.lower(), []).append(rule)
+
+    allowed_aliases: set[str] = set()
+    for model_alias in model_aliases:
+        for group in non_default_groups:
+            matched = False
+            for rule in rules_by_group.get(group.lower(), []):
+                try:
+                    if re.match(rule.model_pattern, model_alias):
+                        matched = True
+                        break
+                except re.error:
+                    continue
+            if matched:
+                allowed_aliases.add(model_alias)
+                break
+
+    return _build_models_response(sorted(allowed_aliases))
 
 
 async def _proxy_openai_request(
@@ -720,7 +798,16 @@ async def openai_passthrough(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    _ = path
+    normalized_path = path.strip("/")
+    if request.method.upper() == "GET" and normalized_path == "models":
+        payload = await list_models(
+            request,
+            session,
+            provider_filter=("openai", "custom"),
+            provider_filter_fallback_to_any=True,
+        )
+        return JSONResponse(content=payload)
+
     return await _proxy_openai_request(
         request,
         session,
