@@ -9,7 +9,7 @@ PID_DIR="$ROOT_DIR/scripts/pids"
 
 PORT=8000
 HOST="0.0.0.0"
-PYTHON_BIN="/home/kzer/miniconda3/bin/python"
+UV_BIN="${UV_BIN:-uv}"
 API_BASE=""
 ADMIN_TOKEN="${LLM_MASTER_AUTH_TOKEN:-admin}"
 DISABLE_AUTH=0
@@ -113,13 +113,22 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 APP_LOG="$LOG_DIR/app-${PORT}.log"
 APP_PID_FILE="$PID_DIR/app-${PORT}.pid"
 
-if [[ ! -x "$PYTHON_BIN" ]]; then
-  echo "未找到固定 Python: $PYTHON_BIN"
+if ! command -v "$UV_BIN" >/dev/null 2>&1 && [[ -x "$HOME/.local/bin/uv" ]]; then
+  UV_BIN="$HOME/.local/bin/uv"
+fi
+
+if ! command -v "$UV_BIN" >/dev/null 2>&1; then
+  echo "未找到 uv，请先安装 uv: https://docs.astral.sh/uv/getting-started/installation/"
   exit 1
 fi
 
 if ! command -v npm >/dev/null 2>&1; then
   echo "未找到 npm，请先安装 Node.js"
+  exit 1
+fi
+
+if [[ "$FOREGROUND" -eq 0 ]] && ! command -v setsid >/dev/null 2>&1; then
+  echo "未找到 setsid，后台模式无法脱离当前终端；请改用 --foreground"
   exit 1
 fi
 
@@ -163,9 +172,16 @@ fi
 
 stop_if_running "$APP_PID_FILE"
 
-if lsof -n -P -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "端口 $PORT 已被其他进程占用，请先释放后重试"
-  exit 1
+if command -v lsof >/dev/null 2>&1; then
+  if lsof -n -P -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "端口 $PORT 已被其他进程占用，请先释放后重试"
+    exit 1
+  fi
+elif command -v ss >/dev/null 2>&1; then
+  if ss -ltn | awk '{print $4}' | grep -Eq "(:|\\])${PORT}$"; then
+    echo "端口 $PORT 已被其他进程占用，请先释放后重试"
+    exit 1
+  fi
 fi
 
 echo "启动单入口服务: ${HOST}:${PORT}"
@@ -177,13 +193,13 @@ if [[ "$FOREGROUND" -eq 1 ]]; then
     else
       unset LLM_MASTER_AUTH_TOKEN
     fi
-    exec "$PYTHON_BIN" -m uvicorn app.main:app --host "$HOST" --port "$PORT"
+    exec "$UV_BIN" run uvicorn app.main:app --host "$HOST" --port "$PORT"
   ) >"$APP_LOG" 2>&1 &
 else
   if [[ "$DISABLE_AUTH" -eq 0 ]]; then
-    LLM_MASTER_AUTH_TOKEN="$ADMIN_TOKEN" nohup bash -lc "cd '$BACKEND_DIR' && exec '$PYTHON_BIN' -m uvicorn app.main:app --host '$HOST' --port '$PORT'" >"$APP_LOG" 2>&1 &
+    setsid env LLM_MASTER_AUTH_TOKEN="$ADMIN_TOKEN" "$UV_BIN" run --directory "$BACKEND_DIR" uvicorn app.main:app --host "$HOST" --port "$PORT" >"$APP_LOG" 2>&1 &
   else
-    nohup bash -lc "cd '$BACKEND_DIR' && exec '$PYTHON_BIN' -m uvicorn app.main:app --host '$HOST' --port '$PORT'" >"$APP_LOG" 2>&1 &
+    setsid env -u LLM_MASTER_AUTH_TOKEN "$UV_BIN" run --directory "$BACKEND_DIR" uvicorn app.main:app --host "$HOST" --port "$PORT" >"$APP_LOG" 2>&1 &
   fi
 fi
 APP_PID=$!

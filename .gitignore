@@ -2,6 +2,8 @@
 .env
 .env.*
 .venv/
+.uv-cache/
+.uv-python/
 __pycache__/
 *.pyc
 *.pyo
@@ -15,5 +17,7 @@ __pycache__/
 node_modules/
 dist/
 build/
+scripts/logs/
+scripts/pids/
 .vscode/
 .idea/
