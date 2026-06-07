@@ -134,6 +134,8 @@ export const useConsoleActions = ({
       body: JSON.stringify({
         name: payload.name,
         base_url: payload.base_url,
+        auth_header_name: payload.auth_header_name,
+        auth_header_prefix: payload.auth_header_prefix,
         provider: payload.provider,
         agent_node: payload.agent_node,
         probe_interval_seconds: probeInterval,

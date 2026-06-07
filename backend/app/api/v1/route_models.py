@@ -10,6 +10,7 @@ class EndpointCreate(BaseModel):
     auth_header_prefix: str = "Bearer"
     provider: str = "openai"
     strategy: str = "weighted_round_robin"
+    access_mode: str = "direct"
     agent_node: str | None = None
     probe_interval_seconds: int | None = Field(default=None, ge=-1, le=86400)
     is_active: bool = True
@@ -29,6 +30,7 @@ class EndpointUpdate(BaseModel):
     auth_header_prefix: str | None = None
     provider: str | None = None
     strategy: str | None = None
+    access_mode: str | None = None
     agent_node: str | None = None
     probe_interval_seconds: int | None = Field(default=None, ge=-1, le=86400)
     is_active: bool | None = None
@@ -49,6 +51,7 @@ class EndpointOut(BaseModel):
     auth_header_prefix: str
     provider: str
     strategy: str
+    access_mode: str
     agent_node: str | None
     probe_interval_seconds: int | None
     is_active: bool
@@ -138,8 +141,11 @@ class EndpointDetailOut(BaseModel):
     id: int
     name: str
     base_url: str
+    auth_header_name: str
+    auth_header_prefix: str
     provider: str
     strategy: str
+    access_mode: str
     is_active: bool
     status: str
     latency: int
@@ -363,6 +369,9 @@ class RequestLogOut(BaseModel):
     ttft_ms: int | None
     tps: float | None
     status_code: int
+    execution_mode: str | None = None
+    agent_node: str | None = None
+    upstream_url: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -454,6 +463,8 @@ class AgentBootstrapOut(BaseModel):
 class AgentHeartbeatRequest(BaseModel):
     name: str = Field(..., min_length=1)
     region: str | None = None
+    network_group: str | None = None
+    labels: list[str] | None = None
     endpoint_url: str | None = None
     token: str | None = None
     supports_gpt: bool | None = None
@@ -466,6 +477,8 @@ class AgentStatusOut(BaseModel):
     id: int
     name: str
     region: str | None
+    network_group: str | None = None
+    labels: list[str] = Field(default_factory=list)
     endpoint_url: str | None
     supports_gpt: bool | None = None
     supports_gemini: bool | None = None
@@ -475,6 +488,14 @@ class AgentStatusOut(BaseModel):
     is_active: bool
     last_seen_at: datetime | None
     status: str
+
+
+class AgentUpdate(BaseModel):
+    region: str | None = None
+    network_group: str | None = None
+    labels: list[str] | None = None
+    endpoint_url: str | None = None
+    is_active: bool | None = None
 
 
 class DeleteResponse(BaseModel):
@@ -493,12 +514,50 @@ class RouteCandidateOut(BaseModel):
     api_key_id: int
     weight: int
     real_model: str
+    execution_mode: str = "direct"
+    agent_node: str | None = None
 
 
 class RouteTestResponse(BaseModel):
     model: str
     rule_group: str
     candidates: list[RouteCandidateOut]
+
+
+class RouteExplainCandidateOut(BaseModel):
+    order: int | None = None
+    endpoint_id: int
+    endpoint_name: str
+    api_key_id: int
+    weight: int
+    real_model: str
+    execution_mode: str = "direct"
+    agent_node: str | None = None
+    selected: bool = False
+
+
+class RouteExplainExcludedOut(BaseModel):
+    endpoint_id: int
+    endpoint_name: str
+    api_key_id: int
+    real_model: str
+    execution_mode: str = "direct"
+    agent_node: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+
+class RouteExplainResponse(BaseModel):
+    model: str
+    requested_rule_group: str
+    effective_rule_group: str
+    fallback_used: bool
+    strategy: str
+    target_key_ids: list[int] = Field(default_factory=list)
+    matched_rule_id: int | None = None
+    matched_rule_pattern: str | None = None
+    candidates: list[RouteExplainCandidateOut] = Field(default_factory=list)
+    excluded: list[RouteExplainExcludedOut] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class RuleAccessKeyCreate(BaseModel):
@@ -527,4 +586,3 @@ class RuleAccessKeyOut(BaseModel):
     key: str | None = None
     is_active: bool
     created_at: datetime
-

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.route_modules.proxy_handlers import (
     anthropic_passthrough,
+    gemini_passthrough,
     openai_passthrough,
 )
 
@@ -15,5 +16,15 @@ router.add_api_route(
 router.add_api_route(
     "/anthropic/v1/{path:path}",
     anthropic_passthrough,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+router.add_api_route(
+    "/gemini/v1/{path:path}",
+    gemini_passthrough,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+router.add_api_route(
+    "/gemini/v1beta/{path:path}",
+    gemini_passthrough,
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )

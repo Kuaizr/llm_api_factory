@@ -84,6 +84,8 @@ class AgentClient:
         name: str,
         auth_token: str | None,
         region: str | None = None,
+        network_group: str | None = None,
+        labels: list[str] | None = None,
         endpoint_url: str | None = None,
         heartbeat_url: str | None = None,
         heartbeat_interval_seconds: int = 20,
@@ -93,6 +95,8 @@ class AgentClient:
         self.name = name
         self.auth_token = auth_token
         self.region = region
+        self.network_group = network_group
+        self.labels = labels or []
         self.endpoint_url = endpoint_url
         self.heartbeat_url = heartbeat_url
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -126,11 +130,19 @@ class AgentClient:
                 await self._refresh_capabilities()
                 import websockets
 
-                async with websockets.connect(self.ws_url, extra_headers=headers) as ws:
+                connect_kwargs = {"additional_headers": headers}
+                try:
+                    ws_context = websockets.connect(self.ws_url, **connect_kwargs)
+                except TypeError:
+                    ws_context = websockets.connect(self.ws_url, extra_headers=headers)
+
+                async with ws_context as ws:
                     register_payload = {
                         "type": "register",
                         "name": self.name,
                         "region": self.region,
+                        "network_group": self.network_group,
+                        "labels": self.labels,
                         "endpoint_url": self.endpoint_url,
                         "token": self.auth_token,
                         "supports_gpt": self.supports_gpt,
@@ -184,6 +196,8 @@ class AgentClient:
         payload = {
             "name": self.name,
             "region": self.region,
+            "network_group": self.network_group,
+            "labels": self.labels,
             "endpoint_url": self.endpoint_url,
             "token": self.auth_token,
             "supports_gpt": self.supports_gpt,
@@ -203,11 +217,18 @@ def build_agent_from_settings() -> AgentClient | None:
     settings = get_settings()
     if not settings.agent_ws_url or not settings.agent_name:
         return None
+    labels = [
+        item.strip()
+        for item in (settings.agent_labels or "").split(",")
+        if item.strip()
+    ]
     return AgentClient(
         ws_url=settings.agent_ws_url,
         name=settings.agent_name,
         auth_token=settings.agent_auth_token,
         region=settings.agent_region,
+        network_group=settings.agent_network_group,
+        labels=labels,
         endpoint_url=settings.agent_endpoint_url,
         heartbeat_url=settings.agent_heartbeat_url,
         heartbeat_interval_seconds=settings.agent_heartbeat_interval_seconds,

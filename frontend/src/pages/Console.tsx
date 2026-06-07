@@ -130,7 +130,7 @@ export const Console = () => {
     ? [
         { id: "endpoints", label: "端点管理" },
         { id: "agents", label: "节点管理" },
-        { id: "factory-keys", label: "管理key", icon: Key },
+        { id: "factory-keys", label: "API Key", icon: Key },
         { id: "rules", label: "路由规则" },
         { id: "usage", label: "流量统计" },
       ]
@@ -385,6 +385,7 @@ export const Console = () => {
           <RulesView
             rules={rules}
             isAdmin={isAdmin}
+            authToken={token}
             onEdit={(rule) => setEditingRule(rule ?? undefined)}
             onDelete={handleDeleteRule}
           />

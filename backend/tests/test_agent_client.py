@@ -40,6 +40,8 @@ def test_build_agent_from_settings_uses_config(monkeypatch) -> None:
         agent_heartbeat_url="http://localhost:8000/api/v1/agent/heartbeat",
         agent_name="edge-hk",
         agent_region="hk",
+        agent_network_group="egress-asia",
+        agent_labels="hk,fast",
         agent_endpoint_url="https://api.example.com",
         agent_auth_token="token",
     )
@@ -52,6 +54,8 @@ def test_build_agent_from_settings_uses_config(monkeypatch) -> None:
     assert agent.heartbeat_url == settings.agent_heartbeat_url
     assert agent.name == settings.agent_name
     assert agent.region == settings.agent_region
+    assert agent.network_group == settings.agent_network_group
+    assert agent.labels == ["hk", "fast"]
     assert agent.endpoint_url == settings.agent_endpoint_url
     assert agent.auth_token == settings.agent_auth_token
 

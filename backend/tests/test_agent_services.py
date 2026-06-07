@@ -11,6 +11,8 @@ class AgentStub:
     name: str
     region: str | None
     endpoint_url: str | None
+    network_group: str | None = None
+    labels: list[str] | None = None
     supports_gpt: bool | None = None
     supports_gemini: bool | None = None
     supports_claude: bool | None = None
@@ -59,6 +61,7 @@ async def test_upsert_agent_creates_new(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert agent.name == "edge-hk"
     assert agent.region == "hk"
+    assert agent.network_group is None
     assert agent.endpoint_url == "https://edge.example.com"
     assert agent.last_seen_at == now
     assert session.added
@@ -103,6 +106,8 @@ def test_build_agent_statuses() -> None:
             id=1,
             name="edge-hk",
             region="hk",
+            network_group="egress-asia",
+            labels=["hk", "fast"],
             endpoint_url=None,
             last_seen_at=now - timedelta(seconds=30),
         ),
@@ -125,5 +130,40 @@ def test_build_agent_statuses() -> None:
     statuses = agents_module.build_agent_statuses(agents, now, timeout_seconds=120)
 
     assert statuses[0].status == "online"
+    assert statuses[0].network_group == "egress-asia"
+    assert statuses[0].labels == ["hk", "fast"]
     assert statuses[1].status == "offline"
     assert statuses[2].status == "offline"
+
+
+@pytest.mark.asyncio
+async def test_upsert_agent_updates_network_group_and_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    existing = AgentStub(
+        id=1,
+        name="edge-hk",
+        region="hk",
+        network_group=None,
+        labels=[],
+        endpoint_url=None,
+    )
+
+    async def fake_get_agent_by_name(_session, _name):
+        return existing
+
+    monkeypatch.setattr(agents_module, "get_agent_by_name", fake_get_agent_by_name)
+
+    agent = await agents_module.upsert_agent(
+        session=session,
+        name="edge-hk",
+        region=None,
+        network_group="egress-asia",
+        labels=["hk", "fast"],
+        endpoint_url=None,
+    )
+
+    assert agent is existing
+    assert agent.network_group == "egress-asia"
+    assert agent.labels == ["hk", "fast"]

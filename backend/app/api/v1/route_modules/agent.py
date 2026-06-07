@@ -6,7 +6,11 @@ from app.api.v1.route_modules.agent_handlers import (
     admin_agent_bootstrap,
     admin_agents,
     admin_delete_agent,
+    admin_drain_agent,
+    admin_disable_agent,
+    admin_enable_agent,
     admin_rotate_agent_token,
+    admin_update_agent,
     agent_heartbeat,
     agent_install_script,
     agent_ws,
@@ -42,6 +46,34 @@ router.add_api_route(
     admin_agents,
     methods=["GET"],
     response_model=list[AgentStatusOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/agents/{agent_id}",
+    admin_update_agent,
+    methods=["PATCH"],
+    response_model=AgentStatusOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/agents/{agent_id}/drain",
+    admin_drain_agent,
+    methods=["POST"],
+    response_model=AgentStatusOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/agents/{agent_id}/enable",
+    admin_enable_agent,
+    methods=["POST"],
+    response_model=AgentStatusOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/agents/{agent_id}/disable",
+    admin_disable_agent,
+    methods=["POST"],
+    response_model=AgentStatusOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(

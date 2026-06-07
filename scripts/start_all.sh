@@ -12,6 +12,10 @@ HOST="0.0.0.0"
 UV_BIN="${UV_BIN:-uv}"
 API_BASE=""
 ADMIN_TOKEN="${LLM_MASTER_AUTH_TOKEN:-admin}"
+AGENT_PUBLIC_BASE_URL="${LLM_AGENT_PUBLIC_BASE_URL:-}"
+AGENT_INSTALL_SCRIPT_URL="${LLM_AGENT_INSTALL_SCRIPT_URL:-}"
+AGENT_INSTALL_REPO_URL="${LLM_AGENT_INSTALL_REPO_URL:-}"
+AGENT_INSTALL_REPO_REF="${LLM_AGENT_INSTALL_REPO_REF:-}"
 DISABLE_AUTH=0
 REBUILD_FRONTEND=0
 SKIP_BUILD=0
@@ -32,6 +36,14 @@ usage() {
   --host <host>             监听地址，默认 0.0.0.0
   --api-base <url>          前端构建时注入的 VITE_API_BASE
   --admin-token <token>     管理员登录密码（默认 admin）
+  --agent-public-base-url <url>
+                           生成 Agent 部署命令时使用的公网控制面地址
+  --agent-install-script-url <url>
+                           Agent 安装脚本 URL，可指向 GitHub raw
+  --agent-install-repo-url <url>
+                           Agent 安装脚本 clone 的仓库地址
+  --agent-install-repo-ref <ref>
+                           Agent 安装脚本 checkout 的分支、tag 或 commit
   --disable-auth            关闭后台鉴权（不建议生产使用）
   --rebuild-frontend        启动前重新执行前端 build
   --skip-build              跳过前端 build（要求 dist 已存在）
@@ -64,6 +76,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --admin-token)
       ADMIN_TOKEN="$2"
+      shift 2
+      ;;
+    --agent-public-base-url)
+      AGENT_PUBLIC_BASE_URL="$2"
+      shift 2
+      ;;
+    --agent-install-script-url)
+      AGENT_INSTALL_SCRIPT_URL="$2"
+      shift 2
+      ;;
+    --agent-install-repo-url)
+      AGENT_INSTALL_REPO_URL="$2"
+      shift 2
+      ;;
+    --agent-install-repo-ref)
+      AGENT_INSTALL_REPO_REF="$2"
       shift 2
       ;;
     --disable-auth)
@@ -185,6 +213,20 @@ elif command -v ss >/dev/null 2>&1; then
 fi
 
 echo "启动单入口服务: ${HOST}:${PORT}"
+APP_ENV=()
+if [[ -n "$AGENT_PUBLIC_BASE_URL" ]]; then
+  APP_ENV+=("LLM_AGENT_PUBLIC_BASE_URL=$AGENT_PUBLIC_BASE_URL")
+fi
+if [[ -n "$AGENT_INSTALL_SCRIPT_URL" ]]; then
+  APP_ENV+=("LLM_AGENT_INSTALL_SCRIPT_URL=$AGENT_INSTALL_SCRIPT_URL")
+fi
+if [[ -n "$AGENT_INSTALL_REPO_URL" ]]; then
+  APP_ENV+=("LLM_AGENT_INSTALL_REPO_URL=$AGENT_INSTALL_REPO_URL")
+fi
+if [[ -n "$AGENT_INSTALL_REPO_REF" ]]; then
+  APP_ENV+=("LLM_AGENT_INSTALL_REPO_REF=$AGENT_INSTALL_REPO_REF")
+fi
+
 if [[ "$FOREGROUND" -eq 1 ]]; then
   (
     cd "$BACKEND_DIR"
@@ -193,13 +235,16 @@ if [[ "$FOREGROUND" -eq 1 ]]; then
     else
       unset LLM_MASTER_AUTH_TOKEN
     fi
+    if [[ "${#APP_ENV[@]}" -gt 0 ]]; then
+      exec env "${APP_ENV[@]}" "$UV_BIN" run uvicorn app.main:app --host "$HOST" --port "$PORT"
+    fi
     exec "$UV_BIN" run uvicorn app.main:app --host "$HOST" --port "$PORT"
   ) >"$APP_LOG" 2>&1 &
 else
   if [[ "$DISABLE_AUTH" -eq 0 ]]; then
-    setsid env LLM_MASTER_AUTH_TOKEN="$ADMIN_TOKEN" "$UV_BIN" run --directory "$BACKEND_DIR" uvicorn app.main:app --host "$HOST" --port "$PORT" >"$APP_LOG" 2>&1 &
+    setsid env LLM_MASTER_AUTH_TOKEN="$ADMIN_TOKEN" "${APP_ENV[@]}" "$UV_BIN" run --directory "$BACKEND_DIR" uvicorn app.main:app --host "$HOST" --port "$PORT" >"$APP_LOG" 2>&1 &
   else
-    setsid env -u LLM_MASTER_AUTH_TOKEN "$UV_BIN" run --directory "$BACKEND_DIR" uvicorn app.main:app --host "$HOST" --port "$PORT" >"$APP_LOG" 2>&1 &
+    setsid env -u LLM_MASTER_AUTH_TOKEN "${APP_ENV[@]}" "$UV_BIN" run --directory "$BACKEND_DIR" uvicorn app.main:app --host "$HOST" --port "$PORT" >"$APP_LOG" 2>&1 &
   fi
 fi
 APP_PID=$!

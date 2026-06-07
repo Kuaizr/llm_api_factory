@@ -26,6 +26,24 @@ from app.services.agents import get_agent_by_name, verify_agent_token
 from app.services.health_monitor import HealthProbeResult
 
 
+VALID_ENDPOINT_ACCESS_MODES = {"direct", "via_agent"}
+
+
+def _normalize_endpoint_access_mode(raw: object, agent_node: object = None) -> str:
+    normalized = str(raw or "").strip().lower()
+    if not normalized:
+        normalized = "via_agent" if str(agent_node or "").strip() else "direct"
+    if normalized not in VALID_ENDPOINT_ACCESS_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported endpoint access_mode. Allowed values: "
+                f"{', '.join(sorted(VALID_ENDPOINT_ACCESS_MODES))}"
+            ),
+        )
+    return normalized
+
+
 def _parse_iso_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -82,9 +100,14 @@ def _extract_factory_api_key(headers: Mapping[str, str]) -> str | None:
         return token
 
     x_api_key = _get_header_case_insensitive(headers, "x-api-key")
-    if not x_api_key:
+    if x_api_key:
+        parsed = x_api_key.strip()
+        return parsed or None
+
+    x_goog_api_key = _get_header_case_insensitive(headers, "x-goog-api-key")
+    if not x_goog_api_key:
         return None
-    parsed = x_api_key.strip()
+    parsed = x_goog_api_key.strip()
     return parsed or None
 
 
@@ -260,6 +283,7 @@ def _build_agent_install_command(
     region: str | None,
     endpoint_url: str | None,
     repo_url: str | None,
+    repo_ref: str | None = None,
 ) -> str:
     args = [
         "--ws-url",
@@ -273,6 +297,8 @@ def _build_agent_install_command(
     ]
     if repo_url:
         args.extend(["--repo", repo_url])
+    if repo_ref:
+        args.extend(["--repo-ref", repo_ref])
     if region:
         args.extend(["--agent-region", region])
     if endpoint_url:
@@ -370,13 +396,24 @@ def _build_endpoint_detail(
         id=endpoint.id,
         name=endpoint.name,
         base_url=endpoint.base_url,
+        auth_header_name=endpoint.auth_header_name,
+        auth_header_prefix=endpoint.auth_header_prefix,
         provider=endpoint.provider,
         strategy=endpoint.strategy,
+        access_mode=_normalize_endpoint_access_mode(
+            getattr(endpoint, "access_mode", None), getattr(endpoint, "agent_node", None)
+        ),
         is_active=endpoint.is_active,
         status=status,
         latency=latency_ms,
         uptime=uptime,
-        is_agent_enabled=bool(endpoint.agent_node),
+        is_agent_enabled=(
+            _normalize_endpoint_access_mode(
+                getattr(endpoint, "access_mode", None), getattr(endpoint, "agent_node", None)
+            )
+            == "via_agent"
+            and bool(endpoint.agent_node)
+        ),
         agent_node=endpoint.agent_node,
         probe_interval_seconds=endpoint.probe_interval_seconds,
         url_path_suffix=endpoint.url_path_suffix,
@@ -441,6 +478,9 @@ def _build_endpoint_out(endpoint: Endpoint) -> EndpointOut:
         auth_header_prefix=endpoint.auth_header_prefix,
         provider=endpoint.provider,
         strategy=endpoint.strategy,
+        access_mode=_normalize_endpoint_access_mode(
+            getattr(endpoint, "access_mode", None), getattr(endpoint, "agent_node", None)
+        ),
         agent_node=endpoint.agent_node,
         probe_interval_seconds=endpoint.probe_interval_seconds,
         is_active=endpoint.is_active,
@@ -715,4 +755,3 @@ def build_health_probe_buckets(
             )
         )
     return results_out
-

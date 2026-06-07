@@ -7,7 +7,8 @@ from typing import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import APIKey, Endpoint, ModelMap, RoutingRule
+from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
+from app.services.agent_transport import get_agent_manager
 from app.services.circuit_breaker import CircuitBreaker
 
 
@@ -16,6 +17,25 @@ class RouteCandidate:
     api_key: APIKey
     endpoint: Endpoint
     real_model: str
+
+    @property
+    def execution_mode(self) -> str:
+        access_mode = str(getattr(self.endpoint, "access_mode", "") or "").strip()
+        if access_mode == "via_agent":
+            return "via_agent"
+        if not access_mode and getattr(self.endpoint, "agent_node", None):
+            return "via_agent"
+        return "direct"
+
+    @property
+    def agent_name(self) -> str | None:
+        if self.execution_mode != "via_agent":
+            return None
+        name = getattr(self.endpoint, "agent_node", None)
+        if not name:
+            return None
+        trimmed = str(name).strip()
+        return trimmed or None
 
 
 DEFAULT_RULE_STRATEGY = "weighted_round_robin"
@@ -56,8 +76,18 @@ class ModelRouter:
             stmt = stmt.where(APIKey.id.in_(target_key_ids))
 
         result = await session.execute(stmt)
+        rows = result.all()
+        via_agent_names = {
+            candidate.agent_name
+            for api_key, endpoint, model_map in rows
+            for candidate in [RouteCandidate(api_key=api_key, endpoint=endpoint, real_model=model_map.real_model)]
+            if candidate.agent_name
+        }
+        agent_state = await self._load_agent_active_state(session, via_agent_names)
+        agent_manager = get_agent_manager()
+
         candidates: list[RouteCandidate] = []
-        for api_key, endpoint, model_map in result.all():
+        for api_key, endpoint, model_map in rows:
             if not target_key_ids:
                 if hasattr(api_key, "in_rule_group"):
                     if not api_key.in_rule_group(effective_group):
@@ -66,11 +96,18 @@ class ModelRouter:
                     continue
             if not await self._is_key_available(api_key):
                 continue
-            candidates.append(
-                RouteCandidate(
-                    api_key=api_key, endpoint=endpoint, real_model=model_map.real_model
-                )
+            candidate = RouteCandidate(
+                api_key=api_key, endpoint=endpoint, real_model=model_map.real_model
             )
+            if candidate.execution_mode == "via_agent":
+                agent_name = candidate.agent_name
+                if not agent_name:
+                    continue
+                if agent_state.get(agent_name) is not True:
+                    continue
+                if agent_manager.get(agent_name) is None:
+                    continue
+            candidates.append(candidate)
         context_key = f"{model_alias}:{effective_group}:{strategy}"
         ordered = self._order_candidates(
             candidates, strategy, context_key, target_key_ids
@@ -85,6 +122,18 @@ class ModelRouter:
         if api_key.daily_limit is not None and used_today >= api_key.daily_limit:
             return False
         return await self.circuit_breaker.is_available(api_key.id)
+
+    async def _load_agent_active_state(
+        self, session: AsyncSession, agent_names: set[str | None]
+    ) -> dict[str, bool]:
+        names = {str(name).strip() for name in agent_names if str(name or "").strip()}
+        if not names:
+            return {}
+        try:
+            result = await session.execute(select(Agent).where(Agent.name.in_(names)))
+        except (AttributeError, AssertionError):
+            return {}
+        return {agent.name: bool(agent.is_active) for agent in result.scalars().all()}
 
     @staticmethod
     def _candidate_weight(candidate: RouteCandidate) -> int:

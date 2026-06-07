@@ -632,17 +632,167 @@ export const RuleEditorModal = ({
   );
 };
 
+type RuleAccessKey = {
+  id: number;
+  rule_id: number;
+  name: string | null;
+  key_preview: string;
+  key?: string | null;
+  is_active: boolean;
+  created_at: string;
+};
+
+const RuleAccessKeysModal = ({
+  rule,
+  isAdmin,
+  authToken,
+  onClose,
+}: {
+  rule: RoutingRule;
+  isAdmin: boolean;
+  authToken: string | null;
+  onClose: () => void;
+}) => {
+  const [items, setItems] = useState<RuleAccessKey[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const loadKeys = async () => {
+    if (!authToken) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBase}/admin/rules/${rule.id}/access-keys`, {
+        headers: buildHeaders(authToken),
+      });
+      if (!response.ok) {
+        setError("访问 Key 获取失败。");
+        return;
+      }
+      setItems((await response.json()) as RuleAccessKey[]);
+    } catch {
+      setError("访问 Key 获取失败。");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadKeys();
+  }, [rule.id, authToken]);
+
+  const createKey = async () => {
+    if (!authToken || !isAdmin) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBase}/admin/rules/${rule.id}/access-keys`, {
+        method: "POST",
+        headers: buildHeaders(authToken, true),
+        body: JSON.stringify({ name: newName.trim() || null }),
+      });
+      if (!response.ok) {
+        setError("访问 Key 创建失败。");
+        return;
+      }
+      const item = (await response.json()) as RuleAccessKey;
+      setItems((prev) => [item, ...prev]);
+      setNewName("");
+    } catch {
+      setError("访问 Key 创建失败。");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyKey = (value: string | null | undefined) => {
+    if (!value) return;
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(value).catch(() => undefined);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[520px] shadow-2xl">
+        <div className="p-5 border-b border-gray-800 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+              <Key size={18} className="text-yellow-400" />
+              管理访问 Key
+            </h3>
+            <p className="text-xs text-gray-500 mt-1">{rule.group_name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">
+            <XCircle size={20} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex gap-2">
+            <input
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+              placeholder="Key 名称"
+              className="flex-1 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white focus:border-yellow-500 focus:outline-none"
+              disabled={!isAdmin || loading}
+            />
+            <button
+              onClick={createKey}
+              disabled={!isAdmin || loading}
+              className="px-3 py-2 bg-yellow-600 hover:bg-yellow-500 text-white text-sm rounded disabled:opacity-50"
+            >
+              创建
+            </button>
+          </div>
+          {error ? <div className="text-xs text-red-400">{error}</div> : null}
+          <div className="space-y-2">
+            {items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 p-3"
+              >
+                <div>
+                  <div className="text-sm text-gray-200">{item.name || "未命名 Key"}</div>
+                  <div className="text-xs font-mono text-gray-500">
+                    {item.key_preview}
+                  </div>
+                </div>
+                <button
+                  onClick={() => copyKey(item.key)}
+                  title="复制完整 Key"
+                  className="px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-800"
+                >
+                  复制
+                </button>
+              </div>
+            ))}
+            {!loading && items.length === 0 ? (
+              <div className="text-xs text-gray-500">暂无访问 Key</div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const RulesView = ({
   rules,
   isAdmin,
+  authToken,
   onEdit,
   onDelete,
 }: {
   rules: RoutingRule[];
   isAdmin: boolean;
+  authToken: string | null;
   onEdit: (rule?: RoutingRule) => void;
   onDelete: (rule: RoutingRule) => void;
-}) => (
+}) => {
+  const [accessKeyRule, setAccessKeyRule] = useState<RoutingRule | null>(null);
+
+  return (
   <div className="space-y-6">
     <div className="flex justify-between items-center">
       <div>
@@ -760,6 +910,15 @@ export const RulesView = ({
               {rule.is_active ? "Active" : "Inactive"}
             </div>
             <button
+              onClick={() => setAccessKeyRule(rule)}
+              disabled={!isAdmin}
+              className="p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-gray-400"
+              title="管理访问 Key"
+              aria-label="管理访问 Key"
+            >
+              <Key size={16} />
+            </button>
+            <button
               onClick={() => onDelete(rule)}
               disabled={!isAdmin || isDefaultGroup}
               className="p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-gray-400"
@@ -782,5 +941,14 @@ export const RulesView = ({
       })}
       {!rules.length && <div className="text-sm text-gray-500">暂无规则</div>}
     </div>
+    {accessKeyRule && (
+      <RuleAccessKeysModal
+        rule={accessKeyRule}
+        isAdmin={isAdmin}
+        authToken={authToken}
+        onClose={() => setAccessKeyRule(null)}
+      />
+    )}
   </div>
-);
+  );
+};

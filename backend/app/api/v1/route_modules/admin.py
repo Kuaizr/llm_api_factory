@@ -12,6 +12,9 @@ from app.api.v1.route_models import (
     ModelMapOut,
     RequestLogOut,
     RoutingRuleOut,
+    RuleAccessKeyCreate,
+    RuleAccessKeyIssueOut,
+    RuleAccessKeyOut,
     RuleGroupEligibilityOut,
 )
 from app.api.v1.route_modules.admin_handlers import (
@@ -20,6 +23,7 @@ from app.api.v1.route_modules.admin_handlers import (
     create_endpoint,
     create_endpoint_key,
     create_factory_access_key,
+    create_rule_access_key,
     create_model_map,
     create_rule,
     delete_api_key,
@@ -33,6 +37,7 @@ from app.api.v1.route_modules.admin_handlers import (
     list_model_maps,
     list_request_logs,
     list_rules,
+    list_rule_access_keys,
     probe_endpoint,
     rotate_factory_access_key,
     scan_rule_models,
@@ -157,6 +162,20 @@ router.add_api_route(
     delete_rule,
     methods=["DELETE"],
     response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/{rule_id}/access-keys",
+    list_rule_access_keys,
+    methods=["GET"],
+    response_model=list[RuleAccessKeyOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/rules/{rule_id}/access-keys",
+    create_rule_access_key,
+    methods=["POST"],
+    response_model=RuleAccessKeyIssueOut,
     dependencies=_admin_dependencies,
 )
 

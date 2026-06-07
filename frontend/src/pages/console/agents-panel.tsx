@@ -109,12 +109,30 @@ export const AgentsView = ({
                         : "--"}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
                     <span className="text-gray-500">Endpoint</span>
                     <span className="font-mono text-gray-500">
                       {agent.endpoint_url ?? "--"}
                     </span>
                   </div>
+                  <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
+                    <span className="text-gray-500">Network</span>
+                    <span className="font-mono text-gray-300">
+                      {agent.network_group ?? "--"}
+                    </span>
+                  </div>
+                  {agent.labels && agent.labels.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {agent.labels.map((label) => (
+                        <span
+                          key={label}
+                          className="px-2 py-0.5 rounded border border-gray-700 bg-gray-900/40 text-[10px] text-gray-300"
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap gap-2 pt-2">
                     {renderCapability("GPT", agent.supports_gpt ?? null)}
                     {renderCapability("Gemini", agent.supports_gemini ?? null)}

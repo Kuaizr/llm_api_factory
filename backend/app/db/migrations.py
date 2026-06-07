@@ -28,7 +28,25 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
         "ALTER TABLE endpoints ADD COLUMN oauth_config TEXT",
         "ALTER TABLE endpoints ADD COLUMN request_body_template TEXT",
         "ALTER TABLE endpoints ADD COLUMN probe_interval_seconds INTEGER",
+        "ALTER TABLE endpoints ADD COLUMN access_mode VARCHAR(32) DEFAULT 'direct'",
+        """
+        UPDATE endpoints
+        SET access_mode = 'via_agent'
+        WHERE agent_node IS NOT NULL
+          AND TRIM(agent_node) != ''
+          AND (access_mode IS NULL OR TRIM(access_mode) = '' OR access_mode = 'direct')
+        """,
         "ALTER TABLE api_keys ADD COLUMN rule_groups_json TEXT",
+        "ALTER TABLE agents ADD COLUMN network_group VARCHAR(128)",
+        "ALTER TABLE agents ADD COLUMN labels_json TEXT",
+        "ALTER TABLE request_logs ADD COLUMN execution_mode VARCHAR(32)",
+        "ALTER TABLE request_logs ADD COLUMN agent_node VARCHAR(128)",
+        "ALTER TABLE request_logs ADD COLUMN upstream_url VARCHAR(1024)",
+        """
+        UPDATE request_logs
+        SET execution_mode = 'direct'
+        WHERE execution_mode IS NULL OR TRIM(execution_mode) = ''
+        """,
         "ALTER TABLE model_maps ADD COLUMN probe_managed BOOLEAN DEFAULT 0",
         "ALTER TABLE routing_rules ADD COLUMN dump_enabled BOOLEAN DEFAULT 0",
         "ALTER TABLE routing_rules ADD COLUMN dump_path VARCHAR(1024)",

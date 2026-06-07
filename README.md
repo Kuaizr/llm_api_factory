@@ -141,6 +141,66 @@ cd frontend
 npm test -- --run
 ```
 
+## CLI 控制面
+
+CLI 面向自动化脚本和 agent 运维，默认读取：
+
+```bash
+export LLM_FACTORY_URL="http://127.0.0.1:8000"
+export LLM_FACTORY_TOKEN="admin"
+```
+
+也可以每次显式传入：
+
+```bash
+cd backend
+uv run llm-factory --base-url http://127.0.0.1:8000 --token admin --help
+```
+
+### Upstream
+
+```bash
+uv run llm-factory upstream list
+
+uv run llm-factory upstream add openai-vps https://api.openai.com/v1 \
+  --provider openai \
+  --access-mode via_agent \
+  --agent-node edge-vps \
+  --key sk-xxx \
+  --rule-group vps-only \
+  --model gpt-vps=gpt-4.1
+
+uv run llm-factory upstream update 1 --name openai-vps-2
+uv run llm-factory upstream disable 1
+uv run llm-factory upstream test 1
+```
+
+### Route
+
+```bash
+uv run llm-factory route test gpt-vps --rule-group vps-only
+uv run llm-factory --output json route explain gpt-vps --rule-group vps-only
+```
+
+### Worker
+
+```bash
+uv run llm-factory worker list
+uv run llm-factory worker label 1 --labels openai,restricted --network-group vps-us
+uv run llm-factory worker drain 1
+uv run llm-factory worker enable 1
+uv run llm-factory worker disable 1
+```
+
+### Rule Group
+
+```bash
+uv run llm-factory rule-group list
+uv run llm-factory rule-group create vps-only '^gpt-vps$' --key-ids 3 --strategy sequential
+uv run llm-factory rule-group update 2 --model-pattern '^gpt-.*$'
+uv run llm-factory rule-group bind 2 --key-ids 3,4 --strategy weighted_round_robin
+```
+
 ## 可选：Agent 节点
 
 Agent 节点用于跨境代理加速，通过 WebSocket 与后端保持连接，支持请求转发。
@@ -148,6 +208,17 @@ Agent 节点用于跨境代理加速，通过 WebSocket 与后端保持连接，
 ### 部署方式
 
 #### 方式一：通过管理控制台（推荐）
+
+如果 Agent 要部署在远程 VPS，先用公网域名、反向代理或 SSH tunnel 暴露本机控制面，并在启动主程序时配置公网地址和安装脚本地址：
+
+```bash
+bash scripts/start_all.sh \
+  --port 8000 \
+  --agent-public-base-url https://factory.example.com \
+  --agent-install-script-url https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts/agent_install.sh \
+  --agent-install-repo-url https://github.com/Kuaizr/llm_api_factory.git \
+  --agent-install-repo-ref main
+```
 
 1. 登录管理控制台（管理员权限）
 2. 进入「Agent 节点」页签
@@ -175,17 +246,19 @@ export LLM_AGENT_REGION="HK"
 uv run python -m app.services.agent_client
 ```
 
-#### 方式三：使用安装脚本（未来支持）
+#### 方式三：使用安装脚本
 
-未来可从 GitHub 直接安装：
+可从 GitHub raw 直接安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-repo/llm-api-factory/main/scripts/agent_install.sh | bash -s -- \
-  --ws-url ws://localhost:8000/agent/ws \
-  --heartbeat-url http://localhost:8000/agent/heartbeat \
+curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts/agent_install.sh | bash -s -- \
+  --ws-url wss://factory.example.com/agent/ws \
+  --heartbeat-url https://factory.example.com/agent/heartbeat \
   --agent-name "edge-hk" \
   --agent-token "your-token" \
-  --agent-region "HK"
+  --agent-region "HK" \
+  --repo https://github.com/Kuaizr/llm_api_factory.git \
+  --repo-ref main
 ```
 
 ### 常用命令行参数
@@ -194,10 +267,15 @@ curl -fsSL https://raw.githubusercontent.com/your-repo/llm-api-factory/main/scri
 |------|------|
 | `--ws-url` | WebSocket 连接地址 (必需) |
 | `--heartbeat-url` | 心跳上报地址 (必需) |
-| `--name` | 节点名称 (必需) |
-| `--token` | 认证 Token (必需) |
-| `--region` | 区域标识 (如 HK/SG/US) |
-| `--endpoint-url` | 出口公网地址 (用于延迟探测) |
+| `--agent-name` | 节点名称 (必需) |
+| `--agent-token` | 认证 Token (必需) |
+| `--agent-region` | 区域标识 (如 HK/SG/US) |
+| `--agent-network-group` | 网络分组 |
+| `--agent-labels` | 逗号分隔标签 |
+| `--agent-endpoint-url` | 出口公网地址 (用于延迟探测) |
+| `--repo` | Agent 代码仓库地址 |
+| `--repo-ref` | Agent 代码分支、tag 或 commit |
+| `--no-systemd` | 不注册 systemd，用 nohup 后台运行 |
 
 ### Agent 功能
 

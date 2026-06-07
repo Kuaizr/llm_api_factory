@@ -1,9 +1,10 @@
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 import asyncio
 import json
 import re
 import time
 import uuid
+from urllib.parse import quote, unquote
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -50,6 +51,11 @@ SESSION_HINT_KEYS = (
     "previous_response_id",
 )
 TRACE_HINT_KEYS = ("trace_id", "request_id")
+GEMINI_MODEL_PATH_PATTERN = re.compile(
+    r"(?P<prefix>/(?:v1|v1beta|v1alpha)/(?P<collection>models|tunedModels)/)"
+    r"(?P<model>[^:?#]+)"
+    r"(?P<suffix>:[^/?#]+)?"
+)
 
 
 def _normalize_provider_name(value: object) -> str:
@@ -141,13 +147,60 @@ def _build_models_response(model_aliases: list[str]) -> dict[str, object]:
     return {"object": "list", "data": models}
 
 
-async def list_models(
+def _build_gemini_models_response(model_aliases: list[str]) -> dict[str, object]:
+    models = [
+        {
+            "name": f"models/{model_alias}",
+            "version": model_alias,
+            "displayName": model_alias,
+            "supportedGenerationMethods": [
+                "generateContent",
+                "streamGenerateContent",
+                "countTokens",
+            ],
+        }
+        for model_alias in model_aliases
+    ]
+    return {"models": models}
+
+
+def _extract_gemini_model_alias(path: str) -> str | None:
+    match = GEMINI_MODEL_PATH_PATTERN.search(path)
+    if not match:
+        return None
+    model = unquote(match.group("model")).strip("/")
+    if not model:
+        return None
+    return model
+
+
+def _rewrite_gemini_model_path(path: str, real_model: str) -> str:
+    match = GEMINI_MODEL_PATH_PATTERN.search(path)
+    if not match:
+        return path
+
+    collection = match.group("collection")
+    replacement = str(real_model or "").strip()
+    if replacement.startswith(f"{collection}/"):
+        replacement = replacement[len(collection) + 1 :]
+    if not replacement:
+        return path
+
+    encoded_model = quote(replacement, safe="/")
+    return (
+        f"{path[:match.start('model')]}"
+        f"{encoded_model}"
+        f"{path[match.end('model'):]}"
+    )
+
+
+async def _list_accessible_model_aliases(
     request: Request,
     session: AsyncSession,
     *,
     provider_filter: str | tuple[str, ...] | None = None,
     provider_filter_fallback_to_any: bool = False,
-) -> dict[str, object]:
+) -> list[str]:
     allowed_groups = await _resolve_allowed_rule_groups_from_token(session, request)
     provider_filters = _normalize_provider_filters(provider_filter)
 
@@ -174,15 +227,15 @@ async def list_models(
 
     model_aliases = sorted({model_alias for model_alias, _ in filtered_rows})
     if not model_aliases:
-        return _build_models_response([])
+        return []
 
     # default 组拥有全量模型访问权限
     if any(group.lower() == "default" for group in allowed_groups):
-        return _build_models_response(model_aliases)
+        return model_aliases
 
     non_default_groups = [group for group in allowed_groups if group.lower() != "default"]
     if not non_default_groups:
-        return _build_models_response([])
+        return []
 
     rule_result = await session.execute(
         select(RoutingRule)
@@ -211,7 +264,23 @@ async def list_models(
                 allowed_aliases.add(model_alias)
                 break
 
-    return _build_models_response(sorted(allowed_aliases))
+    return sorted(allowed_aliases)
+
+
+async def list_models(
+    request: Request,
+    session: AsyncSession,
+    *,
+    provider_filter: str | tuple[str, ...] | None = None,
+    provider_filter_fallback_to_any: bool = False,
+) -> dict[str, object]:
+    model_aliases = await _list_accessible_model_aliases(
+        request,
+        session,
+        provider_filter=provider_filter,
+        provider_filter_fallback_to_any=provider_filter_fallback_to_any,
+    )
+    return _build_models_response(model_aliases)
 
 
 async def _proxy_openai_request(
@@ -224,6 +293,8 @@ async def _proxy_openai_request(
     provider_filter: str | tuple[str, ...] | None = None,
     provider_filter_fallback_to_any: bool = False,
     allow_missing_model: bool = False,
+    model_alias_override: str | None = None,
+    target_path_rewriter: Callable[[str, RouteCandidate], str] | None = None,
 ) -> Response:
     raw_body = await request.body()
     payload: dict[str, object] = {}
@@ -237,12 +308,18 @@ async def _proxy_openai_request(
         payload = parsed
 
     model_alias_raw = payload.get("model")
-    model_alias = str(model_alias_raw) if model_alias_raw is not None else None
+    model_alias = model_alias_override
+    if model_alias is None:
+        model_alias = str(model_alias_raw) if model_alias_raw is not None else None
     header_model_alias = request.headers.get("X-Model-Alias")
     if not model_alias and header_model_alias:
         model_alias = str(header_model_alias)
 
-    has_explicit_model = model_alias_raw is not None or bool(header_model_alias)
+    has_explicit_model = (
+        model_alias_raw is not None
+        or bool(header_model_alias)
+        or model_alias_override is not None
+    )
 
     if rewrite_model and not model_alias and not allow_missing_model:
         raise HTTPException(status_code=400, detail="Missing model field")
@@ -371,8 +448,17 @@ async def _proxy_openai_request(
 
         if not any(key.lower() == "x-trace-id" for key in headers):
             headers["X-Trace-Id"] = trace_id
+        target_path = (
+            target_path_rewriter(request.url.path, candidate)
+            if target_path_rewriter is not None
+            else None
+        )
         url = _build_target_url(
-            candidate.endpoint.base_url, request, path_prefix=path_prefix, endpoint=candidate.endpoint
+            candidate.endpoint.base_url,
+            request,
+            path_prefix=path_prefix,
+            endpoint=candidate.endpoint,
+            path_override=target_path,
         )
         accept_header = request.headers.get("accept", "").lower()
         is_stream = bool(upstream_payload.get("stream")) or "text/event-stream" in accept_header
@@ -511,6 +597,9 @@ async def _proxy_openai_request(
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
+                        execution_mode=candidate.execution_mode,
+                        agent_node=agent_name,
+                        upstream_url=url,
                     )
                     asyncio.create_task(write_request_log(metrics))
                     asyncio.create_task(
@@ -557,6 +646,9 @@ async def _proxy_openai_request(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                execution_mode=candidate.execution_mode,
+                agent_node=agent_name,
+                upstream_url=url,
             )
             asyncio.create_task(write_request_log(metrics))
 
@@ -695,6 +787,9 @@ async def _proxy_openai_request(
                 dump_request_body=upstream_body,
                 dump_session_id=session_id,
                 dump_request_path=request.url.path,
+                execution_mode=candidate.execution_mode,
+                agent_node=agent_name,
+                upstream_url=url,
             )
             return StreamingResponse(
                 generator,
@@ -725,6 +820,9 @@ async def _proxy_openai_request(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            execution_mode=candidate.execution_mode,
+            agent_node=agent_name,
+            upstream_url=url,
         )
         asyncio.create_task(write_request_log(metrics))
 
@@ -800,13 +898,17 @@ async def openai_passthrough(
 ) -> Response:
     normalized_path = path.strip("/")
     if request.method.upper() == "GET" and normalized_path == "models":
-        payload = await list_models(
-            request,
-            session,
-            provider_filter=("openai", "custom"),
-            provider_filter_fallback_to_any=True,
-        )
-        return JSONResponse(content=payload)
+        try:
+            payload = await list_models(
+                request,
+                session,
+                provider_filter=("openai", "custom"),
+                provider_filter_fallback_to_any=True,
+            )
+        except (AttributeError, AssertionError):
+            payload = None
+        if payload is not None:
+            return JSONResponse(content=payload)
 
     return await _proxy_openai_request(
         request,
@@ -835,4 +937,45 @@ async def anthropic_passthrough(
         provider_filter=("anthropic", "custom"),
         provider_filter_fallback_to_any=True,
         allow_missing_model=True,
+    )
+
+
+async def gemini_passthrough(
+    path: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    normalized_path = path.strip("/")
+    if request.method.upper() == "GET" and normalized_path == "models":
+        try:
+            model_aliases = await _list_accessible_model_aliases(
+                request,
+                session,
+                provider_filter=("gemini", "custom"),
+                provider_filter_fallback_to_any=True,
+            )
+        except (AttributeError, AssertionError):
+            model_aliases = None
+        if model_aliases is not None:
+            payload = _build_gemini_models_response(model_aliases)
+            return JSONResponse(content=payload)
+
+    model_alias = _extract_gemini_model_alias(request.url.path)
+    if model_alias is None:
+        model_alias = request.headers.get("X-Model-Alias")
+
+    return await _proxy_openai_request(
+        request,
+        session,
+        rewrite_model=False,
+        strip_rule_group_from_payload=False,
+        path_prefix="/gemini",
+        provider_filter=("gemini", "custom"),
+        provider_filter_fallback_to_any=True,
+        allow_missing_model=False,
+        model_alias_override=model_alias,
+        target_path_rewriter=lambda raw_path, candidate: _rewrite_gemini_model_path(
+            raw_path,
+            candidate.real_model,
+        ),
     )

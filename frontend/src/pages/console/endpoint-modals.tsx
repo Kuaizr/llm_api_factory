@@ -34,6 +34,8 @@ export const EditEndpointModal = ({
   const [form, setForm] = useState<EndpointFormState>({
     name: endpoint?.name ?? "",
     base_url: endpoint?.base_url ?? "",
+    auth_header_name: endpoint?.auth_header_name ?? "Authorization",
+    auth_header_prefix: endpoint?.auth_header_prefix ?? "Bearer",
     provider: endpoint?.provider ?? "openai",
     agent_node: endpoint?.agent_node ?? "",
     probe_interval_seconds:
@@ -105,16 +107,79 @@ export const EditEndpointModal = ({
             </label>
             <select
               value={form.provider}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, provider: event.target.value }))
-              }
+              onChange={(event) => {
+                const provider = event.target.value;
+                setForm((prev) => {
+                  if (provider === "anthropic") {
+                    return {
+                      ...prev,
+                      provider,
+                      auth_header_name: "x-api-key",
+                      auth_header_prefix: "",
+                    };
+                  }
+                  if (provider === "gemini") {
+                    return {
+                      ...prev,
+                      provider,
+                      auth_header_name: "x-goog-api-key",
+                      auth_header_prefix: "",
+                    };
+                  }
+                  if (provider === "openai") {
+                    return {
+                      ...prev,
+                      provider,
+                      auth_header_name: "Authorization",
+                      auth_header_prefix: "Bearer",
+                    };
+                  }
+                  return { ...prev, provider };
+                });
+              }}
               className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
               disabled={!isAdmin}
             >
               <option value="openai">OpenAI Compatible</option>
               <option value="anthropic">Anthropic</option>
+              <option value="gemini">Gemini</option>
               <option value="custom">Custom Template</option>
             </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">
+                认证 Header
+              </label>
+              <input
+                value={form.auth_header_name}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    auth_header_name: event.target.value,
+                  }))
+                }
+                className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white font-mono focus:border-blue-500 focus:outline-none"
+                disabled={!isAdmin}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">
+                Header 前缀
+              </label>
+              <input
+                value={form.auth_header_prefix}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    auth_header_prefix: event.target.value,
+                  }))
+                }
+                placeholder="留空表示直接写入 Key"
+                className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white font-mono focus:border-blue-500 focus:outline-none"
+                disabled={!isAdmin}
+              />
+            </div>
           </div>
           <div>
             <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">

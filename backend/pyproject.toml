@@ -20,7 +20,11 @@ dependencies = [
 ]
 
 [project.scripts]
+llm-factory = "app.cli:main"
 llm-agent = "app.services.agent_client:run_agent"
+
+[tool.uv]
+package = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

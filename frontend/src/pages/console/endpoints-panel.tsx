@@ -66,6 +66,8 @@ const EndpointCard = ({
                 ? "bg-green-900/20 text-green-400"
                 : data.provider === "anthropic"
                   ? "bg-purple-900/20 text-purple-400"
+                  : data.provider === "gemini"
+                    ? "bg-blue-900/20 text-blue-400"
                   : "bg-amber-900/20 text-amber-400"
             }`}
           >

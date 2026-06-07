@@ -109,6 +109,14 @@ def test_build_probe_url_handles_base_paths() -> None:
         == "https://api.anthropic.com/v1/messages"
     )
     assert (
+        build_probe_url("https://generativelanguage.googleapis.com", provider="gemini")
+        == "https://generativelanguage.googleapis.com/v1beta/models"
+    )
+    assert (
+        build_probe_url("https://generativelanguage.googleapis.com/v1beta", provider="gemini")
+        == "https://generativelanguage.googleapis.com/v1beta/models"
+    )
+    assert (
         build_probe_url("https://gateway.example.com/v1", url_path_suffix="/healthz")
         == "https://gateway.example.com/v1/healthz"
     )

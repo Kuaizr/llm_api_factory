@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.db.session import get_session
-from app.services.agent_transport import AgentUnavailableError
+from app.services.agent_transport import AgentResponse, AgentUnavailableError
 from app.services.router import RouteCandidate
 
 
@@ -235,6 +235,47 @@ async def test_openai_standard_passthrough_endpoint(monkeypatch: pytest.MonkeyPa
     assert sent_request.headers.get("x-api-key") is None
     payload = json.loads(sent_request.content.decode("utf-8"))
     assert payload["model"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_passthrough_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(id=91, name="OpenAI", base_url="https://api.example.com")
+    api_key = APIKeyStub(id=92, key="sk-openai")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4.1")
+
+    upstream_payload = {"id": "resp-openai", "object": "response"}
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=upstream_payload)
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-4.1-mini", "input": "hi"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == upstream_payload
+    assert recorded["model_alias"] == "gpt-4.1-mini"
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/v1/responses"
+    assert sent_request.headers.get("authorization") == "Bearer sk-openai"
+    payload = json.loads(sent_request.content.decode("utf-8"))
+    assert payload["model"] == "gpt-4.1"
+    assert payload["input"] == "hi"
 
 
 @pytest.mark.asyncio
@@ -466,6 +507,73 @@ async def test_anthropic_standard_passthrough_falls_back_to_openai_candidates(
     assert sent_request.headers.get("authorization") == "Bearer sk-openai"
     payload = json.loads(sent_request.content.decode("utf-8"))
     assert payload["model"] == "minimax/minimax-m2.5"
+
+
+@pytest.mark.asyncio
+async def test_gemini_passthrough_rewrites_model_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=31,
+        name="Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        provider="gemini",
+        auth_header_name="x-goog-api-key",
+        auth_header_prefix="",
+    )
+    api_key = APIKeyStub(id=32, key="gemini-upstream-key")
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gemini-1.5-pro",
+    )
+
+    upstream_payload = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+        "usageMetadata": {
+            "promptTokenCount": 2,
+            "candidatesTokenCount": 3,
+            "totalTokenCount": 5,
+        },
+    }
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=upstream_payload)
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    body = {"contents": [{"parts": [{"text": "ping"}]}]}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/gemini/v1beta/models/gemini-alias:generateContent",
+            headers={"x-goog-api-key": "token"},
+            json=body,
+        )
+
+    await upstream_client.aclose()
+    await asyncio.sleep(0)
+
+    assert response.status_code == 200
+    assert response.json() == upstream_payload
+    assert response.headers["x-real-model"] == "gemini-1.5-pro"
+    assert response.headers["x-execution-mode"] == "direct"
+    assert recorded["model_alias"] == "gemini-alias"
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/v1beta/models/gemini-1.5-pro:generateContent"
+    assert sent_request.headers.get("x-goog-api-key") == "gemini-upstream-key"
+    assert json.loads(sent_request.content.decode("utf-8")) == body
+
+    metrics = recorded.get("metrics")
+    assert metrics is not None
+    assert metrics.total_tokens == 5
+    assert metrics.execution_mode == "direct"
+    assert metrics.upstream_url.endswith("/v1beta/models/gemini-1.5-pro:generateContent")
 
 
 @pytest.mark.asyncio
@@ -721,6 +829,85 @@ class UnavailableAgentManager:
     async def send_request(self, agent_name: str, request) -> object:  # noqa: ANN001
         self.calls.append(agent_name)
         raise AgentUnavailableError("agent offline")
+
+
+class CapturingAgentManager:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def send_request(self, agent_name: str, request) -> object:  # noqa: ANN001
+        self.calls.append((agent_name, request))
+        return AgentResponse(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=json.dumps(
+                {
+                    "id": "cmpl-agent-ok",
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 4,
+                        "total_tokens": 7,
+                    },
+                }
+            ).encode("utf-8"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_proxy_uses_agent_transport_when_endpoint_has_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=24,
+        name="AgentPrimary",
+        base_url="https://api.example.com",
+        agent_node="agent-west",
+    )
+    api_key = APIKeyStub(id=25, key="sk-agent")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4o")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("HTTP upstream should not be called for agent endpoint")
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    manager = CapturingAgentManager()
+    app = build_proxy_app(
+        monkeypatch,
+        candidate,
+        upstream_client,
+        recorded,
+        agent_manager=manager,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    await upstream_client.aclose()
+    await asyncio.sleep(0)
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "cmpl-agent-ok"
+    assert response.headers["x-execution-mode"] == "via_agent"
+    assert response.headers["x-agent-node"] == "agent-west"
+    assert len(manager.calls) == 1
+    agent_name, agent_request = manager.calls[0]
+    assert agent_name == "agent-west"
+    assert agent_request.url == "https://api.example.com/v1/chat/completions"
+
+    metrics = recorded.get("metrics")
+    assert metrics is not None
+    assert metrics.execution_mode == "via_agent"
+    assert metrics.agent_node == "agent-west"
+    assert metrics.upstream_url == "https://api.example.com/v1/chat/completions"
 
 
 @pytest.mark.asyncio

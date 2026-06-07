@@ -38,6 +38,7 @@ RESERVED_API_PREFIXES = (
     "v1/",
     "openai/",
     "anthropic/",
+    "gemini/",
     "admin/",
     "agent/",
     "auth/",

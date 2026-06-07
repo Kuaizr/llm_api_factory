@@ -17,6 +17,7 @@ class Endpoint(Base):
     auth_header_prefix: Mapped[str] = mapped_column(String(32), default="Bearer")
     provider: Mapped[str] = mapped_column(String(32), default="openai")
     strategy: Mapped[str] = mapped_column(String(32), default="weighted_round_robin")
+    access_mode: Mapped[str] = mapped_column(String(32), default="direct")
     agent_node: Mapped[str | None] = mapped_column(String(128), nullable=True)
     probe_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -192,6 +193,8 @@ class Agent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    network_group: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    labels_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     endpoint_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     auth_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     supports_gpt: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -208,6 +211,34 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    @property
+    def labels(self) -> list[str]:
+        if not self.labels_json:
+            return []
+        try:
+            parsed = json.loads(self.labels_json)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [str(item).strip() for item in parsed if str(item).strip()]
+
+    @labels.setter
+    def labels(self, value: object) -> None:
+        if value is None:
+            self.labels_json = None
+            return
+        raw_items = value if isinstance(value, (list, tuple, set)) else [value]
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            label = str(item or "").strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            normalized.append(label)
+        self.labels_json = json.dumps(normalized, ensure_ascii=False)
 
 
 class RequestLog(Base):
@@ -227,6 +258,9 @@ class RequestLog(Base):
     ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tps: Mapped[float | None] = mapped_column(Float, nullable=True)
     status_code: Mapped[int] = mapped_column(Integer)
+    execution_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_node: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    upstream_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

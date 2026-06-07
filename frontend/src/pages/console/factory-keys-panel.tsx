@@ -153,7 +153,7 @@ export const FactoryKeysPanel = ({
         <div>
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
             <Key size={18} className="text-blue-400" />
-            管理key
+            API Key 全局管理
           </h2>
           <p className="text-xs text-gray-500 mt-1">
             管理系统对外提供的访问密钥，每个 Key 可绑定多个规则组

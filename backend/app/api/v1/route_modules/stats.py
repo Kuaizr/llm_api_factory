@@ -4,6 +4,7 @@ from app.api.v1.route_helpers import _require_master_auth
 from app.api.v1.route_models import (
     DashboardStatusOut,
     MetricsBucketOut,
+    RouteExplainResponse,
     OverviewOut,
     RouteTestResponse,
     UsageStatsOut,
@@ -13,6 +14,7 @@ from app.api.v1.route_modules.stats_handlers import (
     admin_overview,
     admin_usage_stats,
     public_dashboard,
+    route_explain,
     route_test,
 )
 
@@ -51,5 +53,12 @@ router.add_api_route(
     route_test,
     methods=["POST"],
     response_model=RouteTestResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/route-explain",
+    route_explain,
+    methods=["POST"],
+    response_model=RouteExplainResponse,
     dependencies=_admin_dependencies,
 )

@@ -16,6 +16,7 @@ from app.api.v1.route_helpers import (
     _ensure_rule_group_available,
     _is_default_rule_group,
     _mask_key,
+    _normalize_endpoint_access_mode,
     _normalize_api_key_usage,
     _parse_iso_datetime,
     _resolve_endpoint_status,
@@ -44,6 +45,9 @@ from app.api.v1.route_models import (
     RoutingRuleCreate,
     RoutingRuleOut,
     RoutingRuleUpdate,
+    RuleAccessKeyCreate,
+    RuleAccessKeyIssueOut,
+    RuleAccessKeyOut,
     RuleGroupEligibilityCheck,
     RuleGroupEligibilityOut,
 )
@@ -55,7 +59,7 @@ from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 
-SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "custom"}
+SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
 
 
@@ -72,6 +76,24 @@ def _normalize_endpoint_provider(raw: object) -> str:
             ),
         )
     return normalized
+
+
+def _apply_provider_auth_defaults(data: dict[str, object]) -> None:
+    provider = str(data.get("provider") or "").strip().lower()
+    header_name = str(data.get("auth_header_name") or "").strip()
+    header_prefix = str(data.get("auth_header_prefix") or "").strip()
+    if provider == "anthropic" and (
+        not header_name or header_name.lower() == "authorization"
+    ):
+        data["auth_header_name"] = "x-api-key"
+        if not header_prefix or header_prefix.lower() == "bearer":
+            data["auth_header_prefix"] = ""
+    elif provider == "gemini" and (
+        not header_name or header_name.lower() == "authorization"
+    ):
+        data["auth_header_name"] = "x-goog-api-key"
+        if not header_prefix or header_prefix.lower() == "bearer":
+            data["auth_header_prefix"] = ""
 
 
 def _normalize_url_path_suffix(raw: object) -> str | None:
@@ -129,6 +151,37 @@ def _dedupe_discovered_models(raw_models: list[str]) -> list[str]:
         seen.add(normalized)
         deduped.append(normalized)
     return deduped
+
+
+def _extract_provider_models(provider: str, payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+
+    if provider == "gemini":
+        raw_models = payload.get("models")
+        if not isinstance(raw_models, list):
+            return []
+        names: list[str] = []
+        for item in raw_models:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name.startswith("models/"):
+                name = name.removeprefix("models/")
+            if name:
+                names.append(name)
+        return _dedupe_discovered_models(names)
+
+    payload_models = payload.get("data")
+    if not isinstance(payload_models, list):
+        return []
+    return _dedupe_discovered_models(
+        [
+            str(item.get("id"))
+            for item in payload_models
+            if isinstance(item, dict) and item.get("id")
+        ]
+    )
 
 
 async def _sync_probe_model_maps(
@@ -379,9 +432,12 @@ async def _probe_endpoint_models_with_key(
 
     settings = get_settings()
     client = await get_http_client()
-    url = _build_provider_probe_url(endpoint, default_suffix="/v1/models")
+    default_suffix = "/v1beta/models" if provider == "gemini" else "/v1/models"
+    url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
     header_name = endpoint.auth_header_name or "Authorization"
-    header_prefix = endpoint.auth_header_prefix or "Bearer"
+    header_prefix = endpoint.auth_header_prefix
+    if header_prefix is None:
+        header_prefix = "Bearer"
     headers = (
         {header_name: f"{header_prefix} {api_key_value}"}
         if header_prefix
@@ -399,16 +455,7 @@ async def _probe_endpoint_models_with_key(
         if status_code >= 400:
             return [], status_code
         payload = response.json()
-        payload_models = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(payload_models, list):
-            return [], status_code
-        discovered_models = _dedupe_discovered_models(
-            [
-                str(item.get("id"))
-                for item in payload_models
-                if isinstance(item, dict) and item.get("id")
-            ]
-        )
+        discovered_models = _extract_provider_models(provider, payload)
         return discovered_models, status_code
     except Exception:
         return [], None
@@ -480,7 +527,20 @@ async def create_endpoint(
     data = payload.model_dump()
     if data.get("agent_node") == "":
         data["agent_node"] = None
+    if data.get("access_mode") == "direct" and data.get("agent_node"):
+        data["access_mode"] = "via_agent"
+    data["access_mode"] = _normalize_endpoint_access_mode(
+        data.get("access_mode"), data.get("agent_node")
+    )
+    if data["access_mode"] == "direct":
+        data["agent_node"] = None
+    elif not data.get("agent_node"):
+        raise HTTPException(
+            status_code=400,
+            detail="agent_node is required when access_mode is via_agent",
+        )
     data["provider"] = _normalize_endpoint_provider(data.get("provider"))
+    _apply_provider_auth_defaults(data)
     # 将 dict 字段转为 JSON 字符串存储
     if data.get("extra_headers") is not None:
         data["extra_headers"] = json.dumps(data["extra_headers"])
@@ -510,8 +570,24 @@ async def update_endpoint(
         raise HTTPException(status_code=400, detail="No fields to update")
     if data.get("agent_node") == "":
         data["agent_node"] = None
+    if "agent_node" in data and "access_mode" not in data and data["agent_node"]:
+        data["access_mode"] = "via_agent"
+    next_access_mode = _normalize_endpoint_access_mode(
+        data.get("access_mode", getattr(endpoint, "access_mode", None)),
+        data.get("agent_node", getattr(endpoint, "agent_node", None)),
+    )
+    next_agent_node = data.get("agent_node", getattr(endpoint, "agent_node", None))
+    data["access_mode"] = next_access_mode
+    if next_access_mode == "direct":
+        data["agent_node"] = None
+    elif not next_agent_node:
+        raise HTTPException(
+            status_code=400,
+            detail="agent_node is required when access_mode is via_agent",
+        )
     if "provider" in data:
         data["provider"] = _normalize_endpoint_provider(data.get("provider"))
+        _apply_provider_auth_defaults(data)
     # 将 dict 字段转为 JSON 字符串存储
     if "extra_headers" in data and data["extra_headers"] is not None:
         data["extra_headers"] = json.dumps(data["extra_headers"])
@@ -558,10 +634,17 @@ async def probe_endpoint(
     circuit_breaker = CircuitBreaker(redis, settings=settings)
 
     client = await get_http_client()
-    default_suffix = "/v1/messages" if provider == "anthropic" else "/v1/models"
+    if provider == "anthropic":
+        default_suffix = "/v1/messages"
+    elif provider == "gemini":
+        default_suffix = "/v1beta/models"
+    else:
+        default_suffix = "/v1/models"
     url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
     header_name = endpoint.auth_header_name or "Authorization"
-    header_prefix = endpoint.auth_header_prefix or "Bearer"
+    header_prefix = endpoint.auth_header_prefix
+    if header_prefix is None:
+        header_prefix = "Bearer"
     headers = (
         {header_name: f"{header_prefix} {api_key.key}"}
         if header_prefix
@@ -601,17 +684,9 @@ async def probe_endpoint(
             status = "failure"
         else:
             status = "success"
-            if provider != "anthropic":
+            if provider not in {"anthropic"}:
                 payload = response.json()
-                payload_models = payload.get("data") if isinstance(payload, dict) else None
-                if isinstance(payload_models, list):
-                    discovered_models = _dedupe_discovered_models(
-                        [
-                            str(item.get("id"))
-                            for item in payload_models
-                            if isinstance(item, dict) and item.get("id")
-                        ]
-                    )
+                discovered_models = _extract_provider_models(provider, payload)
     except Exception:
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         status = "error"
@@ -1180,6 +1255,68 @@ async def delete_rule(
 
 
 # ============ Factory Access Keys (对外访问 Key) ============
+
+
+def _issue_legacy_rule_access_key() -> str:
+    import secrets
+
+    return f"rk-{secrets.token_urlsafe(24)}"
+
+
+async def create_rule_access_key(
+    rule_id: int,
+    payload: RuleAccessKeyCreate,
+    session: AsyncSession = Depends(get_session),
+) -> RuleAccessKeyIssueOut:
+    rule = await session.get(RoutingRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Routing rule not found")
+
+    raw_key = _issue_legacy_rule_access_key()
+    item = FactoryAccessKey(name=payload.name, key=raw_key, is_active=True)
+    item.rule_groups = [rule.group_name]
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    return RuleAccessKeyIssueOut(
+        id=item.id,
+        rule_id=rule.id,
+        name=item.name,
+        key=raw_key,
+        is_active=item.is_active,
+        created_at=item.created_at,
+    )
+
+
+async def list_rule_access_keys(
+    rule_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> list[RuleAccessKeyOut]:
+    rule = await session.get(RoutingRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Routing rule not found")
+
+    result = await session.execute(
+        select(FactoryAccessKey).order_by(FactoryAccessKey.id.desc())
+    )
+    group_name = _normalize_rule_group_key(rule.group_name).lower()
+    items = [
+        item
+        for item in result.scalars().all()
+        if any(_normalize_rule_group_key(group).lower() == group_name for group in item.rule_groups)
+    ]
+    return [
+        RuleAccessKeyOut(
+            id=item.id,
+            rule_id=rule.id,
+            name=item.name,
+            key_preview=_mask_key(item.key),
+            key=item.key,
+            is_active=item.is_active,
+            created_at=item.created_at,
+        )
+        for item in items
+    ]
 
 
 async def list_factory_access_keys(

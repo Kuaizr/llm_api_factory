@@ -58,7 +58,10 @@ export type Endpoint = {
   id: number;
   name: string;
   base_url: string;
+  auth_header_name?: string;
+  auth_header_prefix?: string;
   provider: string;
+  access_mode?: "direct" | "via_agent";
   is_active: boolean;
   status: EndpointStatus;
   latency: number;
@@ -119,6 +122,8 @@ export type AgentNode = {
   id: number;
   name: string;
   region: string | null;
+  network_group?: string | null;
+  labels?: string[];
   status: string;
   last_seen_at: string | null;
   endpoint_url: string | null;
@@ -171,6 +176,8 @@ export type UsageTrendRange = "hour" | "day" | "week";
 export type EndpointFormState = {
   name: string;
   base_url: string;
+  auth_header_name: string;
+  auth_header_prefix: string;
   provider: string;
   agent_node: string;
   probe_interval_seconds: string;

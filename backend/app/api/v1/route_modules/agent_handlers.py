@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from sqlalchemy import delete, select
@@ -11,6 +12,7 @@ from app.api.v1.route_models import (
     AgentBootstrapRequest,
     AgentHeartbeatRequest,
     AgentStatusOut,
+    AgentUpdate,
     DeleteResponse,
 )
 from app.core.config import get_settings
@@ -29,6 +31,57 @@ from app.services.agents import (
 AGENT_INSTALL_SCRIPT_PATH = (
     Path(__file__).resolve().parents[5] / "scripts" / "agent_install.sh"
 )
+
+
+def _agent_control_base_url(request: Request) -> str:
+    settings = get_settings()
+    configured = settings.agent_public_base_url
+    if configured and configured.strip():
+        return configured.strip().rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def _build_agent_control_url(base_url: str, path: str, *, websocket: bool) -> str:
+    parsed = urlparse(base_url)
+    scheme = parsed.scheme
+    if websocket:
+        if scheme == "http":
+            scheme = "ws"
+        elif scheme == "https":
+            scheme = "wss"
+    else:
+        if scheme == "ws":
+            scheme = "http"
+        elif scheme == "wss":
+            scheme = "https"
+    base_path = (parsed.path or "").rstrip("/")
+    next_path = f"{base_path}{path}"
+    return urlunparse(
+        parsed._replace(scheme=scheme, path=next_path, params="", query="", fragment="")
+    )
+
+
+def _agent_status_out(agent: Agent) -> AgentStatusOut:
+    settings = get_settings()
+    status = build_agent_statuses(
+        [agent], datetime.now(timezone.utc), settings.agent_heartbeat_timeout_seconds
+    )[0]
+    return AgentStatusOut(
+        id=status.id,
+        name=status.name,
+        region=status.region,
+        network_group=status.network_group,
+        labels=status.labels,
+        endpoint_url=status.endpoint_url,
+        supports_gpt=status.supports_gpt,
+        supports_gemini=status.supports_gemini,
+        supports_claude=status.supports_claude,
+        probe_latency_ms=status.probe_latency_ms,
+        probe_checked_at=status.probe_checked_at,
+        is_active=status.is_active,
+        last_seen_at=status.last_seen_at,
+        status=status.status,
+    )
 
 
 async def agent_install_script() -> Response:
@@ -59,9 +112,10 @@ async def admin_agent_bootstrap(
         )
 
     settings = get_settings()
-    base = str(request.base_url).rstrip("/")
+    base = _agent_control_base_url(request)
     script_url = settings.agent_install_script_url or f"{base}/agent/install.sh"
     repo_url = settings.agent_install_repo_url
+    repo_ref = settings.agent_install_repo_ref
     token = issue_agent_token()
     token_hash = hash_agent_token(token)
     agent = await upsert_agent(
@@ -72,8 +126,8 @@ async def admin_agent_bootstrap(
         auth_token_hash=token_hash,
         touch=False,
     )
-    ws_url = f"{base}/agent/ws"
-    heartbeat_url = f"{base}/agent/heartbeat"
+    ws_url = _build_agent_control_url(base, "/agent/ws", websocket=True)
+    heartbeat_url = _build_agent_control_url(base, "/agent/heartbeat", websocket=False)
     install_command = _build_agent_install_command(
         script_url=script_url,
         ws_url=ws_url,
@@ -83,6 +137,7 @@ async def admin_agent_bootstrap(
         region=None,
         endpoint_url=None,
         repo_url=repo_url,
+        repo_ref=repo_ref,
     )
     return AgentBootstrapOut(
         agent_id=agent.id,
@@ -110,6 +165,12 @@ async def agent_ws(websocket: WebSocket) -> None:
                 region = message.get("region")
                 if not isinstance(region, str) or not region.strip():
                     region = None
+                network_group = message.get("network_group")
+                if not isinstance(network_group, str) or not network_group.strip():
+                    network_group = None
+                labels = message.get("labels")
+                if not isinstance(labels, list):
+                    labels = None
                 endpoint_url = message.get("endpoint_url")
                 if not isinstance(endpoint_url, str) or not endpoint_url.strip():
                     endpoint_url = None
@@ -144,6 +205,8 @@ async def agent_ws(websocket: WebSocket) -> None:
                         session,
                         name=name,
                         region=region,
+                        network_group=network_group,
+                        labels=labels,
                         endpoint_url=endpoint_url,
                         supports_gpt=supports_gpt,
                         supports_gemini=supports_gemini,
@@ -183,6 +246,8 @@ async def agent_heartbeat(
     upsert_payload = {
         "name": payload.name,
         "region": payload.region,
+        "network_group": payload.network_group,
+        "labels": payload.labels,
         "endpoint_url": payload.endpoint_url,
         "now": now,
         "supports_gpt": payload.supports_gpt,
@@ -199,6 +264,8 @@ async def agent_heartbeat(
         upsert_payload.pop("supports_gemini", None)
         upsert_payload.pop("supports_claude", None)
         upsert_payload.pop("probe_latency_ms", None)
+        upsert_payload.pop("network_group", None)
+        upsert_payload.pop("labels", None)
         agent = await upsert_agent(session, **upsert_payload)
     settings = get_settings()
     status = build_agent_statuses(
@@ -208,6 +275,8 @@ async def agent_heartbeat(
         id=status.id,
         name=status.name,
         region=status.region,
+        network_group=status.network_group,
+        labels=status.labels,
         endpoint_url=status.endpoint_url,
         supports_gpt=status.supports_gpt,
         supports_gemini=status.supports_gemini,
@@ -233,6 +302,8 @@ async def admin_agents(
             id=status.id,
             name=status.name,
             region=status.region,
+            network_group=status.network_group,
+            labels=status.labels,
             endpoint_url=status.endpoint_url,
             supports_gpt=status.supports_gpt,
             supports_gemini=status.supports_gemini,
@@ -255,6 +326,64 @@ async def admin_delete_agent(
     await session.execute(stmt)
     await session.commit()
     return DeleteResponse()
+
+
+async def admin_update_agent(
+    agent_id: int,
+    payload: AgentUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> AgentStatusOut:
+    agent = await session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    data = payload.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    for field in ("region", "network_group", "endpoint_url", "is_active"):
+        if field in data:
+            setattr(agent, field, data[field])
+    if "labels" in data:
+        agent.labels = data["labels"]
+
+    await session.commit()
+    await session.refresh(agent)
+    return _agent_status_out(agent)
+
+
+async def _set_agent_active(
+    agent_id: int,
+    is_active: bool,
+    session: AsyncSession,
+) -> AgentStatusOut:
+    agent = await session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    agent.is_active = is_active
+    await session.commit()
+    await session.refresh(agent)
+    return _agent_status_out(agent)
+
+
+async def admin_drain_agent(
+    agent_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> AgentStatusOut:
+    return await _set_agent_active(agent_id, False, session)
+
+
+async def admin_disable_agent(
+    agent_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> AgentStatusOut:
+    return await _set_agent_active(agent_id, False, session)
+
+
+async def admin_enable_agent(
+    agent_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> AgentStatusOut:
+    return await _set_agent_active(agent_id, True, session)
 
 
 async def admin_rotate_agent_token(
@@ -285,12 +414,13 @@ async def admin_rotate_agent_token(
     token_hash = hash_agent_token(token)
     agent.auth_token_hash = token_hash
     await session.commit()
-    base = str(request.base_url).rstrip("/")
     settings = get_settings()
+    base = _agent_control_base_url(request)
     script_url = settings.agent_install_script_url or f"{base}/agent/install.sh"
     repo_url = settings.agent_install_repo_url
-    ws_url = f"{base}/agent/ws"
-    heartbeat_url = f"{base}/agent/heartbeat"
+    repo_ref = settings.agent_install_repo_ref
+    ws_url = _build_agent_control_url(base, "/agent/ws", websocket=True)
+    heartbeat_url = _build_agent_control_url(base, "/agent/heartbeat", websocket=False)
     install_command = _build_agent_install_command(
         script_url=script_url,
         ws_url=ws_url,
@@ -300,6 +430,7 @@ async def admin_rotate_agent_token(
         region=agent.region,
         endpoint_url=agent.endpoint_url,
         repo_url=repo_url,
+        repo_ref=repo_ref,
     )
     return AgentBootstrapOut(
         agent_id=agent.id,

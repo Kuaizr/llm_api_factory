@@ -194,7 +194,7 @@ class HealthProbeStore:
             await self.redis.expire(key, self.series_ttl_seconds)
 
 
-SUPPORTED_PROBE_PROVIDERS = {"openai", "anthropic", "custom"}
+SUPPORTED_PROBE_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
 
 
@@ -229,10 +229,16 @@ def build_probe_url(
         return f"{base_url.rstrip('/')}{normalized_suffix}"
 
     cleaned = base_url.rstrip("/")
+
+    normalized_provider = _normalize_probe_provider(provider)
+    if normalized_provider == "gemini":
+        if cleaned.endswith("/v1beta"):
+            cleaned = cleaned[: -len("/v1beta")]
+        return f"{cleaned}/v1beta/models"
+
     if cleaned.endswith("/v1"):
         cleaned = cleaned[:-3]
 
-    normalized_provider = _normalize_probe_provider(provider)
     if normalized_provider == "anthropic":
         return f"{cleaned}/v1/messages"
     return f"{cleaned}/v1/models"

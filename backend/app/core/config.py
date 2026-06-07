@@ -17,11 +17,15 @@ class Settings(BaseSettings):
     agent_heartbeat_url: str | None = None
     agent_name: str | None = None
     agent_region: str | None = None
+    agent_network_group: str | None = None
+    agent_labels: str | None = None
     agent_endpoint_url: str | None = None
     agent_heartbeat_interval_seconds: int = 20
     agent_reconnect_delay_seconds: int = 5
+    agent_public_base_url: str | None = None
     agent_install_script_url: str | None = None
     agent_install_repo_url: str | None = None
+    agent_install_repo_ref: str | None = None
     cors_allow_origins: str = "http://localhost:5173"
     http_timeout_seconds: float = 60.0
     circuit_breaker_failures: int = 3

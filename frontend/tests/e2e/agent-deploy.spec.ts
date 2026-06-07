@@ -73,5 +73,5 @@ test("agent bootstrap command flow", async ({ page }) => {
   await page.getByRole("button", { name: "生成部署命令" }).click();
 
   await expect(page.getByText("一键部署命令")).toBeVisible();
-  await expect(page.getByDisplayValue("agent-token")).toBeVisible();
+  await expect(page.getByLabel("Agent Token")).toHaveValue("agent-token");
 });

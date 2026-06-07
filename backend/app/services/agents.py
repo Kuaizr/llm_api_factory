@@ -18,6 +18,8 @@ class AgentStatus:
     id: int
     name: str
     region: str | None
+    network_group: str | None
+    labels: list[str]
     endpoint_url: str | None
     supports_gpt: bool | None
     supports_gemini: bool | None
@@ -67,6 +69,8 @@ def build_agent_statuses(
                 id=agent.id,
                 name=agent.name,
                 region=agent.region,
+                network_group=getattr(agent, "network_group", None),
+                labels=getattr(agent, "labels", []),
                 endpoint_url=agent.endpoint_url,
                 supports_gpt=getattr(agent, "supports_gpt", None),
                 supports_gemini=getattr(agent, "supports_gemini", None),
@@ -96,6 +100,8 @@ async def upsert_agent(
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    network_group: str | None = None,
+    labels: list[str] | None = None,
     now: datetime | None = None,
     touch: bool = True,
     auth_token_hash: str | None = None,
@@ -114,19 +120,24 @@ async def upsert_agent(
 
     agent = await get_agent_by_name(session, name)
     if agent is None:
-        agent = Agent(
-            name=name,
-            region=region,
-            endpoint_url=endpoint_url,
-            auth_token_hash=auth_token_hash,
-            supports_gpt=supports_gpt,
-            supports_gemini=supports_gemini,
-            supports_claude=supports_claude,
-            probe_latency_ms=probe_latency_ms,
-            probe_checked_at=probe_checked_at,
-            is_active=True,
-            last_seen_at=current_time if touch else None,
-        )
+        agent_data = {
+            "name": name,
+            "region": region,
+            "endpoint_url": endpoint_url,
+            "auth_token_hash": auth_token_hash,
+            "supports_gpt": supports_gpt,
+            "supports_gemini": supports_gemini,
+            "supports_claude": supports_claude,
+            "probe_latency_ms": probe_latency_ms,
+            "probe_checked_at": probe_checked_at,
+            "is_active": True,
+            "last_seen_at": current_time if touch else None,
+        }
+        if network_group is not None:
+            agent_data["network_group"] = network_group
+        agent = Agent(**agent_data)
+        if labels is not None:
+            agent.labels = labels
         session.add(agent)
         await session.commit()
         await session.refresh(agent)
@@ -134,6 +145,10 @@ async def upsert_agent(
 
     if region is not None:
         agent.region = region
+    if network_group is not None:
+        agent.network_group = network_group
+    if labels is not None:
+        agent.labels = labels
     if endpoint_url is not None:
         agent.endpoint_url = endpoint_url
     if auth_token_hash is not None:
@@ -148,7 +163,6 @@ async def upsert_agent(
         agent.probe_latency_ms = probe_latency_ms
     if probe_checked_at is not None:
         agent.probe_checked_at = probe_checked_at
-    agent.is_active = True
     if touch:
         agent.last_seen_at = current_time
     await session.commit()

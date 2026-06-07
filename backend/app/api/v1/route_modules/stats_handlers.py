@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.route_modules.admin_handlers import _deserialize_rule_config
 from app.api.v1.route_helpers import (
     _build_dashboard_endpoint,
     _mask_key,
@@ -17,6 +18,9 @@ from app.api.v1.route_models import (
     MetricsBucketOut,
     OverviewOut,
     RouteCandidateOut,
+    RouteExplainCandidateOut,
+    RouteExplainExcludedOut,
+    RouteExplainResponse,
     RouteTestRequest,
     RouteTestResponse,
     UsageGroupStat,
@@ -25,12 +29,13 @@ from app.api.v1.route_models import (
 )
 from app.core.config import get_settings
 from app.core.redis import get_redis
-from app.db.models import APIKey, Endpoint, ModelMap, RequestLog
+from app.db.models import APIKey, Agent, Endpoint, ModelMap, RequestLog, RoutingRule
 from app.db.session import get_session
+from app.services.agent_transport import get_agent_manager
 from app.services.agents import build_agent_statuses, list_agents
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
-from app.services.router import ModelRouter
+from app.services.router import ModelRouter, RouteCandidate
 
 
 async def public_dashboard(
@@ -181,6 +186,8 @@ async def route_test(
             api_key_id=candidate.api_key.id,
             weight=candidate.api_key.weight,
             real_model=candidate.real_model,
+            execution_mode=candidate.execution_mode,
+            agent_node=candidate.agent_name,
         )
         for index, candidate in enumerate(candidates)
     ]
@@ -188,4 +195,185 @@ async def route_test(
         model=payload.model,
         rule_group=effective_group,
         candidates=ordered,
+    )
+
+
+async def _matching_route_rule(
+    session: AsyncSession,
+    model_alias: str,
+    rule_group: str,
+) -> tuple[RoutingRule | None, list[int], str]:
+    result = await session.execute(
+        select(RoutingRule)
+        .where(RoutingRule.group_name == rule_group, RoutingRule.is_active.is_(True))
+        .order_by(RoutingRule.priority.desc(), RoutingRule.id)
+    )
+    for rule in result.scalars().all():
+        try:
+            import re
+
+            if re.match(rule.model_pattern, model_alias):
+                target_key_ids, strategy = _deserialize_rule_config(
+                    rule.target_key_ids_json
+                )
+                return rule, target_key_ids, strategy
+        except re.error:
+            continue
+    return None, [], "weighted_round_robin"
+
+
+async def _resolve_route_explain_policy(
+    session: AsyncSession,
+    model_alias: str,
+    requested_group: str,
+) -> tuple[str, bool, RoutingRule | None, list[int], str]:
+    group = (requested_group or "default").strip() or "default"
+    rule, target_key_ids, strategy = await _matching_route_rule(
+        session, model_alias, group
+    )
+    if target_key_ids or group == "default":
+        return group, False, rule, target_key_ids, strategy
+
+    fallback_rule, fallback_targets, fallback_strategy = await _matching_route_rule(
+        session, model_alias, "default"
+    )
+    return "default", True, fallback_rule, fallback_targets, fallback_strategy
+
+
+def _key_in_rule_group(api_key: APIKey, group: str) -> bool:
+    if hasattr(api_key, "in_rule_group"):
+        return api_key.in_rule_group(group)
+    return getattr(api_key, "rule_group", "default") == group
+
+
+def _is_daily_limit_exhausted(api_key: APIKey) -> bool:
+    if api_key.daily_limit is None:
+        return False
+    today = datetime.now(timezone.utc).date()
+    used_today = 0 if api_key.used_today_date != today else (api_key.used_today or 0)
+    return used_today >= api_key.daily_limit
+
+
+async def route_explain(
+    payload: RouteTestRequest, session: AsyncSession = Depends(get_session)
+) -> RouteExplainResponse:
+    redis = await get_redis()
+    notifier = get_notifier()
+    circuit_breaker = CircuitBreaker(redis, notifier=notifier)
+    effective_group, fallback_used, matched_rule, target_key_ids, strategy = (
+        await _resolve_route_explain_policy(session, payload.model, payload.rule_group)
+    )
+
+    stmt = (
+        select(APIKey, Endpoint, ModelMap)
+        .join(Endpoint, APIKey.endpoint_id == Endpoint.id)
+        .join(ModelMap, ModelMap.endpoint_id == Endpoint.id)
+        .where(ModelMap.model_alias == payload.model)
+        .order_by(APIKey.id)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    candidate_objects = [
+        RouteCandidate(api_key=api_key, endpoint=endpoint, real_model=model_map.real_model)
+        for api_key, endpoint, model_map in rows
+    ]
+    via_agent_names = {candidate.agent_name for candidate in candidate_objects if candidate.agent_name}
+    agent_rows: dict[str, Agent] = {}
+    if via_agent_names:
+        agent_result = await session.execute(
+            select(Agent).where(Agent.name.in_(via_agent_names))
+        )
+        agent_rows = {agent.name: agent for agent in agent_result.scalars().all()}
+    agent_manager = get_agent_manager()
+
+    available_candidates: list[RouteCandidate] = []
+    excluded: list[RouteExplainExcludedOut] = []
+    for candidate in candidate_objects:
+        api_key = candidate.api_key
+        endpoint = candidate.endpoint
+        reasons: list[str] = []
+        if target_key_ids:
+            if api_key.id not in target_key_ids:
+                reasons.append("api_key_not_in_rule_targets")
+        elif not _key_in_rule_group(api_key, effective_group):
+            reasons.append("api_key_not_in_rule_group")
+        if not endpoint.is_active:
+            reasons.append("endpoint_inactive")
+        if not api_key.is_active:
+            reasons.append("api_key_inactive")
+        if _is_daily_limit_exhausted(api_key):
+            reasons.append("daily_limit_exhausted")
+        if not await circuit_breaker.is_available(api_key.id):
+            reasons.append("circuit_open")
+        if candidate.execution_mode == "via_agent":
+            agent_name = candidate.agent_name
+            agent = agent_rows.get(agent_name or "")
+            if not agent_name:
+                reasons.append("agent_missing")
+            elif agent is None:
+                reasons.append("agent_not_registered")
+            elif not agent.is_active:
+                reasons.append("agent_disabled")
+            elif agent_manager.get(agent_name) is None:
+                reasons.append("agent_not_connected")
+
+        if reasons:
+            excluded.append(
+                RouteExplainExcludedOut(
+                    endpoint_id=endpoint.id,
+                    endpoint_name=endpoint.name,
+                    api_key_id=api_key.id,
+                    real_model=candidate.real_model,
+                    execution_mode=candidate.execution_mode,
+                    agent_node=candidate.agent_name,
+                    reasons=reasons,
+                )
+            )
+            continue
+        available_candidates.append(candidate)
+
+    ordered = ModelRouter._order_candidates(
+        available_candidates,
+        strategy,
+        f"{payload.model}:{effective_group}:{strategy}",
+        target_key_ids,
+    )
+    candidates = [
+        RouteExplainCandidateOut(
+            order=index + 1,
+            endpoint_id=candidate.endpoint.id,
+            endpoint_name=candidate.endpoint.name,
+            api_key_id=candidate.api_key.id,
+            weight=candidate.api_key.weight,
+            real_model=candidate.real_model,
+            execution_mode=candidate.execution_mode,
+            agent_node=candidate.agent_name,
+            selected=index == 0,
+        )
+        for index, candidate in enumerate(ordered)
+    ]
+
+    notes: list[str] = []
+    if not rows:
+        notes.append("no_model_map_for_model_alias")
+    if fallback_used:
+        notes.append("fallback_to_default_rule_group")
+    if matched_rule is None:
+        notes.append("no_matching_active_rule")
+    if not candidates:
+        notes.append("no_available_candidates")
+
+    return RouteExplainResponse(
+        model=payload.model,
+        requested_rule_group=payload.rule_group,
+        effective_rule_group=effective_group,
+        fallback_used=fallback_used,
+        strategy=strategy,
+        target_key_ids=target_key_ids,
+        matched_rule_id=matched_rule.id if matched_rule else None,
+        matched_rule_pattern=matched_rule.model_pattern if matched_rule else None,
+        candidates=candidates,
+        excluded=excluded,
+        notes=notes,
     )

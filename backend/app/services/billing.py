@@ -21,6 +21,9 @@ class RequestMetrics:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
+    execution_mode: str = "direct"
+    agent_node: str | None = None
+    upstream_url: str | None = None
 
 
 def extract_usage(payload: dict[str, Any] | None) -> tuple[int | None, int | None, int | None]:
@@ -28,12 +31,31 @@ def extract_usage(payload: dict[str, Any] | None) -> tuple[int | None, int | Non
         return None, None, None
     usage = payload.get("usage")
     if not isinstance(usage, dict):
+        usage = payload.get("usageMetadata")
+    if not isinstance(usage, dict):
         return None, None, None
-    return (
-        usage.get("prompt_tokens"),
-        usage.get("completion_tokens"),
-        usage.get("total_tokens"),
-    )
+
+    prompt_tokens = usage.get("prompt_tokens")
+    if prompt_tokens is None:
+        prompt_tokens = usage.get("input_tokens")
+    if prompt_tokens is None:
+        prompt_tokens = usage.get("promptTokenCount")
+
+    completion_tokens = usage.get("completion_tokens")
+    if completion_tokens is None:
+        completion_tokens = usage.get("output_tokens")
+    if completion_tokens is None:
+        completion_tokens = usage.get("candidatesTokenCount")
+
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        total_tokens = usage.get("totalTokenCount")
+    if total_tokens is None and (
+        isinstance(prompt_tokens, int) or isinstance(completion_tokens, int)
+    ):
+        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+    return prompt_tokens, completion_tokens, total_tokens
 
 
 async def write_request_log(metrics: RequestMetrics) -> None:
@@ -52,6 +74,9 @@ async def write_request_log(metrics: RequestMetrics) -> None:
             ttft_ms=metrics.ttft_ms,
             tps=metrics.tps,
             status_code=metrics.status_code,
+            execution_mode=metrics.execution_mode,
+            agent_node=metrics.agent_node,
+            upstream_url=metrics.upstream_url,
         )
         session.add(log)
 

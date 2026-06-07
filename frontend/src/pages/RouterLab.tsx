@@ -10,6 +10,8 @@ type RouteCandidate = {
   api_key_id: number;
   weight: number;
   real_model: string;
+  execution_mode: string;
+  agent_node: string | null;
 };
 
 type RouteTestResponse = {
@@ -25,6 +27,8 @@ type DebugInfo = {
   endpointName: string | null;
   apiKeyId: string | null;
   realModel: string | null;
+  executionMode: string | null;
+  agentNode: string | null;
 };
 
 type RequestLog = {
@@ -39,6 +43,9 @@ type RequestLog = {
   total_tokens: number | null;
   latency_ms: number;
   status_code: number;
+  execution_mode: string | null;
+  agent_node: string | null;
+  upstream_url: string | null;
   created_at: string;
 };
 
@@ -208,6 +215,9 @@ export const RouterLab = () => {
       "total_tokens",
       "latency_ms",
       "status_code",
+      "execution_mode",
+      "agent_node",
+      "upstream_url",
       "created_at",
     ];
     const rows = logs.map((log) =>
@@ -223,6 +233,9 @@ export const RouterLab = () => {
         log.total_tokens,
         log.latency_ms,
         log.status_code,
+        log.execution_mode,
+        log.agent_node,
+        log.upstream_url,
         log.created_at,
       ]
         .map((value) => csvCell(value))
@@ -333,6 +346,8 @@ export const RouterLab = () => {
         endpointName: response.headers.get("x-endpoint-name"),
         apiKeyId: response.headers.get("x-api-key-id"),
         realModel: response.headers.get("x-real-model"),
+        executionMode: response.headers.get("x-execution-mode"),
+        agentNode: response.headers.get("x-agent-node"),
       });
       if (shouldStream) {
         if (!response.body) {
@@ -444,6 +459,7 @@ export const RouterLab = () => {
                     <th>Endpoint</th>
                     <th>API Key</th>
                     <th>权重</th>
+                    <th>执行位置</th>
                     <th>真实模型</th>
                   </tr>
                 </thead>
@@ -456,6 +472,10 @@ export const RouterLab = () => {
                       </td>
                       <td>{item.api_key_id}</td>
                       <td>{item.weight}</td>
+                      <td>
+                        {item.execution_mode}
+                        {item.agent_node ? ` (${item.agent_node})` : ""}
+                      </td>
                       <td>{item.real_model}</td>
                     </tr>
                   ))}
@@ -481,6 +501,8 @@ export const RouterLab = () => {
               <span>Endpoint ID: {debugInfo.endpointId ?? "--"}</span>
               <span>API Key ID: {debugInfo.apiKeyId ?? "--"}</span>
               <span>Real Model: {debugInfo.realModel ?? "--"}</span>
+              <span>Execution: {debugInfo.executionMode ?? "--"}</span>
+              <span>Agent: {debugInfo.agentNode ?? "--"}</span>
             </div>
           ) : null}
           {completion ? (
@@ -627,6 +649,7 @@ export const RouterLab = () => {
                     <th>Endpoint</th>
                     <th>Key</th>
                     <th>Tokens</th>
+                    <th>执行</th>
                     <th>耗时</th>
                     <th>状态</th>
                     <th>时间</th>
@@ -642,6 +665,10 @@ export const RouterLab = () => {
                       <td>{log.endpoint_id}</td>
                       <td>{log.api_key_id}</td>
                       <td>{log.total_tokens ?? "--"}</td>
+                      <td title={log.upstream_url ?? undefined}>
+                        {log.execution_mode ?? "--"}
+                        {log.agent_node ? ` (${log.agent_node})` : ""}
+                      </td>
                       <td>{log.latency_ms} ms</td>
                       <td>{log.status_code}</td>
                       <td>{new Date(log.created_at).toLocaleString()}</td>

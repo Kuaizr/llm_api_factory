@@ -13,6 +13,8 @@ class APIKeyStub:
 @dataclass
 class EndpointStub:
     id: int
+    agent_node: str | None = None
+    access_mode: str = "direct"
 
 
 def build_candidates(weights: list[int]) -> list[RouteCandidate]:
@@ -72,3 +74,41 @@ def test_sequential_strategy_places_unknown_keys_last() -> None:
     key_ids = [candidate.api_key.id for candidate in ordered]
     assert key_ids[:2] == [4, 2]
     assert sorted(key_ids[2:]) == [1, 3]
+
+
+def test_route_candidate_reports_direct_execution_by_default() -> None:
+    candidate = RouteCandidate(
+        api_key=APIKeyStub(id=1, weight=1),
+        endpoint=EndpointStub(id=1),
+        real_model="model",
+    )
+
+    assert candidate.execution_mode == "direct"
+    assert candidate.agent_name is None
+
+
+def test_route_candidate_reports_via_agent_execution() -> None:
+    candidate = RouteCandidate(
+        api_key=APIKeyStub(id=1, weight=1),
+        endpoint=EndpointStub(id=1, access_mode="via_agent", agent_node="edge-hk"),
+        real_model="model",
+    )
+
+    assert candidate.execution_mode == "via_agent"
+    assert candidate.agent_name == "edge-hk"
+
+
+def test_route_candidate_keeps_legacy_agent_node_compatibility() -> None:
+    @dataclass
+    class LegacyEndpointStub:
+        id: int
+        agent_node: str | None = None
+
+    candidate = RouteCandidate(
+        api_key=APIKeyStub(id=1, weight=1),
+        endpoint=LegacyEndpointStub(id=1, agent_node="edge-sg"),
+        real_model="model",
+    )
+
+    assert candidate.execution_mode == "via_agent"
+    assert candidate.agent_name == "edge-sg"

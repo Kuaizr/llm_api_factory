@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Request
 
@@ -121,7 +122,13 @@ def _build_upstream_headers(
     incoming_headers: dict, endpoint: object, api_key: str
 ) -> dict:
     headers = {}
-    skip_headers = {"host", "content-length", "authorization", "x-api-key"}
+    skip_headers = {
+        "host",
+        "content-length",
+        "authorization",
+        "x-api-key",
+        "x-goog-api-key",
+    }
     for key, value in incoming_headers.items():
         if key.lower() in skip_headers:
             continue
@@ -158,6 +165,9 @@ def _build_upstream_headers(
 
 
 def _get_agent_name(endpoint: object) -> str | None:
+    access_mode = str(getattr(endpoint, "access_mode", "") or "").strip()
+    if access_mode and access_mode != "via_agent":
+        return None
     name = getattr(endpoint, "agent_node", None)
     if not name:
         return None
@@ -165,11 +175,24 @@ def _get_agent_name(endpoint: object) -> str | None:
     return trimmed or None
 
 
+def _strip_duplicate_version_segment(base: str, path: str) -> str:
+    for version in ("v1", "v1beta", "v1alpha"):
+        prefix = f"/{version}"
+        if base.endswith(prefix) and (path == prefix or path.startswith(f"{prefix}/")):
+            stripped = path[len(prefix) :]
+            return stripped or "/"
+    return path
+
+
 def _build_target_url(
-    base_url: str, request: Request, path_prefix: str | None = None, endpoint: object | None = None
+    base_url: str,
+    request: Request,
+    path_prefix: str | None = None,
+    endpoint: object | None = None,
+    path_override: str | None = None,
 ) -> str:
     base = base_url.rstrip("/")
-    path = request.url.path
+    path = path_override if path_override is not None else request.url.path
     if path_prefix and path.startswith(path_prefix):
         path = path[len(path_prefix) :]
         if not path.startswith("/"):
@@ -184,9 +207,8 @@ def _build_target_url(
         # 使用自定义后缀路径
         path = url_path_suffix if url_path_suffix.startswith("/") else f"/{url_path_suffix}"
     else:
-        # 默认路径处理逻辑
-        if base.endswith("/v1") and path.startswith("/v1/"):
-            path = path[3:]
+        # 默认路径处理逻辑：避免 base_url 已带 /v1 或 /v1beta 时重复拼接版本段。
+        path = _strip_duplicate_version_segment(base, path)
 
     url = f"{base}{path}"
 
@@ -197,11 +219,10 @@ def _build_target_url(
             try:
                 extra_query_params = json.loads(extra_query_params_json)
                 if isinstance(extra_query_params, dict) and extra_query_params:
-                    import urllib.parse
-                    query_parts = list(urllib.parse.parse_qsl(request.url.query))
+                    query_parts = list(parse_qsl(request.url.query))
                     for key, value in extra_query_params.items():
                         query_parts.append((str(key), str(value)))
-                    new_query = urllib.parse.urlencode(query_parts)
+                    new_query = urlencode(query_parts)
                     url = f"{url}?{new_query}" if new_query else url
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -491,7 +512,7 @@ def _build_debug_headers(
     candidate: RouteCandidate,
     model_alias: str,
 ) -> dict:
-    return {
+    headers = {
         "x-request-id": request_id,
         "x-trace-id": trace_id,
         "x-endpoint-id": str(candidate.endpoint.id),
@@ -499,7 +520,11 @@ def _build_debug_headers(
         "x-api-key-id": str(candidate.api_key.id),
         "x-model-alias": model_alias,
         "x-real-model": candidate.real_model,
+        "x-execution-mode": candidate.execution_mode,
     }
+    if candidate.agent_name:
+        headers["x-agent-node"] = candidate.agent_name
+    return headers
 
 
 def _merge_headers(base: dict, extra: dict) -> dict:
@@ -534,6 +559,9 @@ async def _stream_response(
     dump_request_body: bytes | None = None,
     dump_session_id: str | None = None,
     dump_request_path: str | None = None,
+    execution_mode: str = "direct",
+    agent_node: str | None = None,
+    upstream_url: str | None = None,
 ) -> AsyncGenerator[bytes, None]:
     buffer = ""
     usage_payload = None
@@ -574,6 +602,9 @@ async def _stream_response(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            execution_mode=execution_mode,
+            agent_node=agent_node,
+            upstream_url=upstream_url,
         )
         asyncio.create_task(write_request_log(metrics))
         if dump_rule is not None and dump_endpoint_name:
@@ -633,4 +664,3 @@ def _inspect_stream_chunk(
         if "usage" in payload:
             usage_payload = payload
     return buffer, usage_payload, data_seen
-

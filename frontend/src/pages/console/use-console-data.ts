@@ -92,7 +92,8 @@ export const useConsoleData = () => {
             ...endpoint,
             is_active: endpoint.status !== "offline",
             strategy: "weighted_round_robin",
-            is_agent_enabled: Boolean(endpoint.agent_node),
+            is_agent_enabled:
+              endpoint.access_mode === "via_agent" || Boolean(endpoint.agent_node),
             model_count: 0,
             probe_interval_seconds: null,
             keys: [],
