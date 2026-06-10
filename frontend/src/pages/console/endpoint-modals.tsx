@@ -61,6 +61,7 @@ export const EditEndpointModal = ({
   const [oauthConfigText, setOauthConfigText] = useState(
     endpoint?.oauth_config ? JSON.stringify(endpoint.oauth_config, null, 2) : ""
   );
+  const isCustomProvider = form.provider === "custom";
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -109,10 +110,27 @@ export const EditEndpointModal = ({
               value={form.provider}
               onChange={(event) => {
                 const provider = event.target.value;
+                if (provider !== "custom") {
+                  setExtraHeadersText("");
+                  setExtraQueryParamsText("");
+                  setOauthConfigText("");
+                }
                 setForm((prev) => {
+                  const customOnly =
+                    provider === "custom"
+                      ? {}
+                      : {
+                          url_path_suffix: "",
+                          extra_headers: undefined,
+                          extra_cookies: "",
+                          extra_query_params: undefined,
+                          oauth_config: undefined,
+                          request_body_template: "",
+                        };
                   if (provider === "anthropic") {
                     return {
                       ...prev,
+                      ...customOnly,
                       provider,
                       auth_header_name: "x-api-key",
                       auth_header_prefix: "",
@@ -121,6 +139,7 @@ export const EditEndpointModal = ({
                   if (provider === "gemini") {
                     return {
                       ...prev,
+                      ...customOnly,
                       provider,
                       auth_header_name: "x-goog-api-key",
                       auth_header_prefix: "",
@@ -129,12 +148,13 @@ export const EditEndpointModal = ({
                   if (provider === "openai") {
                     return {
                       ...prev,
+                      ...customOnly,
                       provider,
                       auth_header_name: "Authorization",
                       auth_header_prefix: "Bearer",
                     };
                   }
-                  return { ...prev, provider };
+                  return { ...prev, ...customOnly, provider };
                 });
               }}
               className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
@@ -241,6 +261,7 @@ export const EditEndpointModal = ({
           </div>
 
           {/* 通用 Provider 扩展配置 */}
+          {isCustomProvider && (
           <div className="pt-2 border-t border-gray-800 space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-gray-500 uppercase">
@@ -384,6 +405,7 @@ export const EditEndpointModal = ({
               </p>
             </div>
           </div>
+          )}
         </div>
         <div className="p-4 border-t border-gray-800 flex items-center justify-between gap-2">
           {endpoint && onDelete && (

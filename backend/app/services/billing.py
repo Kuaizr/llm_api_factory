@@ -13,6 +13,7 @@ class RequestMetrics:
     model_alias: str
     endpoint_id: int
     api_key_id: int
+    requested_rule_group: str | None
     rule_group: str
     status_code: int
     latency_ms: int
@@ -66,6 +67,7 @@ async def write_request_log(metrics: RequestMetrics) -> None:
             model_alias=metrics.model_alias,
             endpoint_id=metrics.endpoint_id,
             api_key_id=metrics.api_key_id,
+            requested_rule_group=metrics.requested_rule_group,
             rule_group=metrics.rule_group,
             prompt_tokens=metrics.prompt_tokens,
             completion_tokens=metrics.completion_tokens,

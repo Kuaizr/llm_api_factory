@@ -128,6 +128,7 @@ export const useConsoleActions = ({
     const url = editingEndpoint
       ? `${apiBase}/admin/endpoints/${editingEndpoint.id}`
       : `${apiBase}/admin/endpoints`;
+    const isCustomProvider = payload.provider === "custom";
     const response = await fetch(url, {
       method,
       headers: buildHeaders(token, true),
@@ -140,12 +141,14 @@ export const useConsoleActions = ({
         agent_node: payload.agent_node,
         probe_interval_seconds: probeInterval,
         is_active: payload.is_active,
-        url_path_suffix: payload.url_path_suffix || null,
-        extra_headers: payload.extra_headers || null,
-        extra_cookies: payload.extra_cookies || null,
-        extra_query_params: payload.extra_query_params || null,
-        oauth_config: payload.oauth_config || null,
-        request_body_template: payload.request_body_template || null,
+        url_path_suffix: isCustomProvider ? payload.url_path_suffix || null : null,
+        extra_headers: isCustomProvider ? payload.extra_headers || null : null,
+        extra_cookies: isCustomProvider ? payload.extra_cookies || null : null,
+        extra_query_params: isCustomProvider ? payload.extra_query_params || null : null,
+        oauth_config: isCustomProvider ? payload.oauth_config || null : null,
+        request_body_template: isCustomProvider
+          ? payload.request_body_template || null
+          : null,
       }),
     });
     if (response.ok) {
@@ -436,7 +439,7 @@ export const useConsoleActions = ({
 
   const handleRotateAgentToken = async (agent: AgentNode) => {
     if (!isAdmin) return;
-    if (agent.status === "online") {
+    if (agent.status !== "offline") {
       alert(
         `Agent "${agent.name}" 已部署，无法重新生成Token。如需重新部署，请先删除该Agent并创建新的。`
       );

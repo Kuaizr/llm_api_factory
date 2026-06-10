@@ -24,6 +24,10 @@ class EndpointStub:
     agent_node: str | None = None
     oauth_config: str | None = None
     request_body_template: str | None = None
+    extra_headers: str | None = None
+    extra_cookies: str | None = None
+    extra_query_params: str | None = None
+    url_path_suffix: str | None = None
 
 
 @dataclass
@@ -94,10 +98,43 @@ def build_proxy_app(
     async def override_session():
         yield FakeSession()
 
-    async def fake_get_candidates(self, session, model_alias: str, rule_group: str):  # noqa: ANN001
+    async def fake_get_candidates(  # noqa: ANN001
+        self,
+        session,
+        model_alias: str,
+        rule_group: str,
+        **kwargs,
+    ):
         recorded["model_alias"] = model_alias
         recorded["rule_group"] = rule_group
-        return candidates, rule_group
+        recorded["candidate_kwargs"] = kwargs
+        available_candidates = [
+            candidate
+            for candidate in candidates
+            if redis.store.get(f"circuit:{candidate.api_key.id}:state") != "open"
+        ]
+        provider_filters = kwargs.get("provider_filters")
+        fallback_to_any = bool(kwargs.get("provider_filter_fallback_to_any"))
+        if isinstance(provider_filters, str):
+            filters = {provider_filters.strip().lower()}
+        elif provider_filters:
+            filters = {str(item).strip().lower() for item in provider_filters}
+        else:
+            filters = set()
+        if filters:
+            filtered = [
+                candidate
+                for candidate in available_candidates
+                if (
+                    str(getattr(candidate.endpoint, "provider", "openai") or "openai")
+                    .strip()
+                    .lower()
+                    in filters
+                )
+            ]
+            if filtered or not fallback_to_any:
+                return filtered, rule_group
+        return available_candidates, rule_group
 
     async def fake_get_http_client() -> httpx.AsyncClient:
         return upstream_client
@@ -111,6 +148,7 @@ def build_proxy_app(
     monkeypatch.setattr(routes_module.ModelRouter, "get_candidates", fake_get_candidates)
     monkeypatch.setattr(routes_module, "get_http_client", fake_get_http_client)
     monkeypatch.setattr(routes_module, "write_request_log", fake_write_request_log)
+    recorded["redis"] = redis
     if agent_manager is not None:
         monkeypatch.setattr(routes_module, "get_agent_manager", lambda: agent_manager)
 
@@ -150,6 +188,7 @@ async def test_completions_proxy_success(monkeypatch: pytest.MonkeyPatch) -> Non
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert response.json() == upstream_payload
@@ -188,6 +227,7 @@ async def test_completions_proxy_accepts_x_api_key(monkeypatch: pytest.MonkeyPat
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert response.json() == upstream_payload
@@ -224,6 +264,7 @@ async def test_openai_standard_passthrough_endpoint(monkeypatch: pytest.MonkeyPa
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert response.json() == upstream_payload
@@ -235,6 +276,137 @@ async def test_openai_standard_passthrough_endpoint(monkeypatch: pytest.MonkeyPa
     assert sent_request.headers.get("x-api-key") is None
     payload = json.loads(sent_request.content.decode("utf-8"))
     assert payload["model"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_standard_provider_ignores_custom_endpoint_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=93,
+        name="OpenAI",
+        base_url="https://api.example.com",
+        provider="openai",
+        extra_headers=json.dumps({"X-Injected": "yes"}),
+        extra_cookies="session=custom",
+        extra_query_params=json.dumps({"api-version": "custom"}),
+        url_path_suffix="/custom/path",
+    )
+    api_key = APIKeyStub(id=94, key="sk-openai")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4o")
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "chatcmpl-openai"})
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions?existing=1",
+            headers={"x-api-key": "token"},
+            json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/v1/chat/completions"
+    assert sent_request.url.query == b"existing=1"
+    assert sent_request.headers.get("x-injected") is None
+    assert sent_request.headers.get("cookie") is None
+
+
+@pytest.mark.asyncio
+async def test_custom_provider_applies_endpoint_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=95,
+        name="Custom",
+        base_url="https://custom.example.com",
+        provider="custom",
+        extra_headers=json.dumps({"X-Injected": "yes"}),
+        extra_cookies="session=custom",
+        extra_query_params=json.dumps({"api-version": "custom"}),
+        url_path_suffix="/custom/path",
+    )
+    api_key = APIKeyStub(id=96, key="sk-custom")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="custom/model")
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "custom-ok"})
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions?existing=1",
+            headers={"x-api-key": "token"},
+            json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/custom/path"
+    assert sent_request.url.query == b"existing=1&api-version=custom"
+    assert sent_request.headers.get("x-injected") == "yes"
+    assert sent_request.headers.get("cookie") == "session=custom"
+
+
+@pytest.mark.asyncio
+async def test_standard_provider_returns_raw_non_stream_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(id=97, name="OpenAI", base_url="https://api.example.com")
+    api_key = APIKeyStub(id=98, key="sk-openai")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4o")
+
+    raw_response = b'{"id":"raw",   "usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}'
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=raw_response,
+        )
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions",
+            headers={"x-api-key": "token"},
+            json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    await upstream_client.aclose()
+    await asyncio.sleep(0)
+
+    assert response.status_code == 200
+    assert response.content == raw_response
+    metrics = recorded.get("metrics")
+    assert metrics is not None
+    assert metrics.total_tokens == 3
 
 
 @pytest.mark.asyncio
@@ -609,6 +781,7 @@ async def test_responses_proxy_passthrough_payload(monkeypatch: pytest.MonkeyPat
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert response.json() == upstream_payload
@@ -621,6 +794,11 @@ async def test_responses_proxy_passthrough_payload(monkeypatch: pytest.MonkeyPat
     assert payload["model"] == "gpt-4o"
     assert payload["input"] == raw_payload["input"]
     assert payload["temperature"] == raw_payload["temperature"]
+    assert payload["rule_group"] == "qiniu"
+    metrics = recorded.get("metrics")
+    assert metrics is not None
+    assert metrics.requested_rule_group == "qiniu"
+    assert metrics.rule_group == "qiniu"
 
 
 @pytest.mark.asyncio
@@ -771,7 +949,7 @@ async def test_proxy_uses_session_id_as_trace_id(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_proxy_retries_next_candidate_on_retryable_status(
+async def test_proxy_retries_primary_then_skips_open_circuit_on_next_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     primary_endpoint = EndpointStub(id=10, name="Primary", base_url="https://api.example.com")
@@ -813,13 +991,83 @@ async def test_proxy_retries_next_candidate_on_retryable_status(
             headers={"Authorization": "Bearer token"},
             json={"model": "gpt-4o-mini", "prompt": "hi"},
         )
+        second_response = await client.post(
+            "/openai/v1/completions",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-4o-mini", "prompt": "hi again"},
+        )
 
     await upstream_client.aclose()
 
     assert response.status_code == 200
     assert response.json()["id"] == "cmpl-retry-ok"
-    assert len(requests) == 2
+    assert second_response.status_code == 200
+    assert second_response.json()["id"] == "cmpl-retry-ok"
+    assert len(requests) == 5
+    primary_requests = [
+        request for request in requests if request.headers.get("Authorization") == "Bearer sk-primary"
+    ]
+    fallback_requests = [
+        request for request in requests if request.headers.get("Authorization") == "Bearer sk-fallback"
+    ]
+    assert len(primary_requests) == 3
+    assert len(fallback_requests) == 2
     assert response.headers["x-api-key-id"] == str(fallback_key.id)
+    assert second_response.headers["x-api-key-id"] == str(fallback_key.id)
+    redis = recorded["redis"]
+    assert redis.store[f"circuit:{primary_key.id}:state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_proxy_does_not_retry_same_candidate_on_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_endpoint = EndpointStub(id=14, name="Primary", base_url="https://api.example.com")
+    fallback_endpoint = EndpointStub(id=15, name="Fallback", base_url="https://api.example.com")
+    primary_key = APIKeyStub(id=16, key="sk-primary")
+    fallback_key = APIKeyStub(id=17, key="sk-fallback")
+    primary_candidate = RouteCandidate(
+        api_key=primary_key,
+        endpoint=primary_endpoint,
+        real_model="gpt-4o",
+    )
+    fallback_candidate = RouteCandidate(
+        api_key=fallback_key,
+        endpoint=fallback_endpoint,
+        real_model="gpt-4o",
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.headers.get("Authorization") == "Bearer sk-primary":
+            return httpx.Response(403, json={"error": "forbidden"})
+        return httpx.Response(200, json={"id": "cmpl-fallback-ok"})
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(
+        monkeypatch,
+        [primary_candidate, fallback_candidate],
+        upstream_client,
+        recorded,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/completions",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-4o-mini", "prompt": "hi"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert len(requests) == 2
+    assert requests[0].headers.get("Authorization") == "Bearer sk-primary"
+    assert requests[1].headers.get("Authorization") == "Bearer sk-fallback"
 
 
 class UnavailableAgentManager:
@@ -961,7 +1209,7 @@ async def test_proxy_falls_back_when_agent_unavailable(monkeypatch: pytest.Monke
 
     assert response.status_code == 200
     assert response.json()["id"] == "cmpl-http-fallback"
-    assert manager.calls == ["agent-west"]
+    assert manager.calls == ["agent-west", "agent-west", "agent-west"]
     assert len(requests) == 1
     assert response.headers["x-endpoint-id"] == str(http_endpoint.id)
 
@@ -1005,7 +1253,7 @@ async def test_proxy_returns_502_when_last_agent_unavailable(
 
     assert response.status_code == 502
     assert response.json()["detail"] == "Agent unavailable"
-    assert manager.calls == ["agent-only"]
+    assert manager.calls == ["agent-only", "agent-only", "agent-only"]
 
 
 @pytest.mark.asyncio
@@ -1225,7 +1473,7 @@ async def test_oauth_uses_cached_token_on_subsequent_requests(
 
 @pytest.mark.asyncio
 async def test_request_body_template_replaces_variables(monkeypatch: pytest.MonkeyPatch) -> None:
-    """验证请求体模板能够正确替换 {{model}} 和 {{prompt}} 等变量"""
+    """验证 custom provider 请求体模板能够正确替换变量"""
     template = json.dumps({
         "model": "{{model}}",
         "prompt": "{{prompt}}",
@@ -1236,6 +1484,7 @@ async def test_request_body_template_replaces_variables(monkeypatch: pytest.Monk
         id=1,
         name="TemplateEndpoint",
         base_url="https://api.example.com",
+        provider="custom",
         request_body_template=template,
     )
     api_key = APIKeyStub(id=101, key="sk-test")
@@ -1275,12 +1524,60 @@ async def test_request_body_template_replaces_variables(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_standard_provider_ignores_request_body_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = json.dumps({"model": "{{model}}", "prompt": "{{prompt}}"})
+    endpoint = EndpointStub(
+        id=3,
+        name="StandardTemplateIgnored",
+        base_url="https://api.example.com",
+        provider="openai",
+        request_body_template=template,
+    )
+    api_key = APIKeyStub(id=103, key="sk-test")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4o")
+
+    upstream_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        upstream_requests.append(request)
+        return httpx.Response(200, json={"choices": [{"text": "ok"}]})
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/completions",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model": "gpt-4o-mini",
+                "custom_value": "my-value",
+                "messages": [{"role": "user", "content": "Hello world"}],
+            },
+        )
+        assert response.status_code == 200
+
+    await upstream_client.aclose()
+
+    assert len(upstream_requests) == 1
+    sent_body = json.loads(upstream_requests[0].content)
+    assert sent_body["model"] == "gpt-4o"
+    assert sent_body["custom_value"] == "my-value"
+    assert "prompt" not in sent_body
+
+
+@pytest.mark.asyncio
 async def test_request_body_template_fallback_on_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     """验证模板渲染结果不是合法 JSON 时回退到原始请求体"""
     endpoint = EndpointStub(
         id=2,
         name="InvalidTemplateEndpoint",
         base_url="https://api.example.com",
+        provider="custom",
         request_body_template="this is not json {{model}}",
     )
     api_key = APIKeyStub(id=102, key="sk-test")

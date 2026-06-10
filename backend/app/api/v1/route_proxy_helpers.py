@@ -18,11 +18,19 @@ DEFAULT_OAUTH_REFRESH_LEEWAY_SECONDS = 120
 DEFAULT_OAUTH_LOCK_TTL_SECONDS = 10
 OAUTH_LOCK_WAIT_STEP_SECONDS = 0.1
 OAUTH_LOCK_WAIT_ROUNDS = 20
+STANDARD_PROVIDER_NAMES = {"openai", "anthropic", "gemini"}
 
 # 请求体模板变量替换的正则模式
 # 先匹配被双引号包裹的占位符，避免字符串转义问题
 QUOTED_TEMPLATE_VARIABLE_PATTERN = re.compile(r'"\{\{(\w+)}}"')
 TEMPLATE_VARIABLE_PATTERN = re.compile(r"\{\{(\w+)}}")
+
+
+def _is_custom_provider(endpoint: object | None) -> bool:
+    if endpoint is None:
+        return False
+    provider = str(getattr(endpoint, "provider", "") or "").strip().lower()
+    return provider not in STANDARD_PROVIDER_NAMES
 
 
 def _json_encode_template_value(value: object) -> str:
@@ -100,6 +108,9 @@ def _apply_request_body_template(
         - None: 不使用模板，保持原始 payload
         - dict: 使用模板渲染后的新 payload
     """
+    if not _is_custom_provider(endpoint):
+        return None
+
     template = getattr(endpoint, "request_body_template", None)
     if not template or not isinstance(template, str) or not template.strip():
         return None
@@ -141,25 +152,26 @@ def _build_upstream_headers(
     else:
         headers[header_name] = api_key
 
-    # 处理扩展字段：extra_headers
-    extra_headers_json = getattr(endpoint, "extra_headers", None)
-    if extra_headers_json:
-        try:
-            extra_headers = json.loads(extra_headers_json)
-            if isinstance(extra_headers, dict):
-                for key, value in extra_headers.items():
-                    headers[key] = str(value)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    if _is_custom_provider(endpoint):
+        # 处理扩展字段：extra_headers
+        extra_headers_json = getattr(endpoint, "extra_headers", None)
+        if extra_headers_json:
+            try:
+                extra_headers = json.loads(extra_headers_json)
+                if isinstance(extra_headers, dict):
+                    for key, value in extra_headers.items():
+                        headers[key] = str(value)
+            except (json.JSONDecodeError, TypeError):
+                pass
 
-    # 处理扩展字段：extra_cookies
-    extra_cookies = getattr(endpoint, "extra_cookies", None)
-    if extra_cookies:
-        existing_cookie = headers.get("Cookie", "")
-        if existing_cookie:
-            headers["Cookie"] = f"{existing_cookie}; {extra_cookies}"
-        else:
-            headers["Cookie"] = extra_cookies
+        # 处理扩展字段：extra_cookies
+        extra_cookies = getattr(endpoint, "extra_cookies", None)
+        if extra_cookies:
+            existing_cookie = headers.get("Cookie", "")
+            if existing_cookie:
+                headers["Cookie"] = f"{existing_cookie}; {extra_cookies}"
+            else:
+                headers["Cookie"] = extra_cookies
 
     return headers
 
@@ -200,7 +212,7 @@ def _build_target_url(
 
     # 如果 endpoint 配置了自定义 url_path_suffix，则使用它替代默认路径
     url_path_suffix = None
-    if endpoint is not None:
+    if _is_custom_provider(endpoint):
         url_path_suffix = getattr(endpoint, "url_path_suffix", None)
 
     if url_path_suffix:
@@ -213,7 +225,7 @@ def _build_target_url(
     url = f"{base}{path}"
 
     # 处理扩展字段：extra_query_params
-    if endpoint is not None:
+    if _is_custom_provider(endpoint):
         extra_query_params_json = getattr(endpoint, "extra_query_params", None)
         if extra_query_params_json:
             try:
@@ -498,6 +510,7 @@ async def _apply_oauth_access_token(
 
 def _filter_response_headers(headers: dict) -> dict:
     excluded = {
+        "content-length",
         "content-encoding",
         "transfer-encoding",
         "connection",
@@ -550,6 +563,7 @@ async def _stream_response(
     model_alias: str,
     endpoint_id: int,
     api_key_id: int,
+    requested_rule_group: str | None,
     rule_group: str,
     status_code: int,
     latency_ms: int,
@@ -594,6 +608,7 @@ async def _stream_response(
             model_alias=model_alias,
             endpoint_id=endpoint_id,
             api_key_id=api_key_id,
+            requested_rule_group=requested_rule_group,
             rule_group=rule_group,
             status_code=status_code,
             latency_ms=resolved_latency_ms,

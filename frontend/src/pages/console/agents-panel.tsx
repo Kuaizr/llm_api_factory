@@ -63,6 +63,8 @@ export const AgentsView = ({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {agents.map((agent) => {
           const isOnline = agent.status === "online";
+          const isDraining = agent.status === "draining";
+          const routeStatus = isDraining ? "draining" : isOnline ? "online" : "offline";
           return (
             <div
               key={agent.id}
@@ -79,6 +81,8 @@ export const AgentsView = ({
                       className={`p-2 rounded-lg ${
                         isOnline
                           ? "bg-green-900/20 text-green-400"
+                          : isDraining
+                            ? "bg-amber-900/20 text-amber-300"
                           : "bg-red-900/20 text-red-400"
                       }`}
                     >
@@ -89,7 +93,7 @@ export const AgentsView = ({
                       <p className="text-xs text-gray-500">{agent.region ?? "--"}</p>
                     </div>
                   </div>
-                  <StatusBadge status={isOnline ? "online" : "offline"} />
+                  <StatusBadge status={routeStatus} />
                 </div>
 
                 <div className="space-y-2 mb-4">
@@ -143,21 +147,21 @@ export const AgentsView = ({
                 <div className="flex gap-2">
                   <button
                     onClick={() => onRotateToken(agent)}
-                    disabled={!isAdmin || agent.status === "online"}
+                    disabled={!isAdmin || agent.status !== "offline"}
                     className={`flex-1 py-2 text-xs rounded border transition ${
-                      agent.status === "online"
+                      agent.status !== "offline"
                         ? "bg-gray-700/20 text-gray-500 border-gray-700/40 cursor-not-allowed"
                         : "bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 border-blue-700/40 disabled:opacity-50"
                     }`}
                     title={
                       !isAdmin
                         ? "需要管理员权限"
-                        : agent.status === "online"
+                        : agent.status !== "offline"
                           ? "已部署的Agent无法重新生成Token"
                           : "重新生成 Token"
                     }
                   >
-                    {agent.status === "online" ? "已部署" : "Token"}
+                    {agent.status !== "offline" ? "已部署" : "Token"}
                   </button>
                   <button
                     onClick={() => onDelete(agent)}

@@ -26,6 +26,7 @@ class AgentStatus:
     supports_claude: bool | None
     probe_latency_ms: int | None
     probe_checked_at: datetime | None
+    is_draining: bool
     is_active: bool
     last_seen_at: datetime | None
     status: str
@@ -63,7 +64,7 @@ def build_agent_statuses(
             normalized_last_seen = _normalize_datetime(last_seen)
             delta = (normalized_now - normalized_last_seen).total_seconds()
             if delta <= timeout_seconds:
-                status = "online"
+                status = "draining" if getattr(agent, "is_draining", False) else "online"
         statuses.append(
             AgentStatus(
                 id=agent.id,
@@ -77,6 +78,7 @@ def build_agent_statuses(
                 supports_claude=getattr(agent, "supports_claude", None),
                 probe_latency_ms=getattr(agent, "probe_latency_ms", None),
                 probe_checked_at=getattr(agent, "probe_checked_at", None),
+                is_draining=bool(getattr(agent, "is_draining", False)),
                 is_active=agent.is_active,
                 last_seen_at=agent.last_seen_at,
                 status=status,
@@ -130,6 +132,7 @@ async def upsert_agent(
             "supports_claude": supports_claude,
             "probe_latency_ms": probe_latency_ms,
             "probe_checked_at": probe_checked_at,
+            "is_draining": False,
             "is_active": True,
             "last_seen_at": current_time if touch else None,
         }

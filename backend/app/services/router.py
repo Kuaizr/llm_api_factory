@@ -12,6 +12,32 @@ from app.services.agent_transport import get_agent_manager
 from app.services.circuit_breaker import CircuitBreaker
 
 
+def _normalize_provider_name(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized or "openai"
+
+
+def _normalize_provider_filters(
+    provider_filters: str | Sequence[str] | set[str] | None,
+) -> set[str] | None:
+    if provider_filters is None:
+        return None
+    if isinstance(provider_filters, str):
+        return {_normalize_provider_name(provider_filters)}
+    filters = {
+        _normalize_provider_name(provider)
+        for provider in provider_filters
+        if str(provider or "").strip()
+    }
+    return filters or None
+
+
+@dataclass(frozen=True)
+class AgentRouteState:
+    is_active: bool
+    is_draining: bool
+
+
 @dataclass(frozen=True)
 class RouteCandidate:
     api_key: APIKey
@@ -48,7 +74,14 @@ class ModelRouter:
         self.circuit_breaker = circuit_breaker
 
     async def get_candidates(
-        self, session: AsyncSession, model_alias: str, rule_group: str
+        self,
+        session: AsyncSession,
+        model_alias: str,
+        rule_group: str,
+        *,
+        provider_filters: str | Sequence[str] | set[str] | None = None,
+        provider_filter_fallback_to_any: bool = False,
+        allow_unmapped_fallback: bool = False,
     ) -> tuple[list[RouteCandidate], str]:
         target_key_ids, strategy = await self._select_rule_targets(
             session, model_alias, rule_group
@@ -77,17 +110,76 @@ class ModelRouter:
 
         result = await session.execute(stmt)
         rows = result.all()
-        via_agent_names = {
-            candidate.agent_name
+        all_candidates = [
+            RouteCandidate(
+                api_key=api_key, endpoint=endpoint, real_model=model_map.real_model
+            )
             for api_key, endpoint, model_map in rows
-            for candidate in [RouteCandidate(api_key=api_key, endpoint=endpoint, real_model=model_map.real_model)]
-            if candidate.agent_name
-        }
-        agent_state = await self._load_agent_active_state(session, via_agent_names)
+        ]
+        candidates = await self._filter_available_candidates(
+            session, all_candidates, effective_group, target_key_ids=target_key_ids
+        )
+        candidates = self._filter_provider_candidates(
+            candidates,
+            provider_filters,
+            fallback_to_any=provider_filter_fallback_to_any,
+        )
+
+        if not candidates and allow_unmapped_fallback:
+            fallback_candidates = await self._load_unmapped_candidates(
+                session, model_alias, effective_group
+            )
+            candidates = self._filter_provider_candidates(
+                fallback_candidates,
+                provider_filters,
+                fallback_to_any=provider_filter_fallback_to_any,
+            )
+
+        context_key = f"{model_alias}:{effective_group}:{strategy}"
+        ordered = self._order_candidates(
+            candidates, strategy, context_key, target_key_ids
+        )
+        return ordered, effective_group
+
+    async def _load_unmapped_candidates(
+        self,
+        session: AsyncSession,
+        model_alias: str,
+        effective_group: str,
+    ) -> list[RouteCandidate]:
+        fallback_stmt = (
+            select(APIKey, Endpoint)
+            .join(Endpoint, APIKey.endpoint_id == Endpoint.id)
+            .where(
+                APIKey.is_active.is_(True),
+                Endpoint.is_active.is_(True),
+            )
+            .order_by(APIKey.id)
+        )
+        result = await session.execute(fallback_stmt)
+        candidates = [
+            RouteCandidate(api_key=api_key, endpoint=endpoint, real_model=model_alias)
+            for api_key, endpoint in result.all()
+        ]
+        return await self._filter_available_candidates(
+            session, candidates, effective_group, target_key_ids=[]
+        )
+
+    async def _filter_available_candidates(
+        self,
+        session: AsyncSession,
+        candidates: Sequence[RouteCandidate],
+        effective_group: str,
+        *,
+        target_key_ids: list[int],
+    ) -> list[RouteCandidate]:
+        via_agent_names = {candidate.agent_name for candidate in candidates if candidate.agent_name}
+        agent_state = await self._load_agent_route_state(session, via_agent_names)
         agent_manager = get_agent_manager()
 
-        candidates: list[RouteCandidate] = []
-        for api_key, endpoint, model_map in rows:
+        available: list[RouteCandidate] = []
+        for candidate in candidates:
+            api_key = candidate.api_key
             if not target_key_ids:
                 if hasattr(api_key, "in_rule_group"):
                     if not api_key.in_rule_group(effective_group):
@@ -96,23 +188,36 @@ class ModelRouter:
                     continue
             if not await self._is_key_available(api_key):
                 continue
-            candidate = RouteCandidate(
-                api_key=api_key, endpoint=endpoint, real_model=model_map.real_model
-            )
             if candidate.execution_mode == "via_agent":
                 agent_name = candidate.agent_name
                 if not agent_name:
                     continue
-                if agent_state.get(agent_name) is not True:
+                state = agent_state.get(agent_name)
+                if state is None or not state.is_active or state.is_draining:
                     continue
                 if agent_manager.get(agent_name) is None:
                     continue
-            candidates.append(candidate)
-        context_key = f"{model_alias}:{effective_group}:{strategy}"
-        ordered = self._order_candidates(
-            candidates, strategy, context_key, target_key_ids
-        )
-        return ordered, effective_group
+            available.append(candidate)
+        return available
+
+    @staticmethod
+    def _filter_provider_candidates(
+        candidates: Sequence[RouteCandidate],
+        provider_filters: str | Sequence[str] | set[str] | None,
+        *,
+        fallback_to_any: bool,
+    ) -> list[RouteCandidate]:
+        filters = _normalize_provider_filters(provider_filters)
+        if not filters:
+            return list(candidates)
+        filtered = [
+            candidate
+            for candidate in candidates
+            if _normalize_provider_name(candidate.endpoint.provider) in filters
+        ]
+        if filtered or not fallback_to_any:
+            return filtered
+        return list(candidates)
 
     async def _is_key_available(self, api_key: APIKey) -> bool:
         today = datetime.now(timezone.utc).date()
@@ -123,9 +228,9 @@ class ModelRouter:
             return False
         return await self.circuit_breaker.is_available(api_key.id)
 
-    async def _load_agent_active_state(
+    async def _load_agent_route_state(
         self, session: AsyncSession, agent_names: set[str | None]
-    ) -> dict[str, bool]:
+    ) -> dict[str, AgentRouteState]:
         names = {str(name).strip() for name in agent_names if str(name or "").strip()}
         if not names:
             return {}
@@ -133,7 +238,13 @@ class ModelRouter:
             result = await session.execute(select(Agent).where(Agent.name.in_(names)))
         except (AttributeError, AssertionError):
             return {}
-        return {agent.name: bool(agent.is_active) for agent in result.scalars().all()}
+        return {
+            agent.name: AgentRouteState(
+                is_active=bool(agent.is_active),
+                is_draining=bool(getattr(agent, "is_draining", False)),
+            )
+            for agent in result.scalars().all()
+        }
 
     @staticmethod
     def _candidate_weight(candidate: RouteCandidate) -> int:

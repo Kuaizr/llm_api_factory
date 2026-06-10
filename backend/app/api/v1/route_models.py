@@ -361,6 +361,7 @@ class RequestLogOut(BaseModel):
     model_alias: str
     endpoint_id: int
     api_key_id: int
+    requested_rule_group: str | None = None
     rule_group: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
@@ -485,6 +486,7 @@ class AgentStatusOut(BaseModel):
     supports_claude: bool | None = None
     probe_latency_ms: int | None = None
     probe_checked_at: datetime | None = None
+    is_draining: bool = False
     is_active: bool
     last_seen_at: datetime | None
     status: str
@@ -495,6 +497,7 @@ class AgentUpdate(BaseModel):
     network_group: str | None = None
     labels: list[str] | None = None
     endpoint_url: str | None = None
+    is_draining: bool | None = None
     is_active: bool | None = None
 
 

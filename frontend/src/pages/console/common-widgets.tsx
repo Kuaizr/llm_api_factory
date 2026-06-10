@@ -5,19 +5,27 @@ import { type EndpointStatus } from "./shared";
 export const StatusBadge = ({
   status,
 }: {
-  status: EndpointStatus | "online" | "offline";
+  status: EndpointStatus | "online" | "offline" | "draining";
 }) => {
   const colors = {
     online: "bg-green-500/20 text-green-400 border-green-500/30",
     degraded: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+    draining: "bg-amber-500/20 text-amber-300 border-amber-500/30",
     offline: "bg-red-500/20 text-red-400 border-red-500/30",
   };
 
   const labels: Record<string, string> = {
     online: "Online",
     degraded: "Degraded",
+    draining: "Draining",
     offline: "Offline",
   };
+  const dotColor =
+    status === "online"
+      ? "bg-green-400"
+      : status === "offline"
+        ? "bg-red-400"
+        : "bg-yellow-400";
 
   return (
     <span
@@ -26,13 +34,7 @@ export const StatusBadge = ({
       } flex items-center gap-1.5`}
     >
       <span
-        className={`w-1.5 h-1.5 rounded-full ${
-          status === "online"
-            ? "bg-green-400"
-            : status === "degraded"
-              ? "bg-yellow-400"
-              : "bg-red-400"
-        } animate-pulse`}
+        className={`w-1.5 h-1.5 rounded-full ${dotColor} animate-pulse`}
       />
       {labels[status]}
     </span>

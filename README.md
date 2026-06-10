@@ -1,33 +1,108 @@
 # LLM API Factory
 
-## 背景
-LLM API Factory 是一个面向个人或小团队的 LLM API 聚合分发与监控服务：统一管理多家模型 API Key，按模型名进行路由与降级，并提供健康探针、熔断与可视化控制台。核心理念是“模型名是一等公民”，请求只需指定模型，系统会自动选择可用端点。
+LLM API Factory 是一个面向个人或小团队的 LLM 控制面。它对外提供统一 API 入口，对内管理 endpoint、API key、规则组、健康探测、熔断和 agent 节点，让 agent、CLI 工具和自定义脚本只需要面向一组逻辑模型名工作。
+
+项目的核心方向是：标准协议最小侵入代理 + 策略路由 + 执行位置控制。
+
+## 项目定位
+
+LLM API Factory 负责：
+
+- 统一 OpenAI / Anthropic / Gemini 风格入口
+- 逻辑模型名、模型映射和规则组路由
+- endpoint / API key / factory key / agent 管理
+- 健康探测、熔断、候选筛选和 fallback
+- 请求日志、用量统计、route test / route explain
+- 面向自动化脚本和 agent 运维的 CLI 控制面
+
+它不负责：
+
+- 做公共运营平台、多租户套餐、注册登录和复杂计费
+- 重复实现 CLIProxyAPI 的 OAuth、订阅账号和协议翻译能力
+- 自动部署或管理 GPU、本地模型、vLLM、llama.cpp
+- 把所有 provider 兼容细节都写进主服务
+
+CLIProxyAPI 或其他特殊 runtime 可以作为普通 upstream endpoint 接入；如果它已经能被主节点直接访问，不需要强制走 agent。
 
 ## 主要能力
-- OpenAI / Anthropic 标准入口透传（支持流式），并记录请求用量与耗时。
-- 按模型 + 规则组路由，熔断不可用 Key，并支持多 Key 负载策略。
-- 通用 Provider 扩展：自定义 URL 后缀、额外 Header/Cookie/Query、请求体模板变量替换。
-- OAuth Client Credentials：自动取 Token、Redis 缓存、401 自动刷新重试。
-- 健康探针与趋势可视化，告警策略配置（Telegram）。
-- 管理控制台：资产管理、路由测试、日志导出与筛选。
-- 可选 Agent 节点（用于跨境代理，支持请求代理加速）。
+
+- 标准 provider：OpenAI、Anthropic、Gemini
+- 自定义 provider：自定义 path、header、cookie、query、request body template
+- OpenAI 风格入口：models、chat completions、completions、embeddings、responses
+- Anthropic 风格入口：messages
+- Gemini 风格入口：generateContent、streamGenerateContent
+- 标准链路流式与非流式透传
+- 按模型名和规则组选择候选 endpoint / key
+- sequential、weighted round robin 等策略
+- 熔断不可用 key，并在探测或成功请求后恢复
+- Agent 节点通过 WebSocket 回连，支持远程代理请求
+- 管理控制台和 CLI 两套控制面
+
+## Provider 语义
+
+### 标准 Provider
+
+`openai`、`anthropic`、`gemini` 走最小侵入代理路线：
+
+- 下游 body 想传什么就传什么
+- 不主动删除未知字段
+- 不主动做 request body template
+- 不使用 endpoint 的 custom header/query/cookie/path suffix
+- OpenAI / Anthropic 只在需要时替换 `model`
+- Gemini 只在需要时替换 URL path 里的 model
+- 注入必要鉴权头和 trace header
+- 响应尽量原始返回，日志和 usage 统计在旁路解析
+
+这意味着标准 provider 尽量兼容上游协议未来新增字段。下游如果传了上游不接受的字段，上游报错会原样暴露给下游。
+
+### Custom Provider
+
+`custom` provider 是强定制适配器，适合接入私有协议、魔改兼容接口或外部 runtime：
+
+- `url_path_suffix`
+- `extra_headers`
+- `extra_cookies`
+- `extra_query_params`
+- `request_body_template`
+
+这些能力只对 `custom` 生效。前端在选择标准 provider 时会隐藏这些字段，后端也会清空标准 provider 上的 custom-only 配置。
+
+## 路由和规则组
+
+下游请求通常只需要：
+
+- 统一 base URL
+- 一个 factory access key
+- body 里的逻辑模型名
+
+规则组由平台发放的 factory access key 控制。也就是说，调用方 key 绑定了它能访问的规则组，路由时会得到一个最终生效组。
+
+关键概念：
+
+- `requested_group`：下游声明的组，可能来自 body/header，也可能为空
+- `allowed_groups`：factory access key 允许访问的组
+- `effective_group`：平台最终采用的组
+
+下游声明的组不会被当成可信授权来源。系统只信 `effective_group`，不会因为下游传了某个组就越权。
+
+顺序策略目前按主备语义工作：
+
+- 对 `429/500/502/503/504`，同一候选最多本地重试 3 次
+- 对 `401/403`，不做同一候选重试，直接记录失败并尝试 fallback
+- 多次失败的 key 会进入熔断，在 TTL 内跳过
+- 成功请求或成功探测会关闭对应 key 的熔断状态
 
 ## 快速开始
 
-### 前置依赖
+### 依赖
 
-- Python 由 uv 管理，项目默认使用 `backend/.python-version` 中的 Python 版本。
-- Node.js / npm 用于安装和构建前端。
+- Python 由 `uv` 管理，版本见 [backend/.python-version](backend/.python-version)
+- Node.js / npm 用于前端安装和构建
 
-安装 uv：
+安装 `uv`：
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-如果 uv 安装在 `~/.local/bin/uv` 但当前 shell 找不到它，可以先刷新 PATH：
-
-```bash
 source "$HOME/.local/bin/env"
 ```
 
@@ -39,17 +114,25 @@ npm ci
 cd ..
 ```
 
-### 推荐：单入口启动
+### 单入口启动
 
-单入口模式会先构建前端，然后由后端托管 `frontend/dist`，只需要访问一个端口：
+推荐使用单入口模式：先构建前端，再由后端托管 `frontend/dist`。
 
 ```bash
 bash scripts/start_all.sh --rebuild-frontend
 ```
 
-默认访问地址：`http://127.0.0.1:8000`
+默认访问地址：
 
-默认管理员密码：`admin`
+```text
+http://127.0.0.1:8000
+```
+
+默认管理员密码：
+
+```text
+admin
+```
 
 自定义端口和管理员密码：
 
@@ -57,13 +140,13 @@ bash scripts/start_all.sh --rebuild-frontend
 bash scripts/start_all.sh --port 9000 --admin-token "your-admin-token" --rebuild-frontend
 ```
 
-如果前端已经构建过，可以跳过构建：
+如果前端已经构建过：
 
 ```bash
 bash scripts/start_all.sh --skip-build
 ```
 
-停止服务：
+停止后台进程：
 
 ```bash
 kill "$(cat scripts/pids/app-8000.pid)"
@@ -71,7 +154,7 @@ kill "$(cat scripts/pids/app-8000.pid)"
 
 日志位置：
 
-```bash
+```text
 scripts/logs/app-8000.log
 ```
 
@@ -80,34 +163,31 @@ scripts/logs/app-8000.log
 ```bash
 cd backend
 uv sync
-```
-
-建议配置环境变量（可选）：
-
-```bash
-export LLM_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/llm_api_factory"
-export LLM_REDIS_URL="redis://localhost:6379/0"
-export LLM_MASTER_AUTH_TOKEN="your-admin-token"
-```
-
-启动服务：
-
-```bash
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-默认未配置 `LLM_DATABASE_URL` 时使用本地 SQLite 数据库；Redis 相关能力需要本地 Redis 或外部 Redis。
+常用环境变量：
+
+```bash
+export LLM_MASTER_AUTH_TOKEN="your-admin-token"
+export LLM_DATABASE_URL="sqlite+aiosqlite:///./llm_api_factory.db"
+export LLM_REDIS_URL="redis://localhost:6379/0"
+```
+
+默认数据库是 SQLite：
+
+```text
+backend/llm_api_factory.db
+```
+
+Redis 用于健康探测结果、熔断状态和时间序列数据。开发环境没有 Redis 时会退回内存实现，服务可用，但重启后这些运行态数据会丢失。
 
 ### 前端开发
 
 ```bash
 cd frontend
-```
-
-安装依赖：
-
-```bash
 npm ci
+npm run dev -- --port 5173
 ```
 
 可选环境变量：
@@ -117,40 +197,97 @@ export VITE_API_BASE="http://localhost:8000"
 export VITE_ADMIN_TOKEN="your-admin-token"
 ```
 
-启动前端：
+开发模式前端地址：
 
-```bash
-npm run dev -- --port 5173
+```text
+http://127.0.0.1:5173
 ```
 
-开发模式下前端地址为 `http://127.0.0.1:5173`，API 请求转发到 `VITE_API_BASE`。
+## systemd 运行
 
-## 测试
+本机长期运行可以使用 user systemd service，例如：
 
-后端测试：
+```ini
+[Unit]
+Description=LLM API Factory
+After=network-online.target
+Wants=network-online.target
 
-```bash
-cd backend
-uv run pytest -q
+[Service]
+Type=simple
+WorkingDirectory=/path/to/llm_api_factory/backend
+Environment=LLM_MASTER_AUTH_TOKEN=admin
+Environment=LLM_CORS_ALLOW_ORIGINS=*
+ExecStart=/home/you/.local/bin/uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
 ```
 
-前端测试：
+启用：
 
 ```bash
-cd frontend
-npm test -- --run
+systemctl --user daemon-reload
+systemctl --user enable --now llm-api-factory.service
 ```
+
+如果 shell 里可以访问某些上游，但 systemd 服务不行，通常是代理环境没有传给服务。可以加 drop-in：
+
+```bash
+mkdir -p ~/.config/systemd/user/llm-api-factory.service.d
+```
+
+```ini
+# ~/.config/systemd/user/llm-api-factory.service.d/proxy.conf
+[Service]
+Environment="HTTP_PROXY=http://127.0.0.1:7897"
+Environment="HTTPS_PROXY=http://127.0.0.1:7897"
+Environment="http_proxy=http://127.0.0.1:7897"
+Environment="https_proxy=http://127.0.0.1:7897"
+Environment="NO_PROXY=127.*,localhost,<local>"
+Environment="no_proxy=127.*,localhost,<local>"
+```
+
+然后重启：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart llm-api-factory.service
+```
+
+## 控制面鉴权
+
+控制面有两类 key：
+
+- Admin token：登录后台和调用 `/admin/*`
+- Factory access key：下游工具调用 `/openai/*`、`/anthropic/*`、`/gemini/*`
+
+下游请求示例：
+
+```bash
+curl http://127.0.0.1:8000/openai/v1/responses \
+  -H "Authorization: Bearer fk-your-factory-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.5",
+    "input": "Reply with exactly OK."
+  }'
+```
+
+通常不需要下游额外传规则组 header。规则组由 factory access key 绑定。
 
 ## CLI 控制面
 
-CLI 面向自动化脚本和 agent 运维，默认读取：
+CLI 默认读取：
 
 ```bash
 export LLM_FACTORY_URL="http://127.0.0.1:8000"
 export LLM_FACTORY_TOKEN="admin"
 ```
 
-也可以每次显式传入：
+也可以显式传入：
 
 ```bash
 cd backend
@@ -192,6 +329,12 @@ uv run llm-factory worker enable 1
 uv run llm-factory worker disable 1
 ```
 
+Worker 状态语义：
+
+- `enable`：可接新请求
+- `drain`：节点在线，但不分配新请求
+- `disable`：管理上禁用，不参与路由
+
 ### Rule Group
 
 ```bash
@@ -201,15 +344,19 @@ uv run llm-factory rule-group update 2 --model-pattern '^gpt-.*$'
 uv run llm-factory rule-group bind 2 --key-ids 3,4 --strategy weighted_round_robin
 ```
 
-## 可选：Agent 节点
+## Agent 节点
 
-Agent 节点用于跨境代理加速，通过 WebSocket 与后端保持连接，支持请求转发。
+Agent 节点用于表达请求执行位置。典型场景：
 
-### 部署方式
+- 上游只能从特定 VPS 网络访问
+- 主节点不能直接访问远程私网 endpoint
+- 需要让某些请求从指定 region、network group 或标签节点发出
 
-#### 方式一：通过管理控制台（推荐）
+Agent 不是 provider，也不是模型 runtime。它只是远程转发节点。
 
-如果 Agent 要部署在远程 VPS，先用公网域名、反向代理或 SSH tunnel 暴露本机控制面，并在启动主程序时配置公网地址和安装脚本地址：
+### 管理台部署
+
+如果 Agent 要部署在远程 VPS，先让远程机器能访问主服务控制面，并在启动主程序时配置公网地址和安装脚本地址：
 
 ```bash
 bash scripts/start_all.sh \
@@ -220,35 +367,17 @@ bash scripts/start_all.sh \
   --agent-install-repo-ref main
 ```
 
-1. 登录管理控制台（管理员权限）
-2. 进入「Agent 节点」页签
-3. 点击「部署新节点」按钮
-4. 输入节点名称，点击生成部署命令
-5. 复制生成的命令，在目标服务器上执行
+然后：
 
-#### 方式二：手动运行
+1. 登录管理控制台
+2. 进入 Agent 页面
+3. 创建新代理
+4. 生成部署命令
+5. 在远程 VPS 执行该命令
 
-```bash
-# 克隆仓库
-git clone https://github.com/your-repo/llm-api-factory.git
-cd llm-api-factory
+### 安装脚本
 
-# 准备后端依赖
-cd backend
-uv sync
-
-# 运行 Agent
-export LLM_AGENT_WS_URL="ws://localhost:8000/agent/ws"
-export LLM_AGENT_HEARTBEAT_URL="http://localhost:8000/agent/heartbeat"
-export LLM_AGENT_NAME="edge-hk"
-export LLM_AGENT_AUTH_TOKEN="your-token-from-console"
-export LLM_AGENT_REGION="HK"
-uv run python -m app.services.agent_client
-```
-
-#### 方式三：使用安装脚本
-
-可从 GitHub raw 直接安装：
+可以直接从 GitHub raw 拉取安装脚本：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts/agent_install.sh | bash -s -- \
@@ -261,34 +390,43 @@ curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts
   --repo-ref main
 ```
 
-### 常用命令行参数
+常用参数：
 
 | 参数 | 说明 |
 |------|------|
-| `--ws-url` | WebSocket 连接地址 (必需) |
-| `--heartbeat-url` | 心跳上报地址 (必需) |
-| `--agent-name` | 节点名称 (必需) |
-| `--agent-token` | 认证 Token (必需) |
-| `--agent-region` | 区域标识 (如 HK/SG/US) |
+| `--ws-url` | WebSocket 连接地址，必需 |
+| `--heartbeat-url` | 心跳上报地址，必需 |
+| `--agent-name` | 节点名称，必需 |
+| `--agent-token` | 认证 token，必需 |
+| `--agent-region` | 区域标识，如 HK、SG、US |
 | `--agent-network-group` | 网络分组 |
 | `--agent-labels` | 逗号分隔标签 |
-| `--agent-endpoint-url` | 出口公网地址 (用于延迟探测) |
+| `--agent-endpoint-url` | 出口公网地址，用于延迟探测 |
 | `--repo` | Agent 代码仓库地址 |
 | `--repo-ref` | Agent 代码分支、tag 或 commit |
 | `--no-systemd` | 不注册 systemd，用 nohup 后台运行 |
 
-### Agent 功能
+### 手动运行
 
-- **心跳检测**：Agent 定期向后端发送心跳，维持在线状态
-- **能力探测**：Agent 启动时自动探测支持的模型类型
-- **请求代理**：后端将请求转发给 Agent，Agent 转发到目标 LLM 服务
-- **Token 管理**：每个 Agent 拥有独立 Token，支持重新生成（仅限未部署节点）
+```bash
+git clone https://github.com/Kuaizr/llm_api_factory.git
+cd llm_api_factory/backend
+uv sync
 
-## 接口示例
+export LLM_AGENT_WS_URL="ws://localhost:8000/agent/ws"
+export LLM_AGENT_HEARTBEAT_URL="http://localhost:8000/agent/heartbeat"
+export LLM_AGENT_NAME="edge-hk"
+export LLM_AGENT_AUTH_TOKEN="your-token-from-console"
+export LLM_AGENT_REGION="HK"
 
-OpenAI 标准入口（推荐）：
-
+uv run python -m app.services.agent_client
 ```
+
+## API 入口
+
+OpenAI 风格：
+
+```text
 GET  /openai/v1/models
 POST /openai/v1/chat/completions
 POST /openai/v1/completions
@@ -296,10 +434,41 @@ POST /openai/v1/embeddings
 POST /openai/v1/responses
 ```
 
-Anthropic 标准入口：
+Anthropic 风格：
 
-```
+```text
 POST /anthropic/v1/messages
 ```
 
-> 说明：旧的 `/v1/*` 兼容入口已移除，请统一迁移到 `/openai/v1/*` 或 `/anthropic/v1/*`。
+Gemini 风格：
+
+```text
+POST /gemini/v1beta/models/{model}:generateContent
+POST /gemini/v1beta/models/{model}:streamGenerateContent
+```
+
+旧的 `/v1/*` 兼容入口已移除，请使用 `/openai/v1/*`、`/anthropic/v1/*` 或 `/gemini/v1beta/*`。
+
+## 测试
+
+后端：
+
+```bash
+cd backend
+uv run pytest -q
+```
+
+前端：
+
+```bash
+cd frontend
+npm test -- --run
+```
+
+## 开发原则
+
+- 标准 provider 保持最小侵入，不做无必要 body/response 重组
+- 强定制能力放在 `custom` provider，不混入标准链路
+- 路由语义优先清晰：逻辑模型名、规则组、候选 key、执行位置要可解释
+- Agent 的核心价值是执行位置控制，不是环境托管或 provider 实现
+- 新功能优先服务个人/小团队自动化，不扩张成公共运营平台

@@ -78,6 +78,7 @@ def _agent_status_out(agent: Agent) -> AgentStatusOut:
         supports_claude=status.supports_claude,
         probe_latency_ms=status.probe_latency_ms,
         probe_checked_at=status.probe_checked_at,
+        is_draining=status.is_draining,
         is_active=status.is_active,
         last_seen_at=status.last_seen_at,
         status=status.status,
@@ -283,6 +284,7 @@ async def agent_heartbeat(
         supports_claude=status.supports_claude,
         probe_latency_ms=status.probe_latency_ms,
         probe_checked_at=status.probe_checked_at,
+        is_draining=status.is_draining,
         is_active=status.is_active,
         last_seen_at=status.last_seen_at,
         status=status.status,
@@ -310,6 +312,7 @@ async def admin_agents(
             supports_claude=status.supports_claude,
             probe_latency_ms=status.probe_latency_ms,
             probe_checked_at=status.probe_checked_at,
+            is_draining=status.is_draining,
             is_active=status.is_active,
             last_seen_at=status.last_seen_at,
             status=status.status,
@@ -340,7 +343,7 @@ async def admin_update_agent(
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    for field in ("region", "network_group", "endpoint_url", "is_active"):
+    for field in ("region", "network_group", "endpoint_url", "is_active", "is_draining"):
         if field in data:
             setattr(agent, field, data[field])
     if "labels" in data:
@@ -351,15 +354,17 @@ async def admin_update_agent(
     return _agent_status_out(agent)
 
 
-async def _set_agent_active(
+async def _set_agent_state(
     agent_id: int,
     is_active: bool,
+    is_draining: bool,
     session: AsyncSession,
 ) -> AgentStatusOut:
     agent = await session.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent.is_active = is_active
+    agent.is_draining = is_draining
     await session.commit()
     await session.refresh(agent)
     return _agent_status_out(agent)
@@ -369,21 +374,21 @@ async def admin_drain_agent(
     agent_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> AgentStatusOut:
-    return await _set_agent_active(agent_id, False, session)
+    return await _set_agent_state(agent_id, True, True, session)
 
 
 async def admin_disable_agent(
     agent_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> AgentStatusOut:
-    return await _set_agent_active(agent_id, False, session)
+    return await _set_agent_state(agent_id, False, False, session)
 
 
 async def admin_enable_agent(
     agent_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> AgentStatusOut:
-    return await _set_agent_active(agent_id, True, session)
+    return await _set_agent_state(agent_id, True, False, session)
 
 
 async def admin_rotate_agent_token(

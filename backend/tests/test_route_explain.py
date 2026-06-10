@@ -78,22 +78,43 @@ async def test_route_explain_reports_candidates_and_excluded_agent(
         agent_node="edge-vps",
         is_active=True,
     )
-    session.add_all([direct, via_agent])
+    draining_agent_endpoint = Endpoint(
+        name="draining-vps-openai",
+        base_url="https://api.openai.com/v1",
+        provider="openai",
+        access_mode="via_agent",
+        agent_node="drain-vps",
+        is_active=True,
+    )
+    session.add_all([direct, via_agent, draining_agent_endpoint])
     await session.commit()
     await session.refresh(direct)
     await session.refresh(via_agent)
+    await session.refresh(draining_agent_endpoint)
 
     direct_key = APIKey(endpoint_id=direct.id, key="sk-direct", weight=1, is_active=True)
     agent_key = APIKey(endpoint_id=via_agent.id, key="sk-agent", weight=1, is_active=True)
-    session.add_all([direct_key, agent_key])
+    draining_key = APIKey(
+        endpoint_id=draining_agent_endpoint.id,
+        key="sk-draining",
+        weight=1,
+        is_active=True,
+    )
+    session.add_all([direct_key, agent_key, draining_key])
     await session.commit()
     await session.refresh(direct_key)
     await session.refresh(agent_key)
+    await session.refresh(draining_key)
 
     session.add_all(
         [
             ModelMap(endpoint_id=direct.id, model_alias="gpt-vps", real_model="gpt-4.1"),
             ModelMap(endpoint_id=via_agent.id, model_alias="gpt-vps", real_model="gpt-4.1"),
+            ModelMap(
+                endpoint_id=draining_agent_endpoint.id,
+                model_alias="gpt-vps",
+                real_model="gpt-4.1",
+            ),
             RoutingRule(
                 model_pattern="^gpt-vps$",
                 group_name="vps",
@@ -101,16 +122,18 @@ async def test_route_explain_reports_candidates_and_excluded_agent(
                 is_active=True,
                 target_key_ids_json=json.dumps(
                     {
-                        "target_key_ids": [direct_key.id, agent_key.id],
+                        "target_key_ids": [direct_key.id, agent_key.id, draining_key.id],
                         "strategy": "sequential",
                     }
                 ),
             ),
             Agent(name="edge-vps", region="us", is_active=False),
+            Agent(name="drain-vps", region="us", is_active=True, is_draining=True),
         ]
     )
     await session.commit()
     get_agent_manager().register("edge-vps", FakeChannel())
+    get_agent_manager().register("drain-vps", FakeChannel())
 
     async def override_session():
         yield session
@@ -138,10 +161,11 @@ async def test_route_explain_reports_candidates_and_excluded_agent(
     assert payload["effective_rule_group"] == "vps"
     assert payload["strategy"] == "sequential"
     assert payload["candidates"][0]["endpoint_name"] == "direct-openai"
-    excluded = payload["excluded"][0]
-    assert excluded["endpoint_name"] == "vps-openai"
-    assert excluded["reasons"] == ["agent_disabled"]
+    excluded_by_name = {item["endpoint_name"]: item["reasons"] for item in payload["excluded"]}
+    assert excluded_by_name["vps-openai"] == ["agent_disabled"]
+    assert excluded_by_name["draining-vps-openai"] == ["agent_draining"]
 
     get_agent_manager().unregister("edge-vps")
+    get_agent_manager().unregister("drain-vps")
     await session.close()
     await engine.dispose()

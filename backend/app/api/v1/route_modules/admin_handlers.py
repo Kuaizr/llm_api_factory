@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 import re
 import time
 
@@ -61,6 +62,14 @@ from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 
 SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
+CUSTOM_ONLY_ENDPOINT_FIELDS = (
+    "url_path_suffix",
+    "extra_headers",
+    "extra_cookies",
+    "extra_query_params",
+    "request_body_template",
+)
+logger = logging.getLogger(__name__)
 
 
 def _normalize_endpoint_provider(raw: object) -> str:
@@ -94,6 +103,13 @@ def _apply_provider_auth_defaults(data: dict[str, object]) -> None:
         data["auth_header_name"] = "x-goog-api-key"
         if not header_prefix or header_prefix.lower() == "bearer":
             data["auth_header_prefix"] = ""
+
+
+def _clear_custom_only_endpoint_fields(data: dict[str, object], provider: str) -> None:
+    if provider == "custom":
+        return
+    for field in CUSTOM_ONLY_ENDPOINT_FIELDS:
+        data[field] = None
 
 
 def _normalize_url_path_suffix(raw: object) -> str | None:
@@ -131,6 +147,8 @@ def _pick_probe_model(existing_models: list[ModelMap]) -> str:
 
 def _resolve_probe_message(
     *,
+    provider: str,
+    status: str,
     status_code: int | None,
     discovered_models: list[str],
 ) -> str | None:
@@ -138,7 +156,15 @@ def _resolve_probe_message(
         return "API Key 权限问题，请检查上游权限配置。"
     if discovered_models:
         return None
-    return "上游不支持 /v1/models 接口，请在右侧手动新增模型映射。"
+    if status == "error":
+        return "探测请求执行失败，请查看后端日志。"
+    if status_code is not None and status_code >= 400:
+        return f"上游模型探测接口返回 HTTP {status_code}。"
+    if provider == "anthropic":
+        return None
+    if status == "success":
+        return "上游模型探测接口返回成功，但没有解析到模型，请在右侧手动新增模型映射。"
+    return "上游不支持模型探测接口，请在右侧手动新增模型映射。"
 
 
 def _dedupe_discovered_models(raw_models: list[str]) -> list[str]:
@@ -541,6 +567,7 @@ async def create_endpoint(
         )
     data["provider"] = _normalize_endpoint_provider(data.get("provider"))
     _apply_provider_auth_defaults(data)
+    _clear_custom_only_endpoint_fields(data, str(data["provider"]))
     # 将 dict 字段转为 JSON 字符串存储
     if data.get("extra_headers") is not None:
         data["extra_headers"] = json.dumps(data["extra_headers"])
@@ -588,6 +615,8 @@ async def update_endpoint(
     if "provider" in data:
         data["provider"] = _normalize_endpoint_provider(data.get("provider"))
         _apply_provider_auth_defaults(data)
+    next_provider = str(data.get("provider", endpoint.provider) or "openai").strip().lower()
+    _clear_custom_only_endpoint_fields(data, next_provider)
     # 将 dict 字段转为 JSON 字符串存储
     if "extra_headers" in data and data["extra_headers"] is not None:
         data["extra_headers"] = json.dumps(data["extra_headers"])
@@ -690,6 +719,12 @@ async def probe_endpoint(
     except Exception:
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         status = "error"
+        logger.exception(
+            "endpoint_probe_failed endpoint_id=%s provider=%s url=%s",
+            endpoint.id,
+            provider,
+            url,
+        )
     finally:
         if response is not None:
             await response.aclose()
@@ -721,6 +756,8 @@ async def probe_endpoint(
         )
 
     probe_message = _resolve_probe_message(
+        provider=provider,
+        status=status,
         status_code=status_code,
         discovered_models=discovered_models,
     )

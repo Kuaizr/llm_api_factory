@@ -204,6 +204,7 @@ class Agent(Base):
     probe_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    is_draining: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -250,6 +251,9 @@ class RequestLog(Base):
     model_alias: Mapped[str] = mapped_column(String(128), index=True)
     endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
     api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id"))
+    requested_rule_group: Mapped[str | None] = mapped_column(
+        String(64), index=True, nullable=True
+    )
     rule_group: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

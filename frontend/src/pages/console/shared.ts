@@ -132,6 +132,7 @@ export type AgentNode = {
   supports_claude?: boolean | null;
   probe_latency_ms?: number | null;
   probe_checked_at?: string | null;
+  is_draining?: boolean;
 };
 
 export type AgentBootstrapResult = {

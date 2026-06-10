@@ -32,7 +32,7 @@ from app.api.v1.route_proxy_helpers import (
 )
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
-from app.db.models import APIKey, Endpoint, ModelMap, RoutingRule
+from app.db.models import Endpoint, ModelMap, RoutingRule
 from app.db.session import get_session
 from app.services.agent_transport import AgentRequest, AgentUnavailableError, get_agent_manager
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
@@ -41,7 +41,9 @@ from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
 RETRYABLE_STATUSES = {401, 403, 429, 500, 502, 503, 504}
-CIRCUIT_BREAKER_STATUSES = {401, 429}
+CIRCUIT_BREAKER_STATUSES = RETRYABLE_STATUSES
+LOCAL_RETRY_STATUSES = {429, 500, 502, 503, 504}
+UPSTREAM_CANDIDATE_MAX_ATTEMPTS = 3
 SESSION_HINT_KEYS = (
     "session_id",
     "conversation_id",
@@ -194,6 +196,23 @@ def _rewrite_gemini_model_path(path: str, real_model: str) -> str:
     )
 
 
+def _parse_json_object_bytes(content: bytes | None) -> dict[str, object] | None:
+    if not content:
+        return None
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _should_retry_same_candidate(status_code: int, attempt_index: int) -> bool:
+    return (
+        status_code in LOCAL_RETRY_STATUSES
+        and attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS
+    )
+
+
 async def _list_accessible_model_aliases(
     request: Request,
     session: AsyncSession,
@@ -288,7 +307,7 @@ async def _proxy_openai_request(
     session: AsyncSession,
     *,
     rewrite_model: bool = True,
-    strip_rule_group_from_payload: bool = True,
+    strip_rule_group_from_payload: bool = False,
     path_prefix: str | None = None,
     provider_filter: str | tuple[str, ...] | None = None,
     provider_filter_fallback_to_any: bool = False,
@@ -315,12 +334,6 @@ async def _proxy_openai_request(
     if not model_alias and header_model_alias:
         model_alias = str(header_model_alias)
 
-    has_explicit_model = (
-        model_alias_raw is not None
-        or bool(header_model_alias)
-        or model_alias_override is not None
-    )
-
     if rewrite_model and not model_alias and not allow_missing_model:
         raise HTTPException(status_code=400, detail="Missing model field")
     if not model_alias:
@@ -331,8 +344,9 @@ async def _proxy_openai_request(
         payload_rule_group = payload.get("rules")
     if not isinstance(payload_rule_group, str) or not payload_rule_group:
         payload_rule_group = request.headers.get("X-Rule-Group", "default")
+    requested_rule_group = str(payload_rule_group or "default").strip() or "default"
     rule_group = await _resolve_rule_group_from_token(
-        session, request, payload_rule_group
+        session, request, requested_rule_group
     )
     if strip_rule_group_from_payload:
         payload.pop("rule_group", None)
@@ -343,63 +357,14 @@ async def _proxy_openai_request(
     circuit_breaker = CircuitBreaker(redis, notifier=notifier)
     router_service = ModelRouter(circuit_breaker)
 
-    all_candidates, effective_group = await router_service.get_candidates(
-        session, model_alias, rule_group
+    candidates, effective_group = await router_service.get_candidates(
+        session,
+        model_alias,
+        rule_group,
+        provider_filters=provider_filter,
+        provider_filter_fallback_to_any=provider_filter_fallback_to_any,
+        allow_unmapped_fallback=True,
     )
-    candidates = all_candidates
-    provider_filters = _normalize_provider_filters(provider_filter)
-    if provider_filters:
-        provider_candidates = [
-            candidate
-            for candidate in all_candidates
-            if _normalize_provider_name(candidate.endpoint.provider) in provider_filters
-        ]
-        if provider_candidates:
-            candidates = provider_candidates
-        elif not provider_filter_fallback_to_any:
-            candidates = []
-
-    if not candidates:
-        fallback_stmt = (
-            select(APIKey, Endpoint)
-            .join(Endpoint, APIKey.endpoint_id == Endpoint.id)
-            .where(
-                APIKey.is_active.is_(True),
-                Endpoint.is_active.is_(True),
-            )
-            .order_by(APIKey.id)
-        )
-
-        fallback_rows = []
-        if provider_filters:
-            provider_result = await session.execute(fallback_stmt)
-            fallback_rows = [
-                row
-                for row in provider_result.all()
-                if _normalize_provider_name(row[1].provider) in provider_filters
-            ]
-            if not fallback_rows and provider_filter_fallback_to_any:
-                any_result = await session.execute(fallback_stmt)
-                fallback_rows = any_result.all()
-        else:
-            fallback_result = await session.execute(fallback_stmt)
-            fallback_rows = fallback_result.all()
-
-        for api_key, endpoint in fallback_rows:
-            if hasattr(api_key, "in_rule_group"):
-                if not api_key.in_rule_group(effective_group):
-                    continue
-            elif getattr(api_key, "rule_group", "default") != effective_group:
-                continue
-            if not await router_service._is_key_available(api_key):
-                continue
-            candidates.append(
-                RouteCandidate(
-                    api_key=api_key,
-                    endpoint=endpoint,
-                    real_model=model_alias,
-                )
-            )
 
     if not candidates:
         raise HTTPException(status_code=404, detail="No available API keys")
@@ -413,18 +378,23 @@ async def _proxy_openai_request(
     client = await get_http_client()
 
     for candidate in candidates:
-        upstream_payload = dict(payload)
-        if rewrite_model and has_explicit_model:
+        upstream_payload = payload
+        should_rewrite_body_model = (
+            rewrite_model
+            and "model" in payload
+            and payload.get("model") != candidate.real_model
+        )
+        if should_rewrite_body_model:
+            upstream_payload = dict(payload)
             upstream_payload["model"] = candidate.real_model
 
-        # 应用请求体模板（如果配置）
         templated_payload = _apply_request_body_template(
             candidate.endpoint, upstream_payload, candidate.real_model
         )
         if templated_payload is not None:
             upstream_payload = templated_payload
 
-        if raw_body or has_explicit_model or templated_payload is not None:
+        if templated_payload is not None or should_rewrite_body_model:
             upstream_body = json.dumps(upstream_payload).encode("utf-8")
         else:
             upstream_body = raw_body
@@ -467,23 +437,244 @@ async def _proxy_openai_request(
 
         if agent_name:
             agent_manager = get_agent_manager()
-            try:
-                agent_request = AgentRequest(
-                    method=request.method,
-                    url=url,
-                    headers=headers,
-                    body=upstream_body,
-                    stream=is_stream,
+            for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
+                try:
+                    agent_request = AgentRequest(
+                        method=request.method,
+                        url=url,
+                        headers=headers,
+                        body=upstream_body,
+                        stream=is_stream,
+                    )
+                    agent_response = await agent_manager.send_request(agent_name, agent_request)
+                except AgentUnavailableError:
+                    await circuit_breaker.record_failure(candidate.api_key.id)
+                    if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS:
+                        continue
+                    if candidate != candidates[-1]:
+                        break
+                    raise HTTPException(status_code=502, detail="Agent unavailable")
+
+                status_code = agent_response.status_code or 500
+
+                if status_code == 401 and oauth_enabled:
+                    try:
+                        headers, _ = await _apply_oauth_access_token(
+                            headers,
+                            candidate.endpoint,
+                            redis,
+                            client,
+                            force_refresh=True,
+                        )
+                        retry_request = AgentRequest(
+                            method=request.method,
+                            url=url,
+                            headers=headers,
+                            body=upstream_body,
+                            stream=is_stream,
+                        )
+                        agent_response = await agent_manager.send_request(
+                            agent_name, retry_request
+                        )
+                        status_code = agent_response.status_code or 500
+                    except AgentUnavailableError:
+                        await circuit_breaker.record_failure(candidate.api_key.id)
+                        if candidate != candidates[-1]:
+                            break
+                        raise HTTPException(status_code=502, detail="Agent unavailable")
+                    except Exception as exc:
+                        await circuit_breaker.record_failure(candidate.api_key.id)
+                        if candidate != candidates[-1]:
+                            break
+                        raise HTTPException(
+                            status_code=502, detail="OAuth token refresh failed"
+                        ) from exc
+
+                if status_code in RETRYABLE_STATUSES:
+                    if status_code in CIRCUIT_BREAKER_STATUSES:
+                        await circuit_breaker.record_failure(candidate.api_key.id)
+                    if is_stream:
+                        content = await agent_response.read_all()
+                    else:
+                        content = agent_response.body
+                    if _should_retry_same_candidate(status_code, attempt_index):
+                        continue
+                    if candidate != candidates[-1]:
+                        break
+                    asyncio.create_task(
+                        _dump_proxy_record(
+                            dump_rule,
+                            request_id,
+                            trace_id,
+                            candidate.endpoint.name,
+                            model_alias,
+                            upstream_body,
+                            content,
+                            status_code,
+                            session_id=session_id,
+                            request_path=request.url.path,
+                        )
+                    )
+                    return Response(
+                        content=content,
+                        status_code=status_code,
+                        media_type=agent_response.headers.get("content-type"),
+                        headers=_merge_headers(
+                            _filter_response_headers(agent_response.headers), debug_headers
+                        ),
+                    )
+
+                await circuit_breaker.record_success(candidate.api_key.id)
+
+                if is_stream:
+                    stream_headers = _merge_headers(
+                        _filter_response_headers(agent_response.headers), debug_headers
+                    )
+
+                    async def agent_stream_generator() -> AsyncGenerator[bytes, None]:
+                        buffer = ""
+                        usage_payload = None
+                        first_data_at: float | None = None
+                        chunks: list[bytes] = []
+                        async for chunk in agent_response.iter_bytes():
+                            if chunk:
+                                chunks.append(chunk)
+                                buffer, usage_payload, data_seen = _inspect_stream_chunk(
+                                    buffer, usage_payload, chunk
+                                )
+                                if data_seen and first_data_at is None:
+                                    first_data_at = time.perf_counter()
+                            yield chunk
+                        stream_end = time.perf_counter()
+                        ttft_ms = (
+                            int((first_data_at - request_start) * 1000)
+                            if first_data_at is not None
+                            else None
+                        )
+                        prompt_tokens, completion_tokens, total_tokens = extract_usage(
+                            usage_payload
+                        )
+                        tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
+                        latency_ms = (
+                            ttft_ms
+                            if ttft_ms is not None
+                            else int((stream_end - request_start) * 1000)
+                        )
+                        metrics = RequestMetrics(
+                            request_id=request_id,
+                            trace_id=trace_id,
+                            model_alias=model_alias,
+                            endpoint_id=candidate.endpoint.id,
+                            api_key_id=candidate.api_key.id,
+                            requested_rule_group=requested_rule_group,
+                            rule_group=effective_group,
+                            status_code=status_code,
+                            latency_ms=latency_ms,
+                            ttft_ms=ttft_ms,
+                            tps=tps,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                            execution_mode=candidate.execution_mode,
+                            agent_node=agent_name,
+                            upstream_url=url,
+                        )
+                        asyncio.create_task(write_request_log(metrics))
+                        asyncio.create_task(
+                            _dump_proxy_record(
+                                dump_rule,
+                                request_id,
+                                trace_id,
+                                candidate.endpoint.name,
+                                model_alias,
+                                upstream_body,
+                                b"".join(chunks),
+                                status_code,
+                                session_id=session_id,
+                                request_path=request.url.path,
+                            )
+                        )
+
+                    return StreamingResponse(
+                        agent_stream_generator(),
+                        status_code=status_code,
+                        media_type=agent_response.headers.get("content-type"),
+                        headers=stream_headers,
+                    )
+
+                latency_ms = int((time.perf_counter() - request_start) * 1000)
+                response_payload = _parse_json_object_bytes(agent_response.body)
+
+                prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
+                metrics = RequestMetrics(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    endpoint_id=candidate.endpoint.id,
+                    api_key_id=candidate.api_key.id,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                    ttft_ms=None,
+                    tps=None,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    execution_mode=candidate.execution_mode,
+                    agent_node=agent_name,
+                    upstream_url=url,
                 )
-                agent_response = await agent_manager.send_request(agent_name, agent_request)
-            except AgentUnavailableError:
-                if candidate != candidates[-1]:
+                asyncio.create_task(write_request_log(metrics))
+
+                asyncio.create_task(
+                    _dump_proxy_record(
+                        dump_rule,
+                        request_id,
+                        trace_id,
+                        candidate.endpoint.name,
+                        model_alias,
+                        upstream_body,
+                        agent_response.body,
+                        status_code,
+                        session_id=session_id,
+                        request_path=request.url.path,
+                    )
+                )
+
+                return Response(
+                    content=agent_response.body,
+                    status_code=status_code,
+                    media_type=agent_response.headers.get("content-type"),
+                    headers=_merge_headers(
+                        _filter_response_headers(agent_response.headers), debug_headers
+                    ),
+                )
+
+            continue
+
+        for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
+            try:
+                request_obj = client.build_request(
+                    request.method,
+                    url,
+                    headers=headers,
+                    content=upstream_body,
+                )
+                response = await client.send(request_obj, stream=is_stream)
+            except Exception as exc:
+                await circuit_breaker.record_failure(candidate.api_key.id)
+                if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS:
                     continue
-                raise HTTPException(status_code=502, detail="Agent unavailable")
+                if candidate != candidates[-1]:
+                    break
+                raise HTTPException(
+                    status_code=502,
+                    detail="Upstream connection error",
+                ) from exc
 
-            status_code = agent_response.status_code or 500
-
-            if status_code == 401 and oauth_enabled:
+            if response.status_code == 401 and oauth_enabled:
+                await response.aclose()
                 try:
                     headers, _ = await _apply_oauth_access_token(
                         headers,
@@ -492,38 +683,42 @@ async def _proxy_openai_request(
                         client,
                         force_refresh=True,
                     )
-                    retry_request = AgentRequest(
-                        method=request.method,
-                        url=url,
-                        headers=headers,
-                        body=upstream_body,
-                        stream=is_stream,
-                    )
-                    agent_response = await agent_manager.send_request(
-                        agent_name, retry_request
-                    )
-                    status_code = agent_response.status_code or 500
-                except AgentUnavailableError:
-                    if candidate != candidates[-1]:
-                        continue
-                    raise HTTPException(status_code=502, detail="Agent unavailable")
                 except Exception as exc:
                     await circuit_breaker.record_failure(candidate.api_key.id)
                     if candidate != candidates[-1]:
-                        continue
+                        break
                     raise HTTPException(
-                        status_code=502, detail="OAuth token refresh failed"
+                        status_code=502,
+                        detail="OAuth token refresh failed",
+                    ) from exc
+                try:
+                    request_obj = client.build_request(
+                        request.method,
+                        url,
+                        headers=headers,
+                        content=upstream_body,
+                    )
+                    response = await client.send(request_obj, stream=is_stream)
+                except Exception as exc:
+                    await circuit_breaker.record_failure(candidate.api_key.id)
+                    if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS:
+                        continue
+                    if candidate != candidates[-1]:
+                        break
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Upstream connection error",
                     ) from exc
 
-            if status_code in RETRYABLE_STATUSES:
-                if status_code in CIRCUIT_BREAKER_STATUSES:
+            if response.status_code in RETRYABLE_STATUSES:
+                if response.status_code in CIRCUIT_BREAKER_STATUSES:
                     await circuit_breaker.record_failure(candidate.api_key.id)
-                if is_stream:
-                    content = await agent_response.read_all()
-                else:
-                    content = agent_response.body
-                if candidate != candidates[-1]:
+                content = await response.aread()
+                await response.aclose()
+                if _should_retry_same_candidate(response.status_code, attempt_index):
                     continue
+                if candidate != candidates[-1]:
+                    break
                 asyncio.create_task(
                     _dump_proxy_record(
                         dump_rule,
@@ -533,103 +728,57 @@ async def _proxy_openai_request(
                         model_alias,
                         upstream_body,
                         content,
-                        status_code,
+                        response.status_code,
                         session_id=session_id,
                         request_path=request.url.path,
                     )
                 )
                 return Response(
                     content=content,
-                    status_code=status_code,
-                    media_type=agent_response.headers.get("content-type"),
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
                     headers=_merge_headers(
-                        _filter_response_headers(agent_response.headers), debug_headers
+                        _filter_response_headers(response.headers), debug_headers
                     ),
                 )
 
             await circuit_breaker.record_success(candidate.api_key.id)
+            latency_ms = int((time.perf_counter() - request_start) * 1000)
 
             if is_stream:
                 stream_headers = _merge_headers(
-                    _filter_response_headers(agent_response.headers), debug_headers
+                    _filter_response_headers(response.headers), debug_headers
                 )
-
-                async def agent_stream_generator() -> AsyncGenerator[bytes, None]:
-                    buffer = ""
-                    usage_payload = None
-                    first_data_at: float | None = None
-                    chunks: list[bytes] = []
-                    async for chunk in agent_response.iter_bytes():
-                        if chunk:
-                            chunks.append(chunk)
-                            buffer, usage_payload, data_seen = _inspect_stream_chunk(
-                                buffer, usage_payload, chunk
-                            )
-                            if data_seen and first_data_at is None:
-                                first_data_at = time.perf_counter()
-                        yield chunk
-                    stream_end = time.perf_counter()
-                    ttft_ms = (
-                        int((first_data_at - request_start) * 1000)
-                        if first_data_at is not None
-                        else None
-                    )
-                    prompt_tokens, completion_tokens, total_tokens = extract_usage(
-                        usage_payload
-                    )
-                    tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
-                    latency_ms = (
-                        ttft_ms
-                        if ttft_ms is not None
-                        else int((stream_end - request_start) * 1000)
-                    )
-                    metrics = RequestMetrics(
-                        request_id=request_id,
-                        trace_id=trace_id,
-                        model_alias=model_alias,
-                        endpoint_id=candidate.endpoint.id,
-                        api_key_id=candidate.api_key.id,
-                        rule_group=effective_group,
-                        status_code=status_code,
-                        latency_ms=latency_ms,
-                        ttft_ms=ttft_ms,
-                        tps=tps,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        execution_mode=candidate.execution_mode,
-                        agent_node=agent_name,
-                        upstream_url=url,
-                    )
-                    asyncio.create_task(write_request_log(metrics))
-                    asyncio.create_task(
-                        _dump_proxy_record(
-                            dump_rule,
-                            request_id,
-                            trace_id,
-                            candidate.endpoint.name,
-                            model_alias,
-                            upstream_body,
-                            b"".join(chunks),
-                            status_code,
-                            session_id=session_id,
-                            request_path=request.url.path,
-                        )
-                    )
-
+                generator = _stream_response(
+                    response=response,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    endpoint_id=candidate.endpoint.id,
+                    api_key_id=candidate.api_key.id,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    status_code=response.status_code,
+                    latency_ms=latency_ms,
+                    request_start=request_start,
+                    dump_rule=dump_rule,
+                    dump_endpoint_name=candidate.endpoint.name,
+                    dump_request_body=upstream_body,
+                    dump_session_id=session_id,
+                    dump_request_path=request.url.path,
+                    execution_mode=candidate.execution_mode,
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
                 return StreamingResponse(
-                    agent_stream_generator(),
-                    status_code=status_code,
-                    media_type=agent_response.headers.get("content-type"),
+                    generator,
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
                     headers=stream_headers,
                 )
 
-            latency_ms = int((time.perf_counter() - request_start) * 1000)
-            response_payload = None
-            try:
-                response_payload = json.loads(agent_response.body)
-            except json.JSONDecodeError:
-                response_payload = None
+            content = await response.aread()
+            response_payload = _parse_json_object_bytes(content)
 
             prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
             metrics = RequestMetrics(
@@ -638,8 +787,9 @@ async def _proxy_openai_request(
                 model_alias=model_alias,
                 endpoint_id=candidate.endpoint.id,
                 api_key_id=candidate.api_key.id,
+                requested_rule_group=requested_rule_group,
                 rule_group=effective_group,
-                status_code=status_code,
+                status_code=response.status_code,
                 latency_ms=latency_ms,
                 ttft_ms=None,
                 tps=None,
@@ -660,101 +810,13 @@ async def _proxy_openai_request(
                     candidate.endpoint.name,
                     model_alias,
                     upstream_body,
-                    agent_response.body,
-                    status_code,
-                    session_id=session_id,
-                    request_path=request.url.path,
-                )
-            )
-
-            if response_payload is None:
-                return Response(
-                    content=agent_response.body,
-                    status_code=status_code,
-                    media_type=agent_response.headers.get("content-type"),
-                    headers=_merge_headers(
-                        _filter_response_headers(agent_response.headers), debug_headers
-                    ),
-                )
-
-            return JSONResponse(
-                status_code=status_code,
-                content=response_payload,
-                headers=_merge_headers(
-                    _filter_response_headers(agent_response.headers), debug_headers
-                ),
-            )
-
-        try:
-            request_obj = client.build_request(
-                request.method,
-                url,
-                headers=headers,
-                content=upstream_body,
-            )
-            response = await client.send(request_obj, stream=is_stream)
-        except Exception as exc:
-            await circuit_breaker.record_failure(candidate.api_key.id)
-            if candidate != candidates[-1]:
-                continue
-            raise HTTPException(status_code=502, detail="Upstream connection error") from exc
-
-        if response.status_code == 401 and oauth_enabled:
-            await response.aclose()
-            try:
-                headers, _ = await _apply_oauth_access_token(
-                    headers,
-                    candidate.endpoint,
-                    redis,
-                    client,
-                    force_refresh=True,
-                )
-            except Exception as exc:
-                await circuit_breaker.record_failure(candidate.api_key.id)
-                if candidate != candidates[-1]:
-                    continue
-                raise HTTPException(
-                    status_code=502,
-                    detail="OAuth token refresh failed",
-                ) from exc
-            try:
-                request_obj = client.build_request(
-                    request.method,
-                    url,
-                    headers=headers,
-                    content=upstream_body,
-                )
-                response = await client.send(request_obj, stream=is_stream)
-            except Exception as exc:
-                await circuit_breaker.record_failure(candidate.api_key.id)
-                if candidate != candidates[-1]:
-                    continue
-                raise HTTPException(
-                    status_code=502,
-                    detail="Upstream connection error",
-                ) from exc
-
-        if response.status_code in RETRYABLE_STATUSES:
-            if response.status_code in CIRCUIT_BREAKER_STATUSES:
-                await circuit_breaker.record_failure(candidate.api_key.id)
-            content = await response.aread()
-            await response.aclose()
-            if candidate != candidates[-1]:
-                continue
-            asyncio.create_task(
-                _dump_proxy_record(
-                    dump_rule,
-                    request_id,
-                    trace_id,
-                    candidate.endpoint.name,
-                    model_alias,
-                    upstream_body,
                     content,
                     response.status_code,
                     session_id=session_id,
                     request_path=request.url.path,
                 )
             )
+
             return Response(
                 content=content,
                 status_code=response.status_code,
@@ -764,100 +826,7 @@ async def _proxy_openai_request(
                 ),
             )
 
-        await circuit_breaker.record_success(candidate.api_key.id)
-        latency_ms = int((time.perf_counter() - request_start) * 1000)
-
-        if is_stream:
-            stream_headers = _merge_headers(
-                _filter_response_headers(response.headers), debug_headers
-            )
-            generator = _stream_response(
-                response=response,
-                request_id=request_id,
-                trace_id=trace_id,
-                model_alias=model_alias,
-                endpoint_id=candidate.endpoint.id,
-                api_key_id=candidate.api_key.id,
-                rule_group=effective_group,
-                status_code=response.status_code,
-                latency_ms=latency_ms,
-                request_start=request_start,
-                dump_rule=dump_rule,
-                dump_endpoint_name=candidate.endpoint.name,
-                dump_request_body=upstream_body,
-                dump_session_id=session_id,
-                dump_request_path=request.url.path,
-                execution_mode=candidate.execution_mode,
-                agent_node=agent_name,
-                upstream_url=url,
-            )
-            return StreamingResponse(
-                generator,
-                status_code=response.status_code,
-                media_type=response.headers.get("content-type"),
-                headers=stream_headers,
-            )
-
-        content = await response.aread()
-        response_payload = None
-        try:
-            response_payload = json.loads(content)
-        except json.JSONDecodeError:
-            response_payload = None
-
-        prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
-        metrics = RequestMetrics(
-            request_id=request_id,
-            trace_id=trace_id,
-            model_alias=model_alias,
-            endpoint_id=candidate.endpoint.id,
-            api_key_id=candidate.api_key.id,
-            rule_group=effective_group,
-            status_code=response.status_code,
-            latency_ms=latency_ms,
-            ttft_ms=None,
-            tps=None,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            execution_mode=candidate.execution_mode,
-            agent_node=agent_name,
-            upstream_url=url,
-        )
-        asyncio.create_task(write_request_log(metrics))
-
-        asyncio.create_task(
-            _dump_proxy_record(
-                dump_rule,
-                request_id,
-                trace_id,
-                candidate.endpoint.name,
-                model_alias,
-                upstream_body,
-                content,
-                response.status_code,
-                session_id=session_id,
-                request_path=request.url.path,
-            )
-        )
-
-        if response_payload is None:
-            return Response(
-                content=content,
-                status_code=response.status_code,
-                media_type=response.headers.get("content-type"),
-                headers=_merge_headers(
-                    _filter_response_headers(response.headers), debug_headers
-                ),
-            )
-
-        return JSONResponse(
-            status_code=response.status_code,
-            content=response_payload,
-            headers=_merge_headers(
-                _filter_response_headers(response.headers), debug_headers
-            ),
-        )
+        continue
 
     raise HTTPException(status_code=502, detail="All upstream requests failed")
 

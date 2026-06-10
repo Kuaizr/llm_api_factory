@@ -315,6 +315,8 @@ async def route_explain(
                 reasons.append("agent_not_registered")
             elif not agent.is_active:
                 reasons.append("agent_disabled")
+            elif getattr(agent, "is_draining", False):
+                reasons.append("agent_draining")
             elif agent_manager.get(agent_name) is None:
                 reasons.append("agent_not_connected")
 

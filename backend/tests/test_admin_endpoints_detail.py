@@ -1,5 +1,6 @@
 import httpx
 from datetime import datetime, timezone
+import json
 
 import pytest
 from fastapi import FastAPI
@@ -156,6 +157,64 @@ async def test_admin_endpoint_accepts_disable_probe_interval(
 
     assert response.status_code == 200
     assert response.json()["probe_interval_seconds"] == -1
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_standard_endpoint_clears_custom_only_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/admin/endpoints",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "name": "OpenAI",
+                "base_url": "https://api.openai.com/v1",
+                "provider": "openai",
+                "url_path_suffix": "/custom",
+                "extra_headers": {"X-Custom": "yes"},
+                "extra_cookies": "session=custom",
+                "extra_query_params": {"api-version": "custom"},
+                "request_body_template": json.dumps({"model": "{{model}}"}),
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["url_path_suffix"] is None
+    assert payload["extra_headers"] is None
+    assert payload["extra_cookies"] is None
+    assert payload["extra_query_params"] is None
+    assert payload["request_body_template"] is None
+
+    endpoint = await session.get(Endpoint, payload["id"])
+    assert endpoint is not None
+    assert endpoint.url_path_suffix is None
+    assert endpoint.extra_headers is None
+    assert endpoint.extra_cookies is None
+    assert endpoint.extra_query_params is None
+    assert endpoint.request_body_template is None
 
     await session.close()
     await engine.dispose()
@@ -415,12 +474,94 @@ async def test_manual_probe_records_failure_status(monkeypatch: pytest.MonkeyPat
     assert payload["probe_status"] == "failure"
     assert payload["probe_status_code"] == 503
     assert payload["discovered_models"] == []
-    assert "不支持 /v1/models" in (payload["probe_message"] or "")
+    assert "HTTP 503" in (payload["probe_message"] or "")
 
     probe = await probe_store.read(api_key.id)
     assert probe is not None
     assert probe.status == "failure"
     assert probe.status_code == 503
+
+    breaker = CircuitBreaker(redis, settings=settings)
+    breaker_status = await breaker.get_status(api_key.id)
+    assert breaker_status.state == "open"
+
+    await upstream_client.aclose()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_probe_records_request_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(name="OpenAI", base_url="https://api.openai.com", is_active=True)
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-probe", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    settings = Settings(
+        master_auth_token="token",
+        circuit_breaker_failures=1,
+        circuit_breaker_ttl_seconds=90,
+    )
+    redis = MemoryRedis()
+    probe_store = HealthProbeStore(redis)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("probe connection failed", request=request)
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_redis():
+        return redis
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    with caplog.at_level("ERROR"):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/admin/endpoints/{endpoint.id}/probe",
+                headers={"Authorization": "Bearer token"},
+            )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["probe_status"] == "error"
+    assert payload["probe_status_code"] is None
+    assert payload["discovered_models"] == []
+    assert "探测请求执行失败" in (payload["probe_message"] or "")
+    assert "endpoint_probe_failed" in caplog.text
+
+    probe = await probe_store.read(api_key.id)
+    assert probe is not None
+    assert probe.status == "error"
+    assert probe.status_code is None
 
     breaker = CircuitBreaker(redis, settings=settings)
     breaker_status = await breaker.get_status(api_key.id)
@@ -509,7 +650,7 @@ async def test_manual_probe_anthropic_uses_messages(monkeypatch: pytest.MonkeyPa
     assert len(response_payload["manual_models"]) == 1
     assert response_payload["manual_models"][0]["model_alias"] == "claude-3-5-haiku-latest"
     assert response_payload["manual_models"][0]["probe_managed"] is False
-    assert "不支持 /v1/models" in (response_payload["probe_message"] or "")
+    assert response_payload["probe_message"] is None
 
     assert captured_requests
     sent_request = captured_requests[0]

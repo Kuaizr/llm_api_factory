@@ -39,6 +39,13 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
         "ALTER TABLE api_keys ADD COLUMN rule_groups_json TEXT",
         "ALTER TABLE agents ADD COLUMN network_group VARCHAR(128)",
         "ALTER TABLE agents ADD COLUMN labels_json TEXT",
+        "ALTER TABLE agents ADD COLUMN is_draining BOOLEAN DEFAULT 0",
+        """
+        UPDATE agents
+        SET is_draining = 0
+        WHERE is_draining IS NULL
+        """,
+        "ALTER TABLE request_logs ADD COLUMN requested_rule_group VARCHAR(64)",
         "ALTER TABLE request_logs ADD COLUMN execution_mode VARCHAR(32)",
         "ALTER TABLE request_logs ADD COLUMN agent_node VARCHAR(128)",
         "ALTER TABLE request_logs ADD COLUMN upstream_url VARCHAR(1024)",

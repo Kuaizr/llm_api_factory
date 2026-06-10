@@ -104,7 +104,8 @@ async def test_admin_agent_drain_survives_heartbeat(
             headers={"Authorization": "Bearer token"},
         )
         assert drain_response.status_code == 200
-        assert drain_response.json()["is_active"] is False
+        assert drain_response.json()["is_active"] is True
+        assert drain_response.json()["is_draining"] is True
 
         heartbeat_response = await client.post(
             "/agent/heartbeat",
@@ -117,8 +118,9 @@ async def test_admin_agent_drain_survives_heartbeat(
         )
         assert heartbeat_response.status_code == 200
         payload = heartbeat_response.json()
-        assert payload["is_active"] is False
-        assert payload["status"] == "offline"
+        assert payload["is_active"] is True
+        assert payload["is_draining"] is True
+        assert payload["status"] == "draining"
 
         enable_response = await client.post(
             f"/admin/agents/{agent.id}/enable",
@@ -126,6 +128,7 @@ async def test_admin_agent_drain_survives_heartbeat(
         )
         assert enable_response.status_code == 200
         assert enable_response.json()["is_active"] is True
+        assert enable_response.json()["is_draining"] is False
 
     await session.close()
     await engine.dispose()

@@ -20,6 +20,7 @@ class AgentStub:
     probe_checked_at: datetime | None = None
     auth_token_hash: str | None = None
     id: int = 0
+    is_draining: bool = False
     is_active: bool = True
     last_seen_at: datetime | None = None
 
@@ -134,6 +135,25 @@ def test_build_agent_statuses() -> None:
     assert statuses[0].labels == ["hk", "fast"]
     assert statuses[1].status == "offline"
     assert statuses[2].status == "offline"
+
+
+def test_build_agent_statuses_marks_draining() -> None:
+    now = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    agent = AgentStub(
+        id=1,
+        name="edge-drain",
+        region="us",
+        endpoint_url=None,
+        is_active=True,
+        is_draining=True,
+        last_seen_at=now,
+    )
+
+    statuses = agents_module.build_agent_statuses([agent], now, timeout_seconds=60)
+
+    assert statuses[0].is_active is True
+    assert statuses[0].is_draining is True
+    assert statuses[0].status == "draining"
 
 
 @pytest.mark.asyncio
