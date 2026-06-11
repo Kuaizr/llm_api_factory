@@ -260,6 +260,7 @@ async def route_explain(
     redis = await get_redis()
     notifier = get_notifier()
     circuit_breaker = CircuitBreaker(redis, notifier=notifier)
+    router_service = ModelRouter(circuit_breaker)
     effective_group, fallback_used, matched_rule, target_key_ids, strategy = (
         await _resolve_route_explain_policy(session, payload.model, payload.rule_group)
     )
@@ -335,11 +336,12 @@ async def route_explain(
             continue
         available_candidates.append(candidate)
 
-    ordered = ModelRouter._order_candidates(
+    ordered = await router_service.order_candidates(
         available_candidates,
         strategy,
-        f"{payload.model}:{effective_group}:{strategy}",
-        target_key_ids,
+        model_alias=payload.model,
+        effective_group=effective_group,
+        target_key_ids=target_key_ids,
     )
     candidates = [
         RouteExplainCandidateOut(

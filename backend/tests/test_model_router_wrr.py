@@ -1,7 +1,18 @@
 from dataclasses import dataclass
 
+import pytest
+
+from app.core.redis import MemoryRedis
 from app.services import router as router_module
 from app.services.router import ModelRouter, RouteCandidate
+
+
+class CircuitBreakerStub:
+    def __init__(self) -> None:
+        self.redis = MemoryRedis()
+
+    async def is_available(self, _api_key_id: int) -> bool:
+        return True
 
 
 @dataclass
@@ -74,6 +85,45 @@ def test_sequential_strategy_places_unknown_keys_last() -> None:
     key_ids = [candidate.api_key.id for candidate in ordered]
     assert key_ids[:2] == [4, 2]
     assert sorted(key_ids[2:]) == [1, 3]
+
+
+def test_sequential_strategy_rotates_from_active_key() -> None:
+    candidates = build_candidates([1, 1, 1])
+    ordered = ModelRouter._order_candidates(
+        candidates,
+        strategy="sequential",
+        context="",
+        target_key_ids=[1, 2, 3],
+        active_key_id=2,
+    )
+    assert [candidate.api_key.id for candidate in ordered] == [2, 3, 1]
+
+
+@pytest.mark.asyncio
+async def test_sequential_strategy_persists_success_as_active_key() -> None:
+    router = ModelRouter(CircuitBreakerStub())
+    candidates = build_candidates([1, 1, 1])
+    target_key_ids = [1, 2, 3]
+
+    first_order = await router.order_candidates(
+        candidates,
+        strategy="sequential",
+        model_alias="gpt-5",
+        effective_group="codex",
+        target_key_ids=target_key_ids,
+    )
+    assert [candidate.api_key.id for candidate in first_order] == [1, 2, 3]
+
+    await router.record_candidate_success(candidates[1])
+
+    second_order = await router.order_candidates(
+        candidates,
+        strategy="sequential",
+        model_alias="gpt-5",
+        effective_group="codex",
+        target_key_ids=target_key_ids,
+    )
+    assert [candidate.api_key.id for candidate in second_order] == [2, 3, 1]
 
 
 def test_route_candidate_reports_direct_execution_by_default() -> None:

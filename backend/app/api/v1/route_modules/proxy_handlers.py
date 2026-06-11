@@ -40,10 +40,53 @@ from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
-RETRYABLE_STATUSES = {401, 403, 429, 500, 502, 503, 504}
-CIRCUIT_BREAKER_STATUSES = RETRYABLE_STATUSES
+CANDIDATE_FALLBACK_STATUSES = {400, 401, 402, 403, 404, 429, 500, 502, 503, 504}
+CIRCUIT_BREAKER_STATUSES = {401, 402, 403, 429, 500, 502, 503, 504}
 LOCAL_RETRY_STATUSES = {429, 500, 502, 503, 504}
 UPSTREAM_CANDIDATE_MAX_ATTEMPTS = 3
+SEMANTIC_FAILURE_STATUSES = {"error", "failed", "failure", "cancelled", "canceled"}
+SEMANTIC_FAILURE_MARKERS = (
+    "error",
+    "failed",
+    "failure",
+    "invalid",
+    "unauthorized",
+    "forbidden",
+    "permission",
+    "insufficient",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "unavailable",
+    "overloaded",
+    "busy",
+    "timeout",
+    "not supported",
+    "unsupported",
+    "model_not_supported",
+    "service unavailable",
+    "余额",
+    "不足",
+    "不可用",
+    "限流",
+    "风控",
+    "失败",
+    "错误",
+    "封禁",
+    "欠费",
+)
+SEMANTIC_SUCCESS_SIGNAL_KEYS = {
+    "choices",
+    "output",
+    "output_text",
+    "content",
+    "candidates",
+    "data",
+    "embedding",
+    "embeddings",
+    "id",
+}
 SESSION_HINT_KEYS = (
     "session_id",
     "conversation_id",
@@ -204,6 +247,105 @@ def _parse_json_object_bytes(content: bytes | None) -> dict[str, object] | None:
     except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _has_non_empty_value(value: object) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def _contains_semantic_failure_marker(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = str(value)
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in SEMANTIC_FAILURE_MARKERS)
+
+
+def _has_success_signal(payload: dict[str, object]) -> bool:
+    if str(payload.get("object") or "").strip().lower() == "error":
+        return False
+    return any(
+        key in payload and _has_non_empty_value(payload.get(key))
+        for key in SEMANTIC_SUCCESS_SIGNAL_KEYS
+    )
+
+
+def _semantic_failure_reason(
+    content: bytes,
+    content_type: str | None,
+    payload: dict[str, object] | None,
+    provider: str,
+) -> str | None:
+    stripped = content.strip()
+    if not stripped:
+        return "empty_response_body"
+
+    normalized_content_type = str(content_type or "").lower()
+    if payload is None:
+        text_sample = stripped[:4096].decode("utf-8", errors="ignore").lower()
+        if "text/html" in normalized_content_type or text_sample.startswith(
+            ("<html", "<!doctype html")
+        ):
+            return "html_response_body"
+        if _contains_semantic_failure_marker(text_sample):
+            return "text_error_body"
+        return None
+
+    if _has_non_empty_value(payload.get("error")):
+        return "error_field"
+    if _has_non_empty_value(payload.get("errors")):
+        return "errors_field"
+
+    object_type = str(payload.get("object") or "").strip().lower()
+    if object_type == "error":
+        return "error_object"
+
+    response_type = str(payload.get("type") or "").strip().lower()
+    if response_type == "error":
+        return "error_type"
+
+    status = str(payload.get("status") or "").strip().lower()
+    if status in SEMANTIC_FAILURE_STATUSES:
+        return "failure_status"
+
+    for flag_key in ("success", "ok"):
+        if payload.get(flag_key) is False:
+            return f"{flag_key}_false"
+
+    for code_key in ("status_code", "code"):
+        code_value = payload.get(code_key)
+        if isinstance(code_value, int) and code_value >= 400:
+            return f"{code_key}_failure"
+        if isinstance(code_value, str) and _contains_semantic_failure_marker(code_value):
+            return f"{code_key}_failure"
+
+    if provider == "gemini" and not _has_non_empty_value(payload.get("candidates")):
+        prompt_feedback = payload.get("promptFeedback")
+        if isinstance(prompt_feedback, dict) and _has_non_empty_value(
+            prompt_feedback.get("blockReason")
+        ):
+            return "gemini_blocked"
+
+    if not _has_success_signal(payload):
+        for message_key in ("message", "msg", "detail"):
+            if _contains_semantic_failure_marker(payload.get(message_key)):
+                return f"{message_key}_failure"
+
+    return None
 
 
 def _should_retry_same_candidate(status_code: int, attempt_index: int) -> bool:
@@ -434,6 +576,9 @@ async def _proxy_openai_request(
         is_stream = bool(upstream_payload.get("stream")) or "text/event-stream" in accept_header
         debug_headers = _build_debug_headers(request_id, trace_id, candidate, model_alias)
         agent_name = _get_agent_name(candidate.endpoint)
+        candidate_provider = _normalize_provider_name(
+            getattr(candidate.endpoint, "provider", None)
+        )
 
         if agent_name:
             agent_manager = get_agent_manager()
@@ -490,7 +635,7 @@ async def _proxy_openai_request(
                             status_code=502, detail="OAuth token refresh failed"
                         ) from exc
 
-                if status_code in RETRYABLE_STATUSES:
+                if status_code in CANDIDATE_FALLBACK_STATUSES:
                     if status_code in CIRCUIT_BREAKER_STATUSES:
                         await circuit_breaker.record_failure(candidate.api_key.id)
                     if is_stream:
@@ -524,9 +669,9 @@ async def _proxy_openai_request(
                         ),
                     )
 
-                await circuit_breaker.record_success(candidate.api_key.id)
-
                 if is_stream:
+                    await circuit_breaker.record_success(candidate.api_key.id)
+                    await router_service.record_candidate_success(candidate)
                     stream_headers = _merge_headers(
                         _filter_response_headers(agent_response.headers), debug_headers
                     )
@@ -604,6 +749,41 @@ async def _proxy_openai_request(
 
                 latency_ms = int((time.perf_counter() - request_start) * 1000)
                 response_payload = _parse_json_object_bytes(agent_response.body)
+                semantic_failure_reason = _semantic_failure_reason(
+                    agent_response.body,
+                    agent_response.headers.get("content-type"),
+                    response_payload,
+                    candidate_provider,
+                )
+                if semantic_failure_reason:
+                    await circuit_breaker.record_failure(candidate.api_key.id)
+                    if candidate != candidates[-1]:
+                        break
+                    asyncio.create_task(
+                        _dump_proxy_record(
+                            dump_rule,
+                            request_id,
+                            trace_id,
+                            candidate.endpoint.name,
+                            model_alias,
+                            upstream_body,
+                            agent_response.body,
+                            status_code,
+                            session_id=session_id,
+                            request_path=request.url.path,
+                        )
+                    )
+                    return Response(
+                        content=agent_response.body,
+                        status_code=status_code,
+                        media_type=agent_response.headers.get("content-type"),
+                        headers=_merge_headers(
+                            _filter_response_headers(agent_response.headers), debug_headers
+                        ),
+                    )
+
+                await circuit_breaker.record_success(candidate.api_key.id)
+                await router_service.record_candidate_success(candidate)
 
                 prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
                 metrics = RequestMetrics(
@@ -710,7 +890,7 @@ async def _proxy_openai_request(
                         detail="Upstream connection error",
                     ) from exc
 
-            if response.status_code in RETRYABLE_STATUSES:
+            if response.status_code in CANDIDATE_FALLBACK_STATUSES:
                 if response.status_code in CIRCUIT_BREAKER_STATUSES:
                     await circuit_breaker.record_failure(candidate.api_key.id)
                 content = await response.aread()
@@ -742,10 +922,11 @@ async def _proxy_openai_request(
                     ),
                 )
 
-            await circuit_breaker.record_success(candidate.api_key.id)
             latency_ms = int((time.perf_counter() - request_start) * 1000)
 
             if is_stream:
+                await circuit_breaker.record_success(candidate.api_key.id)
+                await router_service.record_candidate_success(candidate)
                 stream_headers = _merge_headers(
                     _filter_response_headers(response.headers), debug_headers
                 )
@@ -779,6 +960,42 @@ async def _proxy_openai_request(
 
             content = await response.aread()
             response_payload = _parse_json_object_bytes(content)
+            semantic_failure_reason = _semantic_failure_reason(
+                content,
+                response.headers.get("content-type"),
+                response_payload,
+                candidate_provider,
+            )
+            if semantic_failure_reason:
+                await circuit_breaker.record_failure(candidate.api_key.id)
+                await response.aclose()
+                if candidate != candidates[-1]:
+                    break
+                asyncio.create_task(
+                    _dump_proxy_record(
+                        dump_rule,
+                        request_id,
+                        trace_id,
+                        candidate.endpoint.name,
+                        model_alias,
+                        upstream_body,
+                        content,
+                        response.status_code,
+                        session_id=session_id,
+                        request_path=request.url.path,
+                    )
+                )
+                return Response(
+                    content=content,
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
+                    headers=_merge_headers(
+                        _filter_response_headers(response.headers), debug_headers
+                    ),
+                )
+
+            await circuit_breaker.record_success(candidate.api_key.id)
+            await router_service.record_candidate_success(candidate)
 
             prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
             metrics = RequestMetrics(

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import re
 from typing import Sequence
@@ -72,6 +73,7 @@ _wrr_state: dict[str, dict[int, int]] = {}
 class ModelRouter:
     def __init__(self, circuit_breaker: CircuitBreaker) -> None:
         self.circuit_breaker = circuit_breaker
+        self._last_sequential_state_key: str | None = None
 
     async def get_candidates(
         self,
@@ -135,11 +137,56 @@ class ModelRouter:
                 fallback_to_any=provider_filter_fallback_to_any,
             )
 
-        context_key = f"{model_alias}:{effective_group}:{strategy}"
-        ordered = self._order_candidates(
-            candidates, strategy, context_key, target_key_ids
+        ordered = await self.order_candidates(
+            candidates,
+            strategy,
+            model_alias=model_alias,
+            effective_group=effective_group,
+            provider_filters=provider_filters,
+            target_key_ids=target_key_ids,
         )
         return ordered, effective_group
+
+    async def order_candidates(
+        self,
+        candidates: Sequence[RouteCandidate],
+        strategy: str,
+        *,
+        model_alias: str,
+        effective_group: str,
+        provider_filters: str | Sequence[str] | set[str] | None = None,
+        target_key_ids: list[int] | None = None,
+    ) -> list[RouteCandidate]:
+        context_key = f"{model_alias}:{effective_group}:{strategy}"
+        normalized = strategy or DEFAULT_RULE_STRATEGY
+        if normalized != "sequential":
+            self._last_sequential_state_key = None
+            return self._order_candidates(
+                candidates, normalized, context_key, target_key_ids
+            )
+
+        state_key = self._sequential_state_key(
+            model_alias=model_alias,
+            effective_group=effective_group,
+            provider_filters=provider_filters,
+            target_key_ids=target_key_ids,
+        )
+        self._last_sequential_state_key = state_key
+        active_key_id = await self._get_sequential_active_key_id(state_key)
+        return self._order_candidates(
+            candidates,
+            normalized,
+            context_key,
+            target_key_ids,
+            active_key_id=active_key_id,
+        )
+
+    async def record_candidate_success(self, candidate: RouteCandidate) -> None:
+        if not self._last_sequential_state_key:
+            return
+        await self.circuit_breaker.redis.set(
+            self._last_sequential_state_key, str(candidate.api_key.id)
+        )
 
     async def _load_unmapped_candidates(
         self,
@@ -213,7 +260,8 @@ class ModelRouter:
         filtered = [
             candidate
             for candidate in candidates
-            if _normalize_provider_name(candidate.endpoint.provider) in filters
+            if _normalize_provider_name(getattr(candidate.endpoint, "provider", None))
+            in filters
         ]
         if filtered or not fallback_to_any:
             return filtered
@@ -309,6 +357,34 @@ class ModelRouter:
         return f"{context}|{base}" if context else base
 
     @staticmethod
+    def _sequential_state_key(
+        *,
+        model_alias: str,
+        effective_group: str,
+        provider_filters: str | Sequence[str] | set[str] | None,
+        target_key_ids: list[int] | None,
+    ) -> str:
+        normalized_filters = sorted(_normalize_provider_filters(provider_filters) or [])
+        payload = {
+            "model_alias": model_alias,
+            "effective_group": effective_group,
+            "provider_filters": normalized_filters,
+            "target_key_ids": target_key_ids or [],
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return f"route:sequential:active:{digest}"
+
+    async def _get_sequential_active_key_id(self, state_key: str) -> int | None:
+        raw = await self.circuit_breaker.redis.get(state_key)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _select_wrr_candidate(
         candidates: Sequence[RouteCandidate], context: str
     ) -> RouteCandidate:
@@ -342,6 +418,7 @@ class ModelRouter:
         strategy: str = DEFAULT_RULE_STRATEGY,
         context: str = "",
         target_key_ids: list[int] | None = None,
+        active_key_id: int | None = None,
     ) -> list[RouteCandidate]:
         if not candidates:
             return []
@@ -349,11 +426,25 @@ class ModelRouter:
         if normalized == "sequential":
             if target_key_ids:
                 key_order = {key_id: index for index, key_id in enumerate(target_key_ids)}
-                return sorted(
+                ordered = sorted(
                     candidates,
                     key=lambda candidate: key_order.get(candidate.api_key.id, len(target_key_ids)),
                 )
-            return sorted(candidates, key=lambda candidate: candidate.api_key.id)
+            else:
+                ordered = sorted(candidates, key=lambda candidate: candidate.api_key.id)
+            if active_key_id is None:
+                return ordered
+            active_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(ordered)
+                    if candidate.api_key.id == active_key_id
+                ),
+                None,
+            )
+            if active_index is None:
+                return ordered
+            return [*ordered[active_index:], *ordered[:active_index]]
         selected = ModelRouter._select_wrr_candidate(candidates, context)
         remaining = [
             candidate
