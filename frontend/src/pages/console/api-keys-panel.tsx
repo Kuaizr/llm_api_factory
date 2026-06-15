@@ -306,6 +306,7 @@ export const APIKeysView = ({
       {testingKey && (
         <ApiKeyTestModal
           apiKey={testingKey}
+          endpoint={endpoints.find((endpoint) => endpoint.id === testingKey.endpoint_id)}
           endpointId={testingKey.endpoint_id}
           authToken={authToken}
           isAdmin={isAdmin}

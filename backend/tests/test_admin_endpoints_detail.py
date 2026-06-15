@@ -739,9 +739,119 @@ async def test_api_key_direct_test_uses_selected_key(
     payload = response.json()
     assert payload["ok"] is True
     assert payload["status_code"] == 200
+    assert payload["request_template"] == "chat"
     assert payload["output_text"] == "我是 gpt-direct"
     assert payload["upstream_url"] == "https://api.example.com/v1/chat/completions"
     assert requests[0].headers["authorization"] == "Bearer sk-direct"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_template", "expected_path", "expected_body_key", "response_payload"),
+    [
+        (
+            "response",
+            "/v1/responses",
+            "input",
+            {
+                "id": "resp-test",
+                "output": [{"content": [{"type": "output_text", "text": "我是 response"}]}],
+            },
+        ),
+        (
+            "claude",
+            "/v1/messages",
+            "messages",
+            {"id": "msg-test", "content": [{"type": "text", "text": "我是 claude"}]},
+        ),
+        (
+            "gemini",
+            "/v1beta/models/gemini-test:generateContent",
+            "contents",
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": "我是 gemini"}]}}
+                ]
+            },
+        ),
+    ],
+)
+async def test_api_key_direct_test_supports_request_templates(
+    request_template: str,
+    expected_path: str,
+    expected_body_key: str,
+    response_payload: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="TemplateEndpoint",
+        base_url="https://api.example.com/v1",
+        provider="openai",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-template", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        assert request.url.path == expected_path
+        if request_template == "gemini":
+            assert "model" not in body
+        else:
+            assert body["model"] == "gemini-test"
+        assert expected_body_key in body
+        return httpx.Response(200, json=response_payload)
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/api-keys/{api_key.id}/test",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gemini-test", "request_template": request_template},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["request_template"] == request_template
+    assert payload["upstream_url"] == f"https://api.example.com{expected_path}"
+    assert payload["output_text"]
 
     await session.close()
     await engine.dispose()

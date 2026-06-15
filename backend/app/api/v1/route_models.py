@@ -592,6 +592,7 @@ class RouteExplainResponse(BaseModel):
 
 class APIKeyDirectTestRequest(BaseModel):
     model: str = Field(..., min_length=1)
+    request_template: str | None = Field(default=None)
 
 
 class APIKeyDirectTestOut(BaseModel):
@@ -599,6 +600,7 @@ class APIKeyDirectTestOut(BaseModel):
     endpoint_id: int
     endpoint_name: str
     provider: str
+    request_template: str
     model: str
     prompt: str
     status_code: int

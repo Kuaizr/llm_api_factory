@@ -163,18 +163,46 @@ def _build_provider_api_url(endpoint: Endpoint, default_suffix: str) -> str:
     return f"{cleaned}{default_suffix}"
 
 
-def _build_direct_test_request(
-    endpoint: Endpoint, model: str
-) -> tuple[str, dict[str, object]]:
+DIRECT_TEST_TEMPLATES = {"chat", "response", "claude", "gemini"}
+
+
+def _default_direct_test_template(endpoint: Endpoint) -> str:
     provider = _normalize_endpoint_provider(endpoint.provider)
-    prompt = "你是什么模型"
     if provider == "anthropic":
+        return "claude"
+    if provider == "gemini":
+        return "gemini"
+    return "chat"
+
+
+def _normalize_direct_test_template(raw: object, endpoint: Endpoint) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        return _default_direct_test_template(endpoint)
+    normalized = raw.strip().lower()
+    if normalized == "responses":
+        normalized = "response"
+    if normalized not in DIRECT_TEST_TEMPLATES:
+        raise HTTPException(status_code=400, detail="unsupported request_template")
+    return normalized
+
+
+def _build_direct_test_request(
+    endpoint: Endpoint, model: str, request_template: str
+) -> tuple[str, dict[str, object]]:
+    prompt = "你是什么模型"
+    if request_template == "response":
+        return _build_provider_api_url(endpoint, "/v1/responses"), {
+            "model": model,
+            "input": prompt,
+            "max_output_tokens": 64,
+        }
+    if request_template == "claude":
         return _build_provider_api_url(endpoint, "/v1/messages"), {
             "model": model,
             "max_tokens": 64,
             "messages": [{"role": "user", "content": prompt}],
         }
-    if provider == "gemini":
+    if request_template == "gemini":
         encoded_model = quote(model, safe="/")
         return _build_provider_api_url(
             endpoint, f"/v1beta/models/{encoded_model}:generateContent"
@@ -183,10 +211,11 @@ def _build_direct_test_request(
                 {"role": "user", "parts": [{"text": prompt}]},
             ]
         }
+
     return _build_provider_api_url(endpoint, "/v1/chat/completions"), {
         "model": model,
         "stream": False,
-        "temperature": 0,
+        "max_tokens": 64,
         "messages": [{"role": "user", "content": prompt}],
     }
 
@@ -1251,7 +1280,8 @@ async def test_api_key_direct(
         raise HTTPException(status_code=400, detail="model is required")
 
     provider = _normalize_endpoint_provider(endpoint.provider)
-    url, request_payload = _build_direct_test_request(endpoint, model)
+    request_template = _normalize_direct_test_template(payload.request_template, endpoint)
+    url, request_payload = _build_direct_test_request(endpoint, model, request_template)
     headers = _build_upstream_headers({}, endpoint, api_key.key)
     prompt = "你是什么模型"
     client = await get_http_client()
@@ -1280,6 +1310,7 @@ async def test_api_key_direct(
         endpoint_id=endpoint.id,
         endpoint_name=endpoint.name,
         provider=provider,
+        request_template=request_template,
         model=model,
         prompt=prompt,
         status_code=status_code,

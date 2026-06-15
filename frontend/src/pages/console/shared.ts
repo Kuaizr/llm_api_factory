@@ -53,6 +53,7 @@ export type ApiKeyDirectTestResult = {
   endpoint_id: number;
   endpoint_name: string;
   provider: string;
+  request_template: string;
   model: string;
   prompt: string;
   status_code: number;

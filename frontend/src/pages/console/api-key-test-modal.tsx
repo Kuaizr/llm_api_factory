@@ -5,18 +5,39 @@ import {
   apiBase,
   buildHeaders,
   type ApiKey,
+  type Endpoint,
   type ApiKeyDirectTestResult,
   type EndpointProbeResult,
 } from "./shared";
 
+const requestTemplates = [
+  { value: "chat", label: "Chat" },
+  { value: "response", label: "Response" },
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+];
+
+const defaultTemplateForProvider = (provider?: string | null) => {
+  const normalized = (provider ?? "").trim().toLowerCase();
+  if (normalized === "anthropic") {
+    return "claude";
+  }
+  if (normalized === "gemini") {
+    return "gemini";
+  }
+  return "chat";
+};
+
 export const ApiKeyTestModal = ({
   apiKey,
+  endpoint,
   endpointId,
   authToken,
   isAdmin,
   onClose,
 }: {
   apiKey: ApiKey;
+  endpoint?: Endpoint;
   endpointId: number;
   authToken: string | null;
   isAdmin: boolean;
@@ -27,6 +48,9 @@ export const ApiKeyTestModal = ({
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [manualModel, setManualModel] = useState("");
+  const [requestTemplate, setRequestTemplate] = useState(
+    defaultTemplateForProvider(endpoint?.provider)
+  );
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ApiKeyDirectTestResult | null>(null);
 
@@ -79,7 +103,7 @@ export const ApiKeyTestModal = ({
       const response = await fetch(`${apiBase}/admin/api-keys/${apiKey.id}/test`, {
         method: "POST",
         headers: buildHeaders(authToken, true),
-        body: JSON.stringify({ model: effectiveModel }),
+        body: JSON.stringify({ model: effectiveModel, request_template: requestTemplate }),
       });
       if (!response.ok) {
         throw new Error("test failed");
@@ -96,6 +120,10 @@ export const ApiKeyTestModal = ({
     void runProbe();
   }, [endpointId, apiKey.id]);
 
+  useEffect(() => {
+    setRequestTemplate(defaultTemplateForProvider(endpoint?.provider));
+  }, [endpoint?.provider, apiKey.id]);
+
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="flex max-h-[85vh] w-[760px] flex-col rounded-xl border border-gray-800 bg-[#0f1117] shadow-2xl">
@@ -110,7 +138,21 @@ export const ApiKeyTestModal = ({
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-5">
-          <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+          <div className="grid gap-3 md:grid-cols-[160px_1fr_1fr_auto]">
+            <div>
+              <label className="mb-1 block text-xs text-gray-500">请求模板</label>
+              <select
+                value={requestTemplate}
+                onChange={(event) => setRequestTemplate(event.target.value)}
+                className="w-full rounded border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-200 outline-none focus:border-blue-500"
+              >
+                {requestTemplates.map((template) => (
+                  <option key={template.value} value={template.value}>
+                    {template.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div>
               <label className="mb-1 block text-xs text-gray-500">探测模型</label>
               <select
@@ -164,6 +206,7 @@ export const ApiKeyTestModal = ({
                 <span>HTTP {result.status_code}</span>
                 <span>{result.latency_ms} ms</span>
                 <span>{result.provider}</span>
+                <span>{result.request_template}</span>
                 <span>{result.model}</span>
               </div>
               <div className="text-xs text-gray-500">{result.upstream_url}</div>

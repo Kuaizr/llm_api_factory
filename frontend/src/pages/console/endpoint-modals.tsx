@@ -1050,6 +1050,7 @@ export const ManageKeysModal = ({
       {testingKey && (
         <ApiKeyTestModal
           apiKey={testingKey}
+          endpoint={endpoint}
           endpointId={endpoint.id}
           authToken={authToken}
           isAdmin={isAdmin}
