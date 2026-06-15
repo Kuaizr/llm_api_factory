@@ -378,6 +378,28 @@ class RequestLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RequestAttemptLogOut(BaseModel):
+    id: int
+    request_id: str
+    trace_id: str
+    model_alias: str
+    endpoint_id: int
+    api_key_id: int
+    requested_rule_group: str | None = None
+    rule_group: str | None
+    attempt_order: int
+    status_code: int | None
+    outcome: str
+    failure_reason: str | None
+    latency_ms: int
+    execution_mode: str | None = None
+    agent_node: str | None = None
+    upstream_url: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OverviewOut(BaseModel):
     endpoints: int
     api_keys: int
@@ -536,6 +558,10 @@ class RouteExplainCandidateOut(BaseModel):
     real_model: str
     execution_mode: str = "direct"
     agent_node: str | None = None
+    circuit_state: str = "closed"
+    circuit_failures: int = 0
+    circuit_ttl_seconds: int | None = None
+    sticky_active: bool = False
     selected: bool = False
 
 
@@ -556,11 +582,32 @@ class RouteExplainResponse(BaseModel):
     fallback_used: bool
     strategy: str
     target_key_ids: list[int] = Field(default_factory=list)
+    sticky_api_key_id: int | None = None
     matched_rule_id: int | None = None
     matched_rule_pattern: str | None = None
     candidates: list[RouteExplainCandidateOut] = Field(default_factory=list)
     excluded: list[RouteExplainExcludedOut] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+class APIKeyDirectTestRequest(BaseModel):
+    model: str = Field(..., min_length=1)
+
+
+class APIKeyDirectTestOut(BaseModel):
+    api_key_id: int
+    endpoint_id: int
+    endpoint_name: str
+    provider: str
+    model: str
+    prompt: str
+    status_code: int
+    ok: bool
+    latency_ms: int
+    output_text: str | None = None
+    error_reason: str | None = None
+    upstream_url: str
+    raw_response: object | None = None
 
 
 class RuleAccessKeyCreate(BaseModel):

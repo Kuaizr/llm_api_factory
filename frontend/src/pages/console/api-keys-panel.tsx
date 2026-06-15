@@ -1,6 +1,7 @@
-import { Edit2, Key, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Edit2, FlaskConical, Key, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { ApiKeyTestModal } from "./api-key-test-modal";
 import { KeyConfigModal } from "./endpoint-modals";
 import {
   keyHasRuleGroup,
@@ -68,6 +69,7 @@ export const APIKeysView = ({
     endpointOptions[0] ? String(endpointOptions[0].id) : ""
   );
   const [editingKey, setEditingKey] = useState<GlobalKeyRow | null>(null);
+  const [testingKey, setTestingKey] = useState<GlobalKeyRow | null>(null);
   const [isAddingKey, setIsAddingKey] = useState(false);
 
   useEffect(() => {
@@ -237,6 +239,14 @@ export const APIKeysView = ({
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-2">
                       <button
+                        onClick={() => setTestingKey(key)}
+                        disabled={!isAdmin}
+                        className="p-1.5 hover:bg-gray-800 rounded text-emerald-400 transition disabled:opacity-50"
+                        title="测试 Key"
+                      >
+                        <FlaskConical size={14} />
+                      </button>
+                      <button
                         onClick={() => {
                           setEditingKey(key);
                           setIsAddingKey(false);
@@ -291,6 +301,15 @@ export const APIKeysView = ({
             setEditingKey(null);
             setIsAddingKey(false);
           }}
+        />
+      )}
+      {testingKey && (
+        <ApiKeyTestModal
+          apiKey={testingKey}
+          endpointId={testingKey.endpoint_id}
+          authToken={authToken}
+          isAdmin={isAdmin}
+          onClose={() => setTestingKey(null)}
         />
       )}
     </div>

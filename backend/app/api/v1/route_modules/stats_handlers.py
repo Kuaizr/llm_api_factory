@@ -290,6 +290,7 @@ async def route_explain(
 
     available_candidates: list[RouteCandidate] = []
     excluded: list[RouteExplainExcludedOut] = []
+    circuit_status_by_key: dict[int, object] = {}
     for candidate in candidate_objects:
         api_key = candidate.api_key
         endpoint = candidate.endpoint
@@ -305,7 +306,9 @@ async def route_explain(
             reasons.append("api_key_inactive")
         if _is_daily_limit_exhausted(api_key):
             reasons.append("daily_limit_exhausted")
-        if not await circuit_breaker.is_available(api_key.id):
+        circuit_status = await circuit_breaker.get_status(api_key.id)
+        circuit_status_by_key[api_key.id] = circuit_status
+        if circuit_status.state == "open":
             reasons.append("circuit_open")
         if candidate.execution_mode == "via_agent":
             agent_name = candidate.agent_name
@@ -343,6 +346,15 @@ async def route_explain(
         effective_group=effective_group,
         target_key_ids=target_key_ids,
     )
+    sticky_api_key_id = (
+        await router_service.get_sequential_active_key_id(
+            model_alias=payload.model,
+            effective_group=effective_group,
+            target_key_ids=target_key_ids,
+        )
+        if strategy == "sequential"
+        else None
+    )
     candidates = [
         RouteExplainCandidateOut(
             order=index + 1,
@@ -353,6 +365,12 @@ async def route_explain(
             real_model=candidate.real_model,
             execution_mode=candidate.execution_mode,
             agent_node=candidate.agent_name,
+            circuit_state=circuit_status_by_key[candidate.api_key.id].state,
+            circuit_failures=circuit_status_by_key[candidate.api_key.id].failures,
+            circuit_ttl_seconds=circuit_status_by_key[
+                candidate.api_key.id
+            ].ttl_seconds,
+            sticky_active=candidate.api_key.id == sticky_api_key_id,
             selected=index == 0,
         )
         for index, candidate in enumerate(ordered)
@@ -375,6 +393,7 @@ async def route_explain(
         fallback_used=fallback_used,
         strategy=strategy,
         target_key_ids=target_key_ids,
+        sticky_api_key_id=sticky_api_key_id,
         matched_rule_id=matched_rule.id if matched_rule else None,
         matched_rule_pattern=matched_rule.model_pattern if matched_rule else None,
         candidates=candidates,

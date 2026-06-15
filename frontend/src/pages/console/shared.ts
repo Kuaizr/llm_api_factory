@@ -48,6 +48,22 @@ export type EndpointProbeResult = {
   manual_models: ModelMap[];
 };
 
+export type ApiKeyDirectTestResult = {
+  api_key_id: number;
+  endpoint_id: number;
+  endpoint_name: string;
+  provider: string;
+  model: string;
+  prompt: string;
+  status_code: number;
+  ok: boolean;
+  latency_ms: number;
+  output_text: string | null;
+  error_reason: string | null;
+  upstream_url: string;
+  raw_response: unknown;
+};
+
 export type TelegramConfig = {
   configured: boolean;
   bot_token_masked: string | null;

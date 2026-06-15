@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from app.db.models import APIKey, RequestLog
+from app.db.models import APIKey, RequestAttemptLog, RequestLog
 from app.db.session import SessionLocal
 
 
@@ -22,6 +22,25 @@ class RequestMetrics:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
+    execution_mode: str = "direct"
+    agent_node: str | None = None
+    upstream_url: str | None = None
+
+
+@dataclass(frozen=True)
+class RequestAttemptMetrics:
+    request_id: str
+    trace_id: str
+    model_alias: str
+    endpoint_id: int
+    api_key_id: int
+    requested_rule_group: str | None
+    rule_group: str
+    attempt_order: int
+    status_code: int | None
+    outcome: str
+    failure_reason: str | None
+    latency_ms: int
     execution_mode: str = "direct"
     agent_node: str | None = None
     upstream_url: str | None = None
@@ -94,4 +113,27 @@ async def write_request_log(metrics: RequestMetrics) -> None:
             api_key.used_today = (api_key.used_today or 0) + tokens
             api_key.total_usage = (api_key.total_usage or 0) + tokens
 
+        await session.commit()
+
+
+async def write_request_attempt_log(metrics: RequestAttemptMetrics) -> None:
+    async with SessionLocal() as session:
+        log = RequestAttemptLog(
+            request_id=metrics.request_id,
+            trace_id=metrics.trace_id,
+            model_alias=metrics.model_alias,
+            endpoint_id=metrics.endpoint_id,
+            api_key_id=metrics.api_key_id,
+            requested_rule_group=metrics.requested_rule_group,
+            rule_group=metrics.rule_group,
+            attempt_order=metrics.attempt_order,
+            status_code=metrics.status_code,
+            outcome=metrics.outcome,
+            failure_reason=metrics.failure_reason,
+            latency_ms=metrics.latency_ms,
+            execution_mode=metrics.execution_mode,
+            agent_node=metrics.agent_node,
+            upstream_url=metrics.upstream_url,
+        )
+        session.add(log)
         await session.commit()

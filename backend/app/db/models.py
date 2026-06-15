@@ -268,3 +268,29 @@ class RequestLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class RequestAttemptLog(Base):
+    __tablename__ = "request_attempt_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    trace_id: Mapped[str] = mapped_column(String(64), index=True)
+    model_alias: Mapped[str] = mapped_column(String(128), index=True)
+    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
+    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id"))
+    requested_rule_group: Mapped[str | None] = mapped_column(
+        String(64), index=True, nullable=True
+    )
+    rule_group: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    attempt_order: Mapped[int] = mapped_column(Integer)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32), index=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    execution_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_node: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    upstream_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

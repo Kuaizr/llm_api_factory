@@ -11,7 +11,7 @@ from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.core.redis import MemoryRedis
 from app.db.base import Base
-from app.db.models import APIKey, Endpoint, ModelMap
+from app.db.models import APIKey, Endpoint, ModelMap, RequestAttemptLog
 from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
@@ -665,5 +665,169 @@ async def test_manual_probe_anthropic_uses_messages(monkeypatch: pytest.MonkeyPa
     assert probe.status_code == 200
 
     await upstream_client.aclose()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_key_direct_test_uses_selected_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="DirectOpenAI",
+        base_url="https://api.example.com/v1",
+        provider="openai",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-direct", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-direct"
+        assert body["messages"][0]["content"] == "你是什么模型"
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "choices": [{"message": {"content": "我是 gpt-direct"}}],
+            },
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/api-keys/{api_key.id}/test",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-direct"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["status_code"] == 200
+    assert payload["output_text"] == "我是 gpt-direct"
+    assert payload["upstream_url"] == "https://api.example.com/v1/chat/completions"
+    assert requests[0].headers["authorization"] == "Bearer sk-direct"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_request_attempt_logs_endpoint_filters_by_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(name="OpenAI", base_url="https://api.example.com", is_active=True)
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-attempt", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    session.add_all(
+        [
+            RequestAttemptLog(
+                request_id="req-1",
+                trace_id="trace-1",
+                model_alias="gpt-5",
+                endpoint_id=endpoint.id,
+                api_key_id=api_key.id,
+                requested_rule_group="codex",
+                rule_group="gpt-5.5",
+                attempt_order=1,
+                status_code=503,
+                outcome="fallback",
+                failure_reason="http_503",
+                latency_ms=120,
+                execution_mode="direct",
+                upstream_url="https://api.example.com/v1/chat/completions",
+            ),
+            RequestAttemptLog(
+                request_id="req-2",
+                trace_id="trace-2",
+                model_alias="gpt-5",
+                endpoint_id=endpoint.id,
+                api_key_id=api_key.id,
+                requested_rule_group="codex",
+                rule_group="gpt-5.5",
+                attempt_order=1,
+                status_code=200,
+                outcome="success",
+                failure_reason=None,
+                latency_ms=80,
+                execution_mode="direct",
+                upstream_url="https://api.example.com/v1/chat/completions",
+            ),
+        ]
+    )
+    await session.commit()
+
+    async def override_session():
+        yield session
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/admin/request-attempt-logs?request_id=req-1",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["request_id"] == "req-1"
+    assert payload[0]["outcome"] == "fallback"
+    assert payload[0]["failure_reason"] == "http_503"
+
     await session.close()
     await engine.dispose()

@@ -118,6 +118,34 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
           AND TRIM(rule_group) != ''
           AND LOWER(rule_group) != 'default'
         """,
+        """
+        CREATE TABLE IF NOT EXISTS request_attempt_logs (
+            id INTEGER PRIMARY KEY,
+            request_id VARCHAR(64) NOT NULL,
+            trace_id VARCHAR(64) NOT NULL,
+            model_alias VARCHAR(128) NOT NULL,
+            endpoint_id INTEGER NOT NULL,
+            api_key_id INTEGER NOT NULL,
+            requested_rule_group VARCHAR(64),
+            rule_group VARCHAR(64),
+            attempt_order INTEGER NOT NULL,
+            status_code INTEGER,
+            outcome VARCHAR(32) NOT NULL,
+            failure_reason VARCHAR(128),
+            latency_ms INTEGER NOT NULL,
+            execution_mode VARCHAR(32),
+            agent_node VARCHAR(128),
+            upstream_url VARCHAR(1024),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            FOREIGN KEY(endpoint_id) REFERENCES endpoints(id),
+            FOREIGN KEY(api_key_id) REFERENCES api_keys(id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_request_id ON request_attempt_logs(request_id)",
+        "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_trace_id ON request_attempt_logs(trace_id)",
+        "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_model_alias ON request_attempt_logs(model_alias)",
+        "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_rule_group ON request_attempt_logs(rule_group)",
+        "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_outcome ON request_attempt_logs(outcome)",
     ]
 
     async with engine.begin() as conn:

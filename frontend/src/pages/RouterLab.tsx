@@ -12,12 +12,34 @@ type RouteCandidate = {
   real_model: string;
   execution_mode: string;
   agent_node: string | null;
+  circuit_state?: string;
+  circuit_failures?: number;
+  circuit_ttl_seconds?: number | null;
+  sticky_active?: boolean;
+  selected?: boolean;
 };
 
-type RouteTestResponse = {
+type RouteExcluded = {
+  endpoint_id: number;
+  endpoint_name: string;
+  api_key_id: number;
+  real_model: string;
+  execution_mode: string;
+  agent_node: string | null;
+  reasons: string[];
+};
+
+type RouteExplainResponse = {
   model: string;
-  rule_group: string;
+  requested_rule_group?: string;
+  effective_rule_group?: string;
+  rule_group?: string;
+  fallback_used?: boolean;
+  strategy?: string;
+  sticky_api_key_id?: number | null;
   candidates: RouteCandidate[];
+  excluded?: RouteExcluded[];
+  notes?: string[];
 };
 
 type DebugInfo = {
@@ -43,6 +65,24 @@ type RequestLog = {
   total_tokens: number | null;
   latency_ms: number;
   status_code: number;
+  execution_mode: string | null;
+  agent_node: string | null;
+  upstream_url: string | null;
+  created_at: string;
+};
+
+type RequestAttemptLog = {
+  id: number;
+  request_id: string;
+  trace_id: string | null;
+  model_alias: string;
+  endpoint_id: number;
+  api_key_id: number;
+  attempt_order: number;
+  status_code: number | null;
+  outcome: string;
+  failure_reason: string | null;
+  latency_ms: number;
   execution_mode: string | null;
   agent_node: string | null;
   upstream_url: string | null;
@@ -109,15 +149,17 @@ export const RouterLab = () => {
   const [model, setModel] = useState("gpt-4o-mini");
   const [ruleGroup, setRuleGroup] = useState("default");
   const [prompt, setPrompt] = useState("ping");
-  const [routeResult, setRouteResult] = useState<RouteTestResponse | null>(null);
+  const [routeResult, setRouteResult] = useState<RouteExplainResponse | null>(null);
   const [completion, setCompletion] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [requestLogs, setRequestLogs] = useState<RequestLog[]>([]);
+  const [requestAttempts, setRequestAttempts] = useState<RequestAttemptLog[]>([]);
   const [logFilters, setLogFilters] = useState<LogFilters>(defaultLogFilters);
   const [error, setError] = useState<string | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [attemptsLoading, setAttemptsLoading] = useState(false);
   const [streamEnabled, setStreamEnabled] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -174,9 +216,45 @@ export const RouterLab = () => {
     }
   };
 
+  const loadRequestAttemptLogs = async (
+    filters: LogFilters = logFilters,
+    requestId?: string | null
+  ) => {
+    setAttemptsLoading(true);
+    setLogsError(null);
+    try {
+      const params = new URLSearchParams({ limit: "100" });
+      if (requestId) {
+        params.set("request_id", requestId);
+      } else {
+        const baseParams = buildLogParams(filters);
+        baseParams.delete("status_code");
+        baseParams.forEach((value, key) => {
+          params.set(key, value);
+        });
+      }
+      const response = await fetch(
+        `${apiBase}/admin/request-attempt-logs?${params.toString()}`,
+        { headers: authHeaders() }
+      );
+      if (!response.ok) {
+        throw new Error("attempt log fetch failed");
+      }
+      const data = (await response.json()) as RequestAttemptLog[];
+      setRequestAttempts(data);
+    } catch (err) {
+      setLogsError("无法获取候选尝试日志");
+    } finally {
+      setAttemptsLoading(false);
+    }
+  };
+
   const clearLogFilters = async () => {
     setLogFilters(defaultLogFilters);
-    await loadRequestLogs(defaultLogFilters);
+    await Promise.all([
+      loadRequestLogs(defaultLogFilters),
+      loadRequestAttemptLogs(defaultLogFilters),
+    ]);
   };
 
   const applyQuickRange = async (hours: number) => {
@@ -188,7 +266,7 @@ export const RouterLab = () => {
       until: toInputValue(now),
     };
     setLogFilters(nextFilters);
-    await loadRequestLogs(nextFilters);
+    await Promise.all([loadRequestLogs(nextFilters), loadRequestAttemptLogs(nextFilters)]);
   };
 
   const csvCell = (value: string | number | null) => {
@@ -289,21 +367,22 @@ export const RouterLab = () => {
 
   useEffect(() => {
     loadRequestLogs();
+    loadRequestAttemptLogs();
   }, []);
 
   const previewRoute = async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${apiBase}/admin/route-test`, {
+      const response = await fetch(`${apiBase}/admin/route-explain`, {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ model, rule_group: ruleGroup || "default" }),
       });
       if (!response.ok) {
-        throw new Error("route-test failed");
+        throw new Error("route-explain failed");
       }
-      const data = (await response.json()) as RouteTestResponse;
+      const data = (await response.json()) as RouteExplainResponse;
       setRouteResult(data);
     } catch (err) {
       setError("无法获取路由候选列表");
@@ -384,6 +463,7 @@ export const RouterLab = () => {
         );
       }
       await loadRequestLogs();
+      await loadRequestAttemptLogs(logFilters, response.headers.get("x-request-id"));
     } catch (err) {
       setError("请求失败，请检查配置");
     } finally {
@@ -447,9 +527,18 @@ export const RouterLab = () => {
 
       <Card>
         <CardHeader>
-          <CardTitle>候选路径</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle>候选路径</CardTitle>
+            {routeResult ? (
+              <div className="flex flex-wrap gap-2 text-xs text-zinc-400">
+                <span>策略: {routeResult.strategy ?? "--"}</span>
+                <span>生效组: {routeResult.effective_rule_group ?? routeResult.rule_group ?? "--"}</span>
+                <span>Sticky Key: {routeResult.sticky_api_key_id ?? "--"}</span>
+              </div>
+            ) : null}
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           {routeResult && routeResult.candidates.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -458,6 +547,7 @@ export const RouterLab = () => {
                     <th className="py-2">顺序</th>
                     <th>Endpoint</th>
                     <th>API Key</th>
+                    <th>状态</th>
                     <th>权重</th>
                     <th>执行位置</th>
                     <th>真实模型</th>
@@ -470,7 +560,27 @@ export const RouterLab = () => {
                       <td>
                         {item.endpoint_name} ({item.endpoint_id})
                       </td>
-                      <td>{item.api_key_id}</td>
+                      <td>
+                        {item.api_key_id}
+                        {item.sticky_active ? (
+                          <span className="ml-2 rounded border border-blue-700 bg-blue-950/50 px-1.5 py-0.5 text-[10px] text-blue-300">
+                            sticky
+                          </span>
+                        ) : null}
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            item.circuit_state === "open"
+                              ? "text-red-400"
+                              : "text-emerald-400"
+                          }
+                        >
+                          {item.circuit_state ?? "closed"}
+                        </span>
+                        {item.circuit_failures ? ` / ${item.circuit_failures}` : ""}
+                        {item.circuit_ttl_seconds ? ` / ${item.circuit_ttl_seconds}s` : ""}
+                      </td>
                       <td>{item.weight}</td>
                       <td>
                         {item.execution_mode}
@@ -485,6 +595,22 @@ export const RouterLab = () => {
           ) : (
             <p className="text-sm text-zinc-400">尚未生成候选列表。</p>
           )}
+          {routeResult?.excluded?.length ? (
+            <div className="rounded-lg border border-muted bg-background/40 p-3">
+              <p className="mb-2 text-xs font-medium text-zinc-300">已排除候选</p>
+              <div className="space-y-1 text-xs text-zinc-400">
+                {routeResult.excluded.map((item) => (
+                  <div key={`${item.endpoint_id}-${item.api_key_id}`}>
+                    {item.endpoint_name} / key {item.api_key_id}:{" "}
+                    {item.reasons.join(", ")}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {routeResult?.notes?.length ? (
+            <p className="text-xs text-yellow-300">Notes: {routeResult.notes.join(", ")}</p>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -523,11 +649,11 @@ export const RouterLab = () => {
               <Button
                 variant="outline"
                 onClick={() => {
-                  void loadRequestLogs();
+                  void Promise.all([loadRequestLogs(), loadRequestAttemptLogs()]);
                 }}
-                disabled={logsLoading}
+                disabled={logsLoading || attemptsLoading}
               >
-                {logsLoading ? "加载中" : "刷新"}
+                {logsLoading || attemptsLoading ? "加载中" : "刷新"}
               </Button>
               <Button
                 variant="outline"
@@ -603,33 +729,37 @@ export const RouterLab = () => {
             <Button
               variant="outline"
               onClick={() => {
-                void loadRequestLogs();
+                void Promise.all([loadRequestLogs(), loadRequestAttemptLogs()]);
               }}
-              disabled={logsLoading}
+              disabled={logsLoading || attemptsLoading}
             >
               筛选
             </Button>
-            <Button variant="outline" onClick={clearLogFilters} disabled={logsLoading}>
+            <Button
+              variant="outline"
+              onClick={clearLogFilters}
+              disabled={logsLoading || attemptsLoading}
+            >
               清空
             </Button>
             <Button
               variant="outline"
               onClick={() => applyQuickRange(1)}
-              disabled={logsLoading}
+              disabled={logsLoading || attemptsLoading}
             >
               近1h
             </Button>
             <Button
               variant="outline"
               onClick={() => applyQuickRange(6)}
-              disabled={logsLoading}
+              disabled={logsLoading || attemptsLoading}
             >
               近6h
             </Button>
             <Button
               variant="outline"
               onClick={() => applyQuickRange(24)}
-              disabled={logsLoading}
+              disabled={logsLoading || attemptsLoading}
             >
               近24h
             </Button>
@@ -689,6 +819,67 @@ export const RouterLab = () => {
             </div>
           ) : (
             <p className="text-sm text-zinc-400">暂无请求日志。</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>候选尝试日志</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {requestAttempts.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-zinc-400">
+                  <tr>
+                    <th className="py-2">请求</th>
+                    <th>尝试</th>
+                    <th>模型</th>
+                    <th>Endpoint</th>
+                    <th>Key</th>
+                    <th>结果</th>
+                    <th>原因</th>
+                    <th>状态</th>
+                    <th>耗时</th>
+                    <th>执行</th>
+                    <th>时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {requestAttempts.map((attempt) => (
+                    <tr key={attempt.id} className="border-t border-muted">
+                      <td className="py-2">{shortId(attempt.request_id)}</td>
+                      <td>{attempt.attempt_order}</td>
+                      <td>{attempt.model_alias}</td>
+                      <td>{attempt.endpoint_id}</td>
+                      <td>{attempt.api_key_id}</td>
+                      <td
+                        className={
+                          attempt.outcome === "success"
+                            ? "text-emerald-400"
+                            : attempt.outcome === "retry" || attempt.outcome === "fallback"
+                              ? "text-yellow-300"
+                              : "text-red-400"
+                        }
+                      >
+                        {attempt.outcome}
+                      </td>
+                      <td>{attempt.failure_reason ?? "--"}</td>
+                      <td>{attempt.status_code ?? "--"}</td>
+                      <td>{attempt.latency_ms} ms</td>
+                      <td title={attempt.upstream_url ?? undefined}>
+                        {attempt.execution_mode ?? "--"}
+                        {attempt.agent_node ? ` (${attempt.agent_node})` : ""}
+                      </td>
+                      <td>{new Date(attempt.created_at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-400">暂无候选尝试日志。</p>
           )}
         </CardContent>
       </Card>

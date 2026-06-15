@@ -188,6 +188,22 @@ class ModelRouter:
             self._last_sequential_state_key, str(candidate.api_key.id)
         )
 
+    async def get_sequential_active_key_id(
+        self,
+        *,
+        model_alias: str,
+        effective_group: str,
+        provider_filters: str | Sequence[str] | set[str] | None = None,
+        target_key_ids: list[int] | None = None,
+    ) -> int | None:
+        state_key = self._sequential_state_key(
+            model_alias=model_alias,
+            effective_group=effective_group,
+            provider_filters=provider_filters,
+            target_key_ids=target_key_ids,
+        )
+        return await self._get_sequential_active_key_id(state_key)
+
     async def _load_unmapped_candidates(
         self,
         session: AsyncSession,

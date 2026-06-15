@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+import json
 import logging
 import re
 import time
+from urllib.parse import quote
 
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy import delete, select
@@ -26,6 +28,8 @@ from app.api.v1.route_helpers import (
 )
 from app.api.v1.route_models import (
     APIKeyCreate,
+    APIKeyDirectTestOut,
+    APIKeyDirectTestRequest,
     APIKeyOut,
     APIKeyUpdate,
     DeleteResponse,
@@ -42,6 +46,7 @@ from app.api.v1.route_models import (
     ModelMapCreate,
     ModelMapOut,
     ModelMapUpdate,
+    RequestAttemptLogOut,
     RequestLogOut,
     RoutingRuleCreate,
     RoutingRuleOut,
@@ -55,10 +60,19 @@ from app.api.v1.route_models import (
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
-from app.db.models import APIKey, Endpoint, FactoryAccessKey, ModelMap, RequestLog, RoutingRule
+from app.db.models import (
+    APIKey,
+    Endpoint,
+    FactoryAccessKey,
+    ModelMap,
+    RequestAttemptLog,
+    RequestLog,
+    RoutingRule,
+)
 from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
+from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
 SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
@@ -134,6 +148,131 @@ def _build_provider_probe_url(
     if cleaned.endswith("/v1"):
         cleaned = cleaned[:-3]
     return f"{cleaned}{default_suffix}"
+
+
+def _build_provider_api_url(endpoint: Endpoint, default_suffix: str) -> str:
+    custom_suffix = _normalize_url_path_suffix(endpoint.url_path_suffix)
+    if endpoint.provider == "custom" and custom_suffix:
+        return f"{endpoint.base_url.rstrip('/')}{custom_suffix}"
+
+    cleaned = endpoint.base_url.rstrip("/")
+    for version in ("v1", "v1beta", "v1alpha"):
+        if default_suffix.startswith(f"/{version}") and cleaned.endswith(f"/{version}"):
+            cleaned = cleaned[: -(len(version) + 1)]
+            break
+    return f"{cleaned}{default_suffix}"
+
+
+def _build_direct_test_request(
+    endpoint: Endpoint, model: str
+) -> tuple[str, dict[str, object]]:
+    provider = _normalize_endpoint_provider(endpoint.provider)
+    prompt = "你是什么模型"
+    if provider == "anthropic":
+        return _build_provider_api_url(endpoint, "/v1/messages"), {
+            "model": model,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+    if provider == "gemini":
+        encoded_model = quote(model, safe="/")
+        return _build_provider_api_url(
+            endpoint, f"/v1beta/models/{encoded_model}:generateContent"
+        ), {
+            "contents": [
+                {"role": "user", "parts": [{"text": prompt}]},
+            ]
+        }
+    return _build_provider_api_url(endpoint, "/v1/chat/completions"), {
+        "model": model,
+        "stream": False,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+
+def _extract_direct_test_text(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+            text = first.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+
+    content = payload.get("content")
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        if parts:
+            return "\n".join(parts).strip()
+
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        first = candidates[0]
+        if isinstance(first, dict):
+            candidate_content = first.get("content")
+            if isinstance(candidate_content, dict):
+                gemini_parts = candidate_content.get("parts")
+                if isinstance(gemini_parts, list):
+                    parts = [
+                        part.get("text")
+                        for part in gemini_parts
+                        if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    ]
+                    if parts:
+                        return "\n".join(parts).strip()
+
+    output = payload.get("output")
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            item_content = item.get("content")
+            if isinstance(item_content, list):
+                for part in item_content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+            elif isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        if parts:
+            return "\n".join(parts).strip()
+
+    return None
+
+
+def _direct_test_error_reason(status_code: int, payload: object) -> str | None:
+    if status_code >= 400:
+        return f"http_{status_code}"
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if error:
+        return "error_field"
+    errors = payload.get("errors")
+    if errors:
+        return "errors_field"
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"error", "failed", "failure"}:
+        return f"status_{status}"
+    if payload.get("success") is False or payload.get("ok") is False:
+        return "success_false"
+    return None
 
 
 def _pick_probe_model(existing_models: list[ModelMap]) -> str:
@@ -777,6 +916,9 @@ async def delete_endpoint(
     endpoint = await session.get(Endpoint, endpoint_id)
     if not endpoint:
         raise HTTPException(status_code=404, detail="Endpoint not found")
+    await session.execute(
+        delete(RequestAttemptLog).where(RequestAttemptLog.endpoint_id == endpoint_id)
+    )
     await session.execute(delete(RequestLog).where(RequestLog.endpoint_id == endpoint_id))
     await session.execute(delete(ModelMap).where(ModelMap.endpoint_id == endpoint_id))
     await session.execute(delete(APIKey).where(APIKey.endpoint_id == endpoint_id))
@@ -1087,6 +1229,67 @@ async def delete_api_key(
     await session.delete(api_key)
     await session.commit()
     return DeleteResponse()
+
+
+async def test_api_key_direct(
+    api_key_id: int,
+    payload: APIKeyDirectTestRequest,
+    session: AsyncSession = Depends(get_session),
+) -> APIKeyDirectTestOut:
+    result = await session.execute(
+        select(APIKey, Endpoint)
+        .join(Endpoint, APIKey.endpoint_id == Endpoint.id)
+        .where(APIKey.id == api_key_id)
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    api_key, endpoint = row
+
+    model = payload.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    provider = _normalize_endpoint_provider(endpoint.provider)
+    url, request_payload = _build_direct_test_request(endpoint, model)
+    headers = _build_upstream_headers({}, endpoint, api_key.key)
+    prompt = "你是什么模型"
+    client = await get_http_client()
+    start = time.perf_counter()
+    status_code = 0
+    raw_response: object | None = None
+    output_text: str | None = None
+    error_reason: str | None = None
+    try:
+        response = await client.post(url, headers=headers, json=request_payload)
+        status_code = response.status_code
+        text = response.text
+        try:
+            raw_response = response.json()
+        except (json.JSONDecodeError, ValueError):
+            raw_response = text[:4000]
+        output_text = _extract_direct_test_text(raw_response)
+        error_reason = _direct_test_error_reason(status_code, raw_response)
+    except Exception as exc:
+        error_reason = "request_error"
+        raw_response = {"error": str(exc)}
+    latency_ms = int((time.perf_counter() - start) * 1000)
+
+    return APIKeyDirectTestOut(
+        api_key_id=api_key.id,
+        endpoint_id=endpoint.id,
+        endpoint_name=endpoint.name,
+        provider=provider,
+        model=model,
+        prompt=prompt,
+        status_code=status_code,
+        ok=error_reason is None and 200 <= status_code < 300,
+        latency_ms=latency_ms,
+        output_text=output_text,
+        error_reason=error_reason,
+        upstream_url=url,
+        raw_response=raw_response,
+    )
 
 
 async def list_rules(session: AsyncSession = Depends(get_session)) -> list[RoutingRuleOut]:
@@ -1566,5 +1769,41 @@ async def list_request_logs(
     if until_dt:
         stmt = stmt.where(RequestLog.created_at <= until_dt)
     stmt = stmt.order_by(RequestLog.created_at.desc()).limit(limit)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def list_request_attempt_logs(
+    limit: int = Query(default=200, ge=1, le=2000),
+    request_id: str | None = Query(default=None),
+    trace_id: str | None = Query(default=None),
+    model_alias: str | None = Query(default=None),
+    endpoint_id: int | None = Query(default=None),
+    api_key_id: int | None = Query(default=None),
+    outcome: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> list[RequestAttemptLogOut]:
+    stmt = select(RequestAttemptLog)
+    if request_id:
+        stmt = stmt.where(RequestAttemptLog.request_id == request_id)
+    if trace_id:
+        stmt = stmt.where(RequestAttemptLog.trace_id == trace_id)
+    if model_alias:
+        stmt = stmt.where(RequestAttemptLog.model_alias == model_alias)
+    if endpoint_id is not None:
+        stmt = stmt.where(RequestAttemptLog.endpoint_id == endpoint_id)
+    if api_key_id is not None:
+        stmt = stmt.where(RequestAttemptLog.api_key_id == api_key_id)
+    if outcome:
+        stmt = stmt.where(RequestAttemptLog.outcome == outcome)
+    since_dt = _parse_iso_datetime(since)
+    if since_dt:
+        stmt = stmt.where(RequestAttemptLog.created_at >= since_dt)
+    until_dt = _parse_iso_datetime(until)
+    if until_dt:
+        stmt = stmt.where(RequestAttemptLog.created_at <= until_dt)
+    stmt = stmt.order_by(RequestAttemptLog.created_at.desc(), RequestAttemptLog.id.desc()).limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()

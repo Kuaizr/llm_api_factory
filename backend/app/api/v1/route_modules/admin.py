@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.v1.route_helpers import _require_master_auth
 from app.api.v1.route_models import (
     APIKeyOut,
+    APIKeyDirectTestOut,
     DeleteResponse,
     EndpointDetailOut,
     EndpointOut,
@@ -10,6 +11,7 @@ from app.api.v1.route_models import (
     FactoryAccessKeyIssueOut,
     FactoryAccessKeyOut,
     ModelMapOut,
+    RequestAttemptLogOut,
     RequestLogOut,
     RoutingRuleOut,
     RuleAccessKeyCreate,
@@ -35,12 +37,14 @@ from app.api.v1.route_modules.admin_handlers import (
     list_endpoints,
     list_factory_access_keys,
     list_model_maps,
+    list_request_attempt_logs,
     list_request_logs,
     list_rules,
     list_rule_access_keys,
     probe_endpoint,
     rotate_factory_access_key,
     scan_rule_models,
+    test_api_key_direct,
     update_api_key,
     update_endpoint,
     update_factory_access_key,
@@ -134,6 +138,13 @@ router.add_api_route(
     delete_api_key,
     methods=["DELETE"],
     response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/api-keys/{api_key_id}/test",
+    test_api_key_direct,
+    methods=["POST"],
+    response_model=APIKeyDirectTestOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(
@@ -256,5 +267,12 @@ router.add_api_route(
     list_request_logs,
     methods=["GET"],
     response_model=list[RequestLogOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/request-attempt-logs",
+    list_request_attempt_logs,
+    methods=["GET"],
+    response_model=list[RequestAttemptLogOut],
     dependencies=_admin_dependencies,
 )

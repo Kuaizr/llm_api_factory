@@ -142,12 +142,18 @@ def build_proxy_app(
     async def fake_write_request_log(metrics):  # noqa: ANN001
         recorded["metrics"] = metrics
 
+    async def fake_write_request_attempt_log(metrics):  # noqa: ANN001
+        recorded.setdefault("attempts", []).append(metrics)
+
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
     monkeypatch.setattr(routes_module, "get_redis", fake_get_redis)
     monkeypatch.setattr(routes_module, "get_notifier", lambda: None)
     monkeypatch.setattr(routes_module.ModelRouter, "get_candidates", fake_get_candidates)
     monkeypatch.setattr(routes_module, "get_http_client", fake_get_http_client)
     monkeypatch.setattr(routes_module, "write_request_log", fake_write_request_log)
+    monkeypatch.setattr(
+        routes_module, "write_request_attempt_log", fake_write_request_attempt_log
+    )
     recorded["redis"] = redis
     if agent_manager is not None:
         monkeypatch.setattr(routes_module, "get_agent_manager", lambda: agent_manager)
@@ -314,6 +320,7 @@ async def test_standard_provider_ignores_custom_endpoint_extensions(
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert requests
@@ -360,6 +367,7 @@ async def test_custom_provider_applies_endpoint_extensions(
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert requests
@@ -746,6 +754,172 @@ async def test_gemini_passthrough_rewrites_model_path(
     assert metrics.total_tokens == 5
     assert metrics.execution_mode == "direct"
     assert metrics.upstream_url.endswith("/v1beta/models/gemini-1.5-pro:generateContent")
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_preserves_tools_and_response_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(id=42, name="OpenAI", base_url="https://api.example.com")
+    api_key = APIKeyStub(id=43, key="sk-tools")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4.1")
+    upstream_payload = {"id": "chat-tools", "choices": [{"message": {"content": "ok"}}]}
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=upstream_payload)
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    body = {
+        "model": "gpt-alias",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "response_format": {"type": "json_object"},
+        "parallel_tool_calls": True,
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer token"},
+            json=body,
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    sent_payload = json.loads(requests[0].content)
+    assert sent_payload["model"] == "gpt-4.1"
+    assert sent_payload["tools"] == body["tools"]
+    assert sent_payload["tool_choice"] == "auto"
+    assert sent_payload["response_format"] == body["response_format"]
+    assert sent_payload["parallel_tool_calls"] is True
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_stream_preserves_content_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=44,
+        name="Anthropic",
+        base_url="https://api.anthropic.com",
+        provider="anthropic",
+        auth_header_name="x-api-key",
+        auth_header_prefix="",
+    )
+    api_key = APIKeyStub(id=45, key="sk-anthropic")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="claude-sonnet")
+    requests: list[httpx.Request] = []
+    stream_payload = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_payload,
+        )
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    body = {
+        "model": "claude-alias",
+        "stream": True,
+        "max_tokens": 64,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "image", "source": {"type": "base64", "data": "abc"}},
+                ],
+            }
+        ],
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/anthropic/v1/messages",
+            headers={"x-api-key": "token"},
+            json=body,
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.content == stream_payload
+    sent_payload = json.loads(requests[0].content)
+    assert sent_payload["model"] == "claude-sonnet"
+    assert sent_payload["messages"] == body["messages"]
+    assert sent_payload["thinking"] == body["thinking"]
+    assert requests[0].headers.get("x-api-key") == "sk-anthropic"
+
+
+@pytest.mark.asyncio
+async def test_gemini_stream_generate_content_rewrites_model_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=46,
+        name="Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        provider="gemini",
+        auth_header_name="x-goog-api-key",
+        auth_header_prefix="",
+    )
+    api_key = APIKeyStub(id=47, key="gemini-key")
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gemini-2.0-flash",
+    )
+    requests: list[httpx.Request] = []
+    stream_payload = b'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_payload,
+        )
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    body = {"contents": [{"role": "user", "parts": [{"text": "ping"}]}]}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/gemini/v1beta/models/gemini-alias:streamGenerateContent",
+            headers={"x-goog-api-key": "token", "accept": "text/event-stream"},
+            json=body,
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.content == stream_payload
+    assert requests[0].url.path == "/v1beta/models/gemini-2.0-flash:streamGenerateContent"
+    assert json.loads(requests[0].content) == body
 
 
 @pytest.mark.asyncio
@@ -1176,6 +1350,7 @@ async def test_proxy_falls_back_on_semantic_error_response(
         )
 
     await upstream_client.aclose()
+    await asyncio.sleep(0)
 
     assert response.status_code == 200
     assert response.json()["id"] == "cmpl-semantic-fallback-ok"
@@ -1184,6 +1359,11 @@ async def test_proxy_falls_back_on_semantic_error_response(
     assert requests[1].headers.get("Authorization") == "Bearer sk-fallback"
     redis = recorded["redis"]
     assert redis.store[f"circuit:{primary_key.id}:failures"] == "1"
+    attempts = recorded.get("attempts")
+    assert attempts is not None
+    assert [attempt.outcome for attempt in attempts] == ["fallback", "success"]
+    assert attempts[0].failure_reason == "semantic_error_field"
+    assert attempts[1].api_key_id == fallback_key.id
 
 
 @pytest.mark.asyncio

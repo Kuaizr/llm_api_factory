@@ -35,7 +35,13 @@ from app.core.redis import get_redis
 from app.db.models import Endpoint, ModelMap, RoutingRule
 from app.db.session import get_session
 from app.services.agent_transport import AgentRequest, AgentUnavailableError, get_agent_manager
-from app.services.billing import RequestMetrics, extract_usage, write_request_log
+from app.services.billing import (
+    RequestAttemptMetrics,
+    RequestMetrics,
+    extract_usage,
+    write_request_attempt_log,
+    write_request_log,
+)
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
@@ -355,6 +361,46 @@ def _should_retry_same_candidate(status_code: int, attempt_index: int) -> bool:
     )
 
 
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
+
+
+def _record_attempt_log(
+    *,
+    request_id: str,
+    trace_id: str,
+    model_alias: str,
+    candidate: RouteCandidate,
+    requested_rule_group: str | None,
+    rule_group: str,
+    attempt_order: int,
+    status_code: int | None,
+    outcome: str,
+    failure_reason: str | None,
+    latency_ms: int,
+    agent_node: str | None,
+    upstream_url: str,
+) -> None:
+    metrics = RequestAttemptMetrics(
+        request_id=request_id,
+        trace_id=trace_id,
+        model_alias=model_alias,
+        endpoint_id=candidate.endpoint.id,
+        api_key_id=candidate.api_key.id,
+        requested_rule_group=requested_rule_group,
+        rule_group=rule_group,
+        attempt_order=attempt_order,
+        status_code=status_code,
+        outcome=outcome,
+        failure_reason=failure_reason,
+        latency_ms=latency_ms,
+        execution_mode=candidate.execution_mode,
+        agent_node=agent_node,
+        upstream_url=upstream_url,
+    )
+    asyncio.create_task(write_request_attempt_log(metrics))
+
+
 async def _list_accessible_model_aliases(
     request: Request,
     session: AsyncSession,
@@ -518,6 +564,7 @@ async def _proxy_openai_request(
     trace_id = _resolve_trace_id(request, payload, session_id)
     request_start = time.perf_counter()
     client = await get_http_client()
+    attempt_order = 0
 
     for candidate in candidates:
         upstream_payload = payload
@@ -583,6 +630,8 @@ async def _proxy_openai_request(
         if agent_name:
             agent_manager = get_agent_manager()
             for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
+                attempt_order += 1
+                attempt_start = time.perf_counter()
                 try:
                     agent_request = AgentRequest(
                         method=request.method,
@@ -593,6 +642,23 @@ async def _proxy_openai_request(
                     )
                     agent_response = await agent_manager.send_request(agent_name, agent_request)
                 except AgentUnavailableError:
+                    _record_attempt_log(
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        model_alias=model_alias,
+                        candidate=candidate,
+                        requested_rule_group=requested_rule_group,
+                        rule_group=effective_group,
+                        attempt_order=attempt_order,
+                        status_code=None,
+                        outcome="retry"
+                        if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS
+                        else ("fallback" if candidate != candidates[-1] else "error"),
+                        failure_reason="agent_unavailable",
+                        latency_ms=_elapsed_ms(attempt_start),
+                        agent_node=agent_name,
+                        upstream_url=url,
+                    )
                     await circuit_breaker.record_failure(candidate.api_key.id)
                     if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS:
                         continue
@@ -642,7 +708,25 @@ async def _proxy_openai_request(
                         content = await agent_response.read_all()
                     else:
                         content = agent_response.body
-                    if _should_retry_same_candidate(status_code, attempt_index):
+                    should_retry = _should_retry_same_candidate(status_code, attempt_index)
+                    _record_attempt_log(
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        model_alias=model_alias,
+                        candidate=candidate,
+                        requested_rule_group=requested_rule_group,
+                        rule_group=effective_group,
+                        attempt_order=attempt_order,
+                        status_code=status_code,
+                        outcome="retry"
+                        if should_retry
+                        else ("fallback" if candidate != candidates[-1] else "returned"),
+                        failure_reason=f"http_{status_code}",
+                        latency_ms=_elapsed_ms(attempt_start),
+                        agent_node=agent_name,
+                        upstream_url=url,
+                    )
+                    if should_retry:
                         continue
                     if candidate != candidates[-1]:
                         break
@@ -672,6 +756,21 @@ async def _proxy_openai_request(
                 if is_stream:
                     await circuit_breaker.record_success(candidate.api_key.id)
                     await router_service.record_candidate_success(candidate)
+                    _record_attempt_log(
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        model_alias=model_alias,
+                        candidate=candidate,
+                        requested_rule_group=requested_rule_group,
+                        rule_group=effective_group,
+                        attempt_order=attempt_order,
+                        status_code=status_code,
+                        outcome="success",
+                        failure_reason=None,
+                        latency_ms=_elapsed_ms(attempt_start),
+                        agent_node=agent_name,
+                        upstream_url=url,
+                    )
                     stream_headers = _merge_headers(
                         _filter_response_headers(agent_response.headers), debug_headers
                     )
@@ -757,6 +856,21 @@ async def _proxy_openai_request(
                 )
                 if semantic_failure_reason:
                     await circuit_breaker.record_failure(candidate.api_key.id)
+                    _record_attempt_log(
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        model_alias=model_alias,
+                        candidate=candidate,
+                        requested_rule_group=requested_rule_group,
+                        rule_group=effective_group,
+                        attempt_order=attempt_order,
+                        status_code=status_code,
+                        outcome="fallback" if candidate != candidates[-1] else "returned",
+                        failure_reason=f"semantic_{semantic_failure_reason}",
+                        latency_ms=_elapsed_ms(attempt_start),
+                        agent_node=agent_name,
+                        upstream_url=url,
+                    )
                     if candidate != candidates[-1]:
                         break
                     asyncio.create_task(
@@ -784,6 +898,21 @@ async def _proxy_openai_request(
 
                 await circuit_breaker.record_success(candidate.api_key.id)
                 await router_service.record_candidate_success(candidate)
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=status_code,
+                    outcome="success",
+                    failure_reason=None,
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
 
                 prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
                 metrics = RequestMetrics(
@@ -834,6 +963,8 @@ async def _proxy_openai_request(
             continue
 
         for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
+            attempt_order += 1
+            attempt_start = time.perf_counter()
             try:
                 request_obj = client.build_request(
                     request.method,
@@ -843,6 +974,23 @@ async def _proxy_openai_request(
                 )
                 response = await client.send(request_obj, stream=is_stream)
             except Exception as exc:
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=None,
+                    outcome="retry"
+                    if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS
+                    else ("fallback" if candidate != candidates[-1] else "error"),
+                    failure_reason="connection_error",
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
                 await circuit_breaker.record_failure(candidate.api_key.id)
                 if attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS:
                     continue
@@ -895,7 +1043,25 @@ async def _proxy_openai_request(
                     await circuit_breaker.record_failure(candidate.api_key.id)
                 content = await response.aread()
                 await response.aclose()
-                if _should_retry_same_candidate(response.status_code, attempt_index):
+                should_retry = _should_retry_same_candidate(response.status_code, attempt_index)
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=response.status_code,
+                    outcome="retry"
+                    if should_retry
+                    else ("fallback" if candidate != candidates[-1] else "returned"),
+                    failure_reason=f"http_{response.status_code}",
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
+                if should_retry:
                     continue
                 if candidate != candidates[-1]:
                     break
@@ -927,6 +1093,21 @@ async def _proxy_openai_request(
             if is_stream:
                 await circuit_breaker.record_success(candidate.api_key.id)
                 await router_service.record_candidate_success(candidate)
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=response.status_code,
+                    outcome="success",
+                    failure_reason=None,
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
                 stream_headers = _merge_headers(
                     _filter_response_headers(response.headers), debug_headers
                 )
@@ -969,6 +1150,21 @@ async def _proxy_openai_request(
             if semantic_failure_reason:
                 await circuit_breaker.record_failure(candidate.api_key.id)
                 await response.aclose()
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=response.status_code,
+                    outcome="fallback" if candidate != candidates[-1] else "returned",
+                    failure_reason=f"semantic_{semantic_failure_reason}",
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
                 if candidate != candidates[-1]:
                     break
                 asyncio.create_task(
@@ -996,6 +1192,21 @@ async def _proxy_openai_request(
 
             await circuit_breaker.record_success(candidate.api_key.id)
             await router_service.record_candidate_success(candidate)
+            _record_attempt_log(
+                request_id=request_id,
+                trace_id=trace_id,
+                model_alias=model_alias,
+                candidate=candidate,
+                requested_rule_group=requested_rule_group,
+                rule_group=effective_group,
+                attempt_order=attempt_order,
+                status_code=response.status_code,
+                outcome="success",
+                failure_reason=None,
+                latency_ms=_elapsed_ms(attempt_start),
+                agent_node=agent_name,
+                upstream_url=url,
+            )
 
             prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
             metrics = RequestMetrics(
