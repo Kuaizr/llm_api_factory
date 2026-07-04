@@ -1,8 +1,6 @@
 from typing import AsyncGenerator, Callable
-import re
 import time
 import uuid
-from urllib.parse import quote, unquote
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -20,6 +18,10 @@ from app.api.v1.route_modules.proxy_failures import (
     parse_json_object_bytes,
     semantic_failure_reason as detect_semantic_failure_reason,
     should_retry_same_candidate,
+)
+from app.api.v1.route_modules.proxy_gemini import (
+    extract_gemini_model_alias,
+    rewrite_gemini_model_path,
 )
 from app.api.v1.route_modules.proxy_models import (
     build_gemini_models_response,
@@ -72,42 +74,6 @@ from app.services.billing import (
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
-
-GEMINI_MODEL_PATH_PATTERN = re.compile(
-    r"(?P<prefix>/(?:v1|v1beta|v1alpha)/(?P<collection>models|tunedModels)/)"
-    r"(?P<model>[^:?#]+)"
-    r"(?P<suffix>:[^/?#]+)?"
-)
-
-
-def _extract_gemini_model_alias(path: str) -> str | None:
-    match = GEMINI_MODEL_PATH_PATTERN.search(path)
-    if not match:
-        return None
-    model = unquote(match.group("model")).strip("/")
-    if not model:
-        return None
-    return model
-
-
-def _rewrite_gemini_model_path(path: str, real_model: str) -> str:
-    match = GEMINI_MODEL_PATH_PATTERN.search(path)
-    if not match:
-        return path
-
-    collection = match.group("collection")
-    replacement = str(real_model or "").strip()
-    if replacement.startswith(f"{collection}/"):
-        replacement = replacement[len(collection) + 1 :]
-    if not replacement:
-        return path
-
-    encoded_model = quote(replacement, safe="/")
-    return (
-        f"{path[:match.start('model')]}"
-        f"{encoded_model}"
-        f"{path[match.end('model'):]}"
-    )
 
 
 def _elapsed_ms(start: float) -> int:
@@ -1087,7 +1053,7 @@ async def gemini_passthrough(
             payload = build_gemini_models_response(model_aliases)
             return JSONResponse(content=payload)
 
-    model_alias = _extract_gemini_model_alias(request.url.path)
+    model_alias = extract_gemini_model_alias(request.url.path)
     if model_alias is None:
         model_alias = request.headers.get("X-Model-Alias")
 
@@ -1101,7 +1067,7 @@ async def gemini_passthrough(
         provider_filter_fallback_to_any=True,
         allow_missing_model=False,
         model_alias_override=model_alias,
-        target_path_rewriter=lambda raw_path, candidate: _rewrite_gemini_model_path(
+        target_path_rewriter=lambda raw_path, candidate: rewrite_gemini_model_path(
             raw_path,
             candidate.real_model,
         ),
