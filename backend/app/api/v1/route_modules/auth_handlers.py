@@ -60,6 +60,8 @@ async def auth_update_password(
     if len(new_password) < 4:
         raise HTTPException(status_code=400, detail="New password is too short")
 
+    if not (settings.data_encryption_key or "").strip():
+        settings.data_encryption_key = current_password
     settings.master_auth_token = new_password
     return AuthPasswordUpdateResponse(
         token=issue_admin_session_token(settings),

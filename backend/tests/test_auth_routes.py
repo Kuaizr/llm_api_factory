@@ -7,6 +7,7 @@ from app.api.v1 import routes_legacy as legacy_module
 from app.core.config import Settings
 from app.db.session import get_session
 from app.services.admin_auth import issue_admin_session_token
+from app.services.secrets import decrypt_secret_value, encrypt_secret_value
 
 
 async def override_session():
@@ -132,6 +133,7 @@ async def test_auth_me_with_x_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_auth_password_update_success(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(master_auth_token="token")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    encrypted = encrypt_secret_value("sk-before-password-change", settings=settings)
 
     app = FastAPI()
     app.include_router(routes_module.router)
@@ -153,6 +155,11 @@ async def test_auth_password_update_success(monkeypatch: pytest.MonkeyPatch) -> 
     assert update_response.json()["token"] != "next-token"
     assert old_login.status_code == 401
     assert new_login.status_code == 200
+    assert settings.data_encryption_key == "token"
+    assert (
+        decrypt_secret_value(encrypted, settings=settings)
+        == "sk-before-password-change"
+    )
 
 
 @pytest.mark.asyncio
