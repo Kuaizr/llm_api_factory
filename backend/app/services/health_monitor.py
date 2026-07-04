@@ -20,6 +20,7 @@ from app.db.models import APIKey, Endpoint, ModelMap
 from app.db.session import SessionLocal
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import AlertPolicyStore, get_notifier
+from app.services.secrets import decrypt_secret_value
 from app.services.telegram import TelegramNotifier
 
 
@@ -424,10 +425,11 @@ class HealthMonitor:
     def _build_headers(self, target: HealthTarget) -> dict[str, str]:
         header_name = target.endpoint.auth_header_name or "Authorization"
         header_prefix = target.endpoint.auth_header_prefix
+        api_key = decrypt_secret_value(target.api_key.key, settings=self.settings)
         if header_prefix:
-            value = f"{header_prefix} {target.api_key.key}"
+            value = f"{header_prefix} {api_key}"
         else:
-            value = target.api_key.key
+            value = api_key
         return {header_name: value, "Content-Type": "application/json"}
 
     async def _get_client(self) -> AsyncClient:

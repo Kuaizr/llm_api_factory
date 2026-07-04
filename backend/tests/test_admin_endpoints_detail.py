@@ -15,6 +15,7 @@ from app.db.models import APIKey, Endpoint, ModelMap, RequestAttemptLog
 from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
+from app.services.secrets import ENCRYPTED_SECRET_PREFIX, decrypt_secret_value
 
 
 @pytest.mark.asyncio
@@ -743,6 +744,88 @@ async def test_api_key_direct_test_uses_selected_key(
     assert payload["output_text"] == "我是 gpt-direct"
     assert payload["upstream_url"] == "https://api.example.com/v1/chat/completions"
     assert requests[0].headers["authorization"] == "Bearer sk-direct"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_key_create_encrypts_storage_and_direct_test_decrypts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="EncryptedKeyEndpoint",
+        base_url="https://api.example.com/v1",
+        provider="openai",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-encrypted",
+                "choices": [{"message": {"content": "ok"}}],
+            },
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    settings = Settings(
+        master_auth_token="token",
+        admin_legacy_master_bearer_enabled=True,
+    )
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/keys",
+            headers={"Authorization": "Bearer token"},
+            json={"key": "sk-encrypted", "name": "Encrypted"},
+        )
+        assert create_response.status_code == 200
+        key_id = create_response.json()["id"]
+        assert create_response.json()["key"] == "sk-...pted"
+
+        test_response = await client.post(
+            f"/admin/api-keys/{key_id}/test",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-encrypted"},
+        )
+
+    await upstream_client.aclose()
+
+    stored_key = await session.get(APIKey, key_id)
+    assert stored_key is not None
+    assert stored_key.key.startswith(ENCRYPTED_SECRET_PREFIX)
+    assert decrypt_secret_value(stored_key.key, settings=settings) == "sk-encrypted"
+    assert test_response.status_code == 200
+    assert requests[0].headers["authorization"] == "Bearer sk-encrypted"
 
     await session.close()
     await engine.dispose()

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.route_models import (
+    APIKeyOut,
     DashboardEndpointOut,
     EndpointDetailOut,
     EndpointOut,
@@ -26,10 +27,14 @@ from app.services.admin_auth import verify_admin_session_token
 from app.services.agents import get_agent_by_name, verify_agent_token
 from app.services.health_monitor import HealthProbeResult
 from app.services.model_patterns import model_pattern_matches
+from app.services.secrets import (
+    mask_oauth_config,
+    mask_secret_value,
+    merge_masked_oauth_config,
+)
 
 
 VALID_ENDPOINT_ACCESS_MODES = {"direct", "via_agent"}
-MASKED_SECRET_VALUE = "********"
 
 
 def _normalize_endpoint_access_mode(raw: object, agent_node: object = None) -> str:
@@ -367,43 +372,29 @@ async def _authorize_agent_token(
 
 
 def _mask_key(value: str) -> str:
-    trimmed = str(value or "")
-    if len(trimmed) <= 6:
-        return trimmed
-    return f"{trimmed[:3]}...{trimmed[-4:]}"
+    return mask_secret_value(value, settings=get_settings())
 
 
-def _mask_oauth_config(config: object) -> dict[str, str] | None:
-    if not isinstance(config, dict):
-        return None
-    masked: dict[str, str] = {}
-    for key, value in config.items():
-        key_text = str(key)
-        value_text = str(value)
-        if "secret" in key_text.lower() and value_text:
-            masked[key_text] = MASKED_SECRET_VALUE
-        else:
-            masked[key_text] = value_text
-    return masked
+def _merge_masked_oauth_config(existing_raw: str | None, incoming: dict[str, str]) -> dict[str, str]:
+    return merge_masked_oauth_config(existing_raw, incoming)
 
 
-def _merge_masked_oauth_config(
-    existing_raw: str | None,
-    incoming: dict[str, str],
-) -> dict[str, str]:
-    existing: dict[str, str] = {}
-    if existing_raw:
-        try:
-            parsed = json.loads(existing_raw)
-            if isinstance(parsed, dict):
-                existing = {str(key): str(value) for key, value in parsed.items()}
-        except (json.JSONDecodeError, TypeError):
-            existing = {}
-    merged = {str(key): str(value) for key, value in incoming.items()}
-    for key, value in list(merged.items()):
-        if "secret" in key.lower() and value == MASKED_SECRET_VALUE and key in existing:
-            merged[key] = existing[key]
-    return merged
+def _build_api_key_out(api_key: APIKey) -> APIKeyOut:
+    return APIKeyOut(
+        id=api_key.id,
+        endpoint_id=api_key.endpoint_id,
+        key=_mask_key(api_key.key),
+        name=api_key.name,
+        rule_group=api_key.primary_rule_group,
+        rule_groups=api_key.rule_groups,
+        weight=api_key.weight,
+        rpm_limit=api_key.rpm_limit,
+        daily_limit=api_key.daily_limit,
+        used_today=api_key.used_today,
+        total_usage=api_key.total_usage,
+        is_active=api_key.is_active,
+        created_at=api_key.created_at,
+    )
 
 
 def _build_endpoint_detail(
@@ -453,7 +444,7 @@ def _build_endpoint_detail(
     if endpoint.oauth_config:
         try:
             import json
-            oauth_config = _mask_oauth_config(json.loads(endpoint.oauth_config))
+            oauth_config = mask_oauth_config(json.loads(endpoint.oauth_config))
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -531,7 +522,7 @@ def _build_endpoint_out(endpoint: Endpoint) -> EndpointOut:
     oauth_config = None
     if endpoint.oauth_config:
         try:
-            oauth_config = _mask_oauth_config(json.loads(endpoint.oauth_config))
+            oauth_config = mask_oauth_config(json.loads(endpoint.oauth_config))
         except (json.JSONDecodeError, TypeError):
             pass
 

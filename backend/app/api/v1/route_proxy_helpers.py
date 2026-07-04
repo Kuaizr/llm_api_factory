@@ -8,10 +8,12 @@ from urllib.parse import parse_qsl, urlencode
 from fastapi import Request
 
 from app.api.v1.route_helpers import _dump_proxy_record
+from app.core.config import get_settings
 from app.db.models import RoutingRule
 from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.router import RouteCandidate
+from app.services.secrets import decrypt_oauth_config, decrypt_secret_value
 
 OAUTH_CACHE_PREFIX = "oauth:endpoint"
 DEFAULT_OAUTH_EXPIRES_IN_SECONDS = 3600
@@ -150,6 +152,7 @@ def _build_upstream_headers(
     incoming_headers: dict, endpoint: object, api_key: str
 ) -> dict:
     headers = {}
+    resolved_api_key = decrypt_secret_value(api_key, settings=get_settings())
     skip_headers = {
         "host",
         "content-length",
@@ -170,9 +173,9 @@ def _build_upstream_headers(
     header_name = getattr(endpoint, "auth_header_name", "Authorization") or "Authorization"
     header_prefix = getattr(endpoint, "auth_header_prefix", "Bearer") or ""
     if header_prefix:
-        headers[header_name] = f"{header_prefix} {api_key}"
+        headers[header_name] = f"{header_prefix} {resolved_api_key}"
     else:
-        headers[header_name] = api_key
+        headers[header_name] = resolved_api_key
 
     if _is_custom_provider(endpoint):
         # 处理扩展字段：extra_headers
@@ -297,6 +300,7 @@ def _parse_json_object(raw: object) -> dict[str, object] | None:
 
 def _extract_oauth_config(endpoint: object) -> dict[str, object] | None:
     config = _parse_json_object(getattr(endpoint, "oauth_config", None))
+    config = decrypt_oauth_config(config, settings=get_settings())
     if not config:
         return None
 

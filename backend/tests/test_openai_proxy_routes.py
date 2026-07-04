@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.db.session import get_session
 from app.services.agent_transport import AgentResponse, AgentUnavailableError
 from app.services.router import RouteCandidate
+from app.services.secrets import ENCRYPTED_SECRET_PREFIX, encrypt_oauth_config
 
 
 @dataclass
@@ -1649,11 +1650,17 @@ async def test_proxy_stream_path_records_usage_metrics(monkeypatch: pytest.Monke
 
 @pytest.mark.asyncio
 async def test_oauth_injects_access_token_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
-    oauth_config = json.dumps({
-        "token_url": "https://auth.example.com/oauth/token",
-        "client_id": "test-client",
-        "client_secret": "test-secret",
-    })
+    oauth_config = json.dumps(
+        encrypt_oauth_config(
+            {
+                "token_url": "https://auth.example.com/oauth/token",
+                "client_id": "test-client",
+                "client_secret": "test-secret",
+            },
+            settings=Settings(master_auth_token="token"),
+        )
+    )
+    assert ENCRYPTED_SECRET_PREFIX in oauth_config
     endpoint = EndpointStub(
         id=100,
         name="OAuthEndpoint",
@@ -1693,6 +1700,9 @@ async def test_oauth_injects_access_token_and_caches(monkeypatch: pytest.MonkeyP
     assert response.status_code == 200
     assert len(token_requests) == 1
     assert len(upstream_requests) == 1
+    token_body = token_requests[0].content.decode("utf-8")
+    assert "client_secret=test-secret" in token_body
+    assert ENCRYPTED_SECRET_PREFIX not in token_body
     sent_request = upstream_requests[0]
     assert sent_request.headers.get("authorization") == "Bearer mock-access-token"
 

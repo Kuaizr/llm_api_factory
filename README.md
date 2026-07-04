@@ -170,6 +170,7 @@ uv run uvicorn app.main:app --reload --port 8000
 
 ```bash
 export LLM_MASTER_AUTH_TOKEN="your-admin-token"
+export LLM_DATA_ENCRYPTION_KEY="long-random-secret-for-db-secrets"
 export LLM_DATABASE_URL="sqlite+aiosqlite:///./llm_api_factory.db"
 export LLM_REDIS_URL="redis://localhost:6379/0"
 ```
@@ -179,6 +180,8 @@ export LLM_REDIS_URL="redis://localhost:6379/0"
 ```text
 backend/llm_api_factory.db
 ```
+
+上游 provider API key 和 OAuth `client_secret` 会以 `enc:v1:` 前缀加密后写入数据库。加密密钥优先使用 `LLM_DATA_ENCRYPTION_KEY`，未配置时回退到 `LLM_MASTER_AUTH_TOKEN`。生产环境建议显式配置 `LLM_DATA_ENCRYPTION_KEY`，并保持重启前后一致。
 
 Redis 用于健康探测结果、熔断状态和时间序列数据。开发环境没有 Redis 时会退回内存实现，服务可用，但重启后这些运行态数据会丢失。
 
@@ -194,8 +197,9 @@ npm run dev -- --port 5173
 
 ```bash
 export VITE_API_BASE="http://localhost:8000"
-export VITE_ADMIN_TOKEN="your-admin-token"
 ```
+
+前端不支持也不应配置构建时 admin token。管理台通过 `/auth/login` 获取服务端签发的 admin session token。
 
 开发模式前端地址：
 
@@ -402,6 +406,7 @@ curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts
 | `--agent-network-group` | 网络分组 |
 | `--agent-labels` | 逗号分隔标签 |
 | `--agent-endpoint-url` | 出口公网地址，用于延迟探测 |
+| `--allowed-targets` | 允许 Agent 代理访问的 host、host:port、CIDR 或 `*` |
 | `--repo` | Agent 代码仓库地址 |
 | `--repo-ref` | Agent 代码分支、tag 或 commit |
 | `--no-systemd` | 不注册 systemd，用 nohup 后台运行 |
@@ -418,6 +423,7 @@ export LLM_AGENT_HEARTBEAT_URL="http://localhost:8000/agent/heartbeat"
 export LLM_AGENT_NAME="edge-hk"
 export LLM_AGENT_AUTH_TOKEN="your-token-from-console"
 export LLM_AGENT_REGION="HK"
+export LLM_AGENT_ALLOWED_TARGETS="api.openai.com,api.anthropic.com,generativelanguage.googleapis.com"
 
 uv run python -m app.services.agent_client
 ```

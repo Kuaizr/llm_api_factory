@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.route_helpers import (
+    _build_api_key_out,
     _build_endpoint_detail,
     _build_endpoint_out,
     _build_routing_rule_out,
@@ -78,6 +79,11 @@ from app.services.model_patterns import (
     UnsafeModelPatternError,
     compile_model_pattern,
     validate_model_pattern,
+)
+from app.services.secrets import (
+    decrypt_secret_value,
+    encrypt_oauth_config,
+    encrypt_secret_value,
 )
 from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
@@ -623,7 +629,7 @@ async def _resolve_probe_key_for_eligibility(
             raise HTTPException(status_code=404, detail="API key not found")
         if api_key.endpoint_id != endpoint_id:
             raise HTTPException(status_code=400, detail="API key does not belong to endpoint")
-        return api_key.key
+        return decrypt_secret_value(api_key.key, settings=get_settings())
 
     raw_key = str(payload.api_key or "").strip()
     if raw_key:
@@ -634,7 +640,7 @@ async def _resolve_probe_key_for_eligibility(
         .where(APIKey.endpoint_id == endpoint_id, APIKey.is_active.is_(True))
         .order_by(APIKey.id)
     )
-    return fallback_key
+    return decrypt_secret_value(fallback_key, settings=get_settings()) if fallback_key else None
 
 
 async def _probe_endpoint_models_with_key(
@@ -764,7 +770,9 @@ async def create_endpoint(
     if data.get("extra_query_params") is not None:
         data["extra_query_params"] = json.dumps(data["extra_query_params"])
     if data.get("oauth_config") is not None:
-        data["oauth_config"] = json.dumps(data["oauth_config"])
+        data["oauth_config"] = json.dumps(
+            encrypt_oauth_config(data["oauth_config"], settings=get_settings())
+        )
     # request_body_template 直接存储字符串，无需序列化
     endpoint = Endpoint(**data)
     session.add(endpoint)
@@ -817,6 +825,9 @@ async def update_endpoint(
             endpoint.oauth_config,
             data["oauth_config"],
         )
+        data["oauth_config"] = encrypt_oauth_config(
+            data["oauth_config"], settings=get_settings()
+        )
         data["oauth_config"] = json.dumps(data["oauth_config"])
     # request_body_template 直接存储字符串，无需序列化
     for field, value in data.items():
@@ -868,10 +879,11 @@ async def probe_endpoint(
     header_prefix = endpoint.auth_header_prefix
     if header_prefix is None:
         header_prefix = "Bearer"
+    decrypted_api_key = decrypt_secret_value(api_key.key, settings=get_settings())
     headers = (
-        {header_name: f"{header_prefix} {api_key.key}"}
+        {header_name: f"{header_prefix} {decrypted_api_key}"}
         if header_prefix
-        else {header_name: api_key.key}
+        else {header_name: decrypted_api_key}
     )
 
     status = "error"
@@ -992,6 +1004,7 @@ async def create_endpoint_key(
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     data = payload.model_dump()
+    data["key"] = encrypt_secret_value(data["key"], settings=get_settings())
     raw_rule_groups = data.pop("rule_groups", None)
     normalized_groups = await _validate_rule_groups(
         session,
@@ -1014,7 +1027,7 @@ async def create_endpoint_key(
     )
     await session.commit()
     await session.refresh(api_key)
-    return api_key
+    return _build_api_key_out(api_key)
 
 
 async def list_api_keys(
@@ -1044,7 +1057,7 @@ async def list_api_keys(
             changed = True
     if changed:
         await session.commit()
-    return api_keys
+    return [_build_api_key_out(api_key) for api_key in api_keys]
 
 
 async def check_key_rule_group_eligibility(
@@ -1182,6 +1195,7 @@ async def create_api_key(
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     data = payload.model_dump()
+    data["key"] = encrypt_secret_value(data["key"], settings=get_settings())
     raw_rule_groups = data.pop("rule_groups", None)
     normalized_groups = await _validate_rule_groups(
         session,
@@ -1204,7 +1218,7 @@ async def create_api_key(
     )
     await session.commit()
     await session.refresh(api_key)
-    return api_key
+    return _build_api_key_out(api_key)
 
 
 async def _update_api_key_record(
@@ -1230,6 +1244,9 @@ async def _update_api_key_record(
     else:
         normalized_groups = previous_groups
 
+    if "key" in data and data["key"] is not None:
+        data["key"] = encrypt_secret_value(data["key"], settings=get_settings())
+
     for field, value in data.items():
         setattr(api_key, field, value)
 
@@ -1243,7 +1260,7 @@ async def _update_api_key_record(
 
     await session.commit()
     await session.refresh(api_key)
-    return api_key
+    return _build_api_key_out(api_key)
 
 
 async def update_key(

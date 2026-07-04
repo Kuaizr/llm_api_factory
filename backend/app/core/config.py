@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     master_auth_token: str | None = None
     admin_session_ttl_seconds: int = 86400
     admin_legacy_master_bearer_enabled: bool = False
+    data_encryption_key: str | None = None
     agent_auth_token: str | None = None
     agent_allowed_targets: str = "localhost,127.0.0.1,::1"
     agent_heartbeat_timeout_seconds: int = 120

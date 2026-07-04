@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import json
+import logging
+
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+from app.core.config import get_settings
+from app.services.secrets import (
+    encrypt_oauth_config_if_possible,
+    encrypt_secret_value_if_possible,
+    encryption_available,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _is_ignorable_error(exc: Exception) -> bool:
@@ -156,3 +168,60 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
                 if _is_ignorable_error(exc):
                     continue
                 raise
+        await _encrypt_existing_secret_rows(conn)
+
+
+async def _encrypt_existing_secret_rows(conn) -> None:  # noqa: ANN001
+    settings = get_settings()
+    if not encryption_available(settings):
+        logger.warning(
+            "Secret encryption key not configured; existing API keys remain unencrypted"
+        )
+        return
+
+    try:
+        api_key_rows = (
+            await conn.execute(text("SELECT id, key FROM api_keys WHERE key IS NOT NULL"))
+        ).mappings().all()
+    except (OperationalError, ProgrammingError) as exc:
+        if _is_ignorable_error(exc):
+            api_key_rows = []
+        else:
+            raise
+
+    for row in api_key_rows:
+        encrypted = encrypt_secret_value_if_possible(row["key"], settings=settings)
+        if encrypted and encrypted != row["key"]:
+            await conn.execute(
+                text("UPDATE api_keys SET key = :key WHERE id = :id"),
+                {"id": row["id"], "key": encrypted},
+            )
+
+    try:
+        endpoint_rows = (
+            await conn.execute(
+                text("SELECT id, oauth_config FROM endpoints WHERE oauth_config IS NOT NULL")
+            )
+        ).mappings().all()
+    except (OperationalError, ProgrammingError) as exc:
+        if _is_ignorable_error(exc):
+            endpoint_rows = []
+        else:
+            raise
+
+    for row in endpoint_rows:
+        try:
+            parsed = json.loads(row["oauth_config"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        encrypted_config = encrypt_oauth_config_if_possible(parsed, settings=settings)
+        if encrypted_config is None:
+            continue
+        serialized = json.dumps(encrypted_config, ensure_ascii=False)
+        if serialized != row["oauth_config"]:
+            await conn.execute(
+                text("UPDATE endpoints SET oauth_config = :oauth_config WHERE id = :id"),
+                {"id": row["id"], "oauth_config": serialized},
+            )
