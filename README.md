@@ -188,6 +188,8 @@ SQLite 连接默认启用外键约束、`busy_timeout=5000` 和 `journal_mode=WA
 
 上游 provider API key 和 OAuth `client_secret` 会以 `enc:v1:` 前缀加密后写入数据库。加密密钥优先使用 `LLM_DATA_ENCRYPTION_KEY`，未配置时回退到 `LLM_MASTER_AUTH_TOKEN`。生产环境建议显式配置 `LLM_DATA_ENCRYPTION_KEY`，并保持重启前后一致。
 
+Factory/rule access key 只会在创建或轮换响应中返回完整值；数据库保存 `sha256:` 哈希和预览值，不保存完整明文。
+
 Redis 用于健康探测结果、熔断状态和时间序列数据。开发环境没有 Redis 时会退回内存实现，服务可用，但重启后这些运行态数据会丢失。
 
 ### 前端开发

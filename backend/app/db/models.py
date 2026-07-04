@@ -157,6 +157,7 @@ class FactoryAccessKey(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    key_preview: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rule_groups_json: Mapped[str] = mapped_column(Text, default="[]")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(

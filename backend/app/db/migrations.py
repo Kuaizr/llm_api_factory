@@ -9,6 +9,11 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import get_settings
+from app.services.access_keys import (
+    access_key_preview,
+    hash_access_key,
+    is_hashed_access_key,
+)
 from app.services.secrets import (
     encrypt_oauth_config_if_possible,
     encrypt_secret_value_if_possible,
@@ -97,6 +102,7 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
                 id INTEGER PRIMARY KEY,
                 name VARCHAR(128),
                 key VARCHAR(128) NOT NULL UNIQUE,
+                key_preview VARCHAR(64),
                 rule_groups_json TEXT DEFAULT '[]',
                 is_active BOOLEAN DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -194,6 +200,12 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_outcome_created_at ON request_attempt_logs(outcome, created_at)",
         ),
     ),
+    SchemaMigration(
+        migration_id="20260705_hash_factory_access_keys",
+        statements=(
+            "ALTER TABLE factory_access_keys ADD COLUMN key_preview VARCHAR(64)",
+        ),
+    ),
 )
 
 
@@ -205,6 +217,7 @@ def _is_ignorable_error(exc: Exception) -> bool:
         "duplicate key",
         "already an index",
         "relation",
+        "no such table: factory_access_keys",
         "no such table: rule_access_keys",
     )
     return any(token in message for token in ignored_tokens)
@@ -224,6 +237,7 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
                         continue
                     raise
             await _record_migration(conn, migration.migration_id)
+        await _hash_existing_factory_access_key_rows(conn)
         await _encrypt_existing_secret_rows(conn)
 
 
@@ -255,6 +269,40 @@ async def _record_migration(conn, migration_id: str) -> None:  # noqa: ANN001
         ),
         {"migration_id": migration_id},
     )
+
+
+async def _hash_existing_factory_access_key_rows(conn) -> None:  # noqa: ANN001
+    try:
+        rows = (
+            await conn.execute(
+                text("SELECT id, key, key_preview FROM factory_access_keys WHERE key IS NOT NULL")
+            )
+        ).mappings().all()
+    except (OperationalError, ProgrammingError) as exc:
+        if _is_ignorable_error(exc):
+            return
+        raise
+
+    for row in rows:
+        stored_key = str(row["key"] or "")
+        stored_preview = row["key_preview"]
+        if is_hashed_access_key(stored_key):
+            continue
+        preview = str(stored_preview or "").strip() or access_key_preview(stored_key)
+        await conn.execute(
+            text(
+                """
+                UPDATE factory_access_keys
+                SET key = :key, key_preview = :key_preview
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": row["id"],
+                "key": hash_access_key(stored_key),
+                "key_preview": preview,
+            },
+        )
 
 
 async def _encrypt_existing_secret_rows(conn) -> None:  # noqa: ANN001

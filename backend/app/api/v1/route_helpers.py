@@ -25,6 +25,7 @@ from app.api.v1.route_models import (
 from app.core.config import get_settings
 from app.db.models import APIKey, Agent, Endpoint, FactoryAccessKey, RequestLog, RoutingRule
 from app.services.admin_auth import verify_admin_session_token
+from app.services.access_keys import hash_access_key
 from app.services.agents import get_agent_by_name, verify_agent_token
 from app.services.health_monitor import HealthProbeResult
 from app.services.model_patterns import model_pattern_matches
@@ -147,13 +148,14 @@ async def _resolve_allowed_rule_groups_from_token(
     if not token:
         raise HTTPException(status_code=401, detail="Missing route API key")
 
+    token_hash = hash_access_key(token)
     result = await session.execute(
         select(FactoryAccessKey).where(
-            FactoryAccessKey.key == token,
+            FactoryAccessKey.key.in_([token_hash, token]),
             FactoryAccessKey.is_active.is_(True),
         )
     )
-    factory_key = result.scalar_one_or_none()
+    factory_key = result.scalars().first()
     if not factory_key:
         raise HTTPException(status_code=401, detail="Invalid route API key")
 

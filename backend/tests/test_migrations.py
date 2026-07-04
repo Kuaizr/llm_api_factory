@@ -3,6 +3,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.db import migrations
+from app.services.access_keys import access_key_preview, hash_access_key, is_hashed_access_key
 
 
 @pytest.mark.asyncio
@@ -89,5 +90,62 @@ async def test_request_attempt_log_composite_index_migration(
     assert "ix_request_attempt_logs_endpoint_id_created_at" in index_names
     assert "ix_request_attempt_logs_api_key_id_created_at" in index_names
     assert "ix_request_attempt_logs_outcome_created_at" in index_names
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_schema_update_hashes_existing_factory_access_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async def noop_encrypt_existing_secret_rows(_conn) -> None:  # noqa: ANN001
+        return None
+
+    migration = next(
+        item
+        for item in migrations.SCHEMA_MIGRATIONS
+        if item.migration_id == "20260705_hash_factory_access_keys"
+    )
+    monkeypatch.setattr(migrations, "_encrypt_existing_secret_rows", noop_encrypt_existing_secret_rows)
+    monkeypatch.setattr(migrations, "SCHEMA_MIGRATIONS", (migration,))
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE factory_access_keys (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(128),
+                    key VARCHAR(128) NOT NULL UNIQUE,
+                    rule_groups_json TEXT DEFAULT '[]',
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO factory_access_keys (id, name, key, rule_groups_json, is_active)
+                VALUES (1, 'client', 'rk-plain', '["default"]', 1)
+                """
+            )
+        )
+
+    await migrations.apply_schema_updates(engine)
+
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT key, key_preview FROM factory_access_keys WHERE id = 1")
+            )
+        ).mappings().one()
+
+    assert row["key"] == hash_access_key("rk-plain")
+    assert is_hashed_access_key(row["key"])
+    assert row["key_preview"] == access_key_preview("rk-plain")
 
     await engine.dispose()

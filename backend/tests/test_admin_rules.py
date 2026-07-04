@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.models import APIKey, Endpoint, ModelMap, RequestLog
+from app.db.models import APIKey, Endpoint, FactoryAccessKey, ModelMap, RequestLog
 from app.db.session import get_session
+from app.services.access_keys import is_hashed_access_key
 
 
 @pytest.mark.asyncio
@@ -307,6 +308,10 @@ async def test_admin_default_rule_access_keys_and_guards(
         assert issue_payload["name"] == "default-client"
         assert issue_payload["key"].startswith("rk-")
         assert issue_payload["key_preview"] != issue_payload["key"]
+        stored_rule_key = await session.get(FactoryAccessKey, issue_payload["id"])
+        assert stored_rule_key is not None
+        assert stored_rule_key.key != issue_payload["key"]
+        assert is_hashed_access_key(stored_rule_key.key)
 
         list_response = await client.get(
             f"/admin/rules/{default_rule_id}/access-keys",
@@ -386,6 +391,10 @@ async def test_factory_access_key_lists_do_not_expose_full_key(
         assert create_response.status_code == 200
         create_payload = create_response.json()
         assert create_payload["key"].startswith("fk-")
+        stored_key = await session.get(FactoryAccessKey, create_payload["id"])
+        assert stored_key is not None
+        assert stored_key.key != create_payload["key"]
+        assert is_hashed_access_key(stored_key.key)
 
         list_response = await client.get(
             "/admin/factory-keys",
@@ -415,6 +424,9 @@ async def test_factory_access_key_lists_do_not_expose_full_key(
         rotate_payload = rotate_response.json()
         assert rotate_payload["key"].startswith("fk-")
         assert rotate_payload["key"] != create_payload["key"]
+        await session.refresh(stored_key)
+        assert stored_key.key != rotate_payload["key"]
+        assert is_hashed_access_key(stored_key.key)
 
     await session.close()
     await engine.dispose()

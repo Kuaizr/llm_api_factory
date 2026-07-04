@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import FactoryAccessKey
 from app.db.session import get_session
+from app.services.access_keys import access_key_preview, hash_access_key
 from app.services.router import RouteCandidate
 from conftest import TestMemoryRedis as MemoryRedis
 from proxy_test_utils import APIKeyStub, EndpointStub
@@ -26,7 +27,12 @@ async def test_factory_access_key_cannot_escalate_rule_group(
 
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
     session = session_maker()
-    factory_key = FactoryAccessKey(name="limited", key="rk-limited", is_active=True)
+    factory_key = FactoryAccessKey(
+        name="limited",
+        key=hash_access_key("rk-limited"),
+        key_preview=access_key_preview("rk-limited"),
+        is_active=True,
+    )
     factory_key.rule_groups = ["allowed"]
     session.add(factory_key)
     await session.commit()
@@ -123,7 +129,12 @@ async def test_factory_access_key_cannot_escalate_rule_group_from_header(
 
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
     session = session_maker()
-    factory_key = FactoryAccessKey(name="limited", key="rk-header-limited", is_active=True)
+    factory_key = FactoryAccessKey(
+        name="limited",
+        key=hash_access_key("rk-header-limited"),
+        key_preview=access_key_preview("rk-header-limited"),
+        is_active=True,
+    )
     factory_key.rule_groups = ["allowed"]
     session.add(factory_key)
     await session.commit()

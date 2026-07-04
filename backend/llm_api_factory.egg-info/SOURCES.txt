@@ -44,6 +44,7 @@ app/db/migrations.py
 app/db/models.py
 app/db/session.py
 app/services/__init__.py
+app/services/access_keys.py
 app/services/admin_auth.py
 app/services/audit.py
 app/services/agent_client.py

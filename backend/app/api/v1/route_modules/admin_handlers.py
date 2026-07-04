@@ -75,6 +75,11 @@ from app.db.models import (
     RoutingRule,
 )
 from app.db.session import get_session
+from app.services.access_keys import (
+    access_key_preview,
+    hash_access_key,
+    is_hashed_access_key,
+)
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 from app.services.model_patterns import (
@@ -123,6 +128,16 @@ def _build_audit_log_out(log: AuditLog) -> AuditLogOut:
         after=_parse_audit_json(log.after_json),
         created_at=log.created_at,
     )
+
+
+def _factory_access_key_preview(item: FactoryAccessKey) -> str:
+    stored_preview = str(getattr(item, "key_preview", "") or "").strip()
+    if stored_preview:
+        return stored_preview
+    stored_key = str(getattr(item, "key", "") or "")
+    if is_hashed_access_key(stored_key):
+        return "********"
+    return access_key_preview(stored_key)
 
 
 def _api_key_resource_name(api_key: APIKey) -> str:
@@ -1741,7 +1756,12 @@ async def create_rule_access_key(
         raise HTTPException(status_code=404, detail="Routing rule not found")
 
     raw_key = _issue_legacy_rule_access_key()
-    item = FactoryAccessKey(name=payload.name, key=raw_key, is_active=True)
+    item = FactoryAccessKey(
+        name=payload.name,
+        key=hash_access_key(raw_key),
+        key_preview=access_key_preview(raw_key),
+        is_active=True,
+    )
     item.rule_groups = [rule.group_name]
     session.add(item)
     await session.flush()
@@ -1759,7 +1779,7 @@ async def create_rule_access_key(
         id=item.id,
         rule_id=rule.id,
         name=item.name,
-        key_preview=_mask_key(raw_key),
+        key_preview=item.key_preview or access_key_preview(raw_key),
         key=raw_key,
         is_active=item.is_active,
         created_at=item.created_at,
@@ -1788,7 +1808,7 @@ async def list_rule_access_keys(
             id=item.id,
             rule_id=rule.id,
             name=item.name,
-            key_preview=_mask_key(item.key),
+            key_preview=_factory_access_key_preview(item),
             key=None,
             is_active=item.is_active,
             created_at=item.created_at,
@@ -1809,7 +1829,7 @@ async def list_factory_access_keys(
         FactoryAccessKeyOut(
             id=item.id,
             name=item.name,
-            key_preview=_mask_key(item.key),
+            key_preview=_factory_access_key_preview(item),
             key=None,
             rule_groups=item.rule_groups,
             is_active=item.is_active,
@@ -1830,7 +1850,8 @@ async def create_factory_access_key(
     groups = payload.rule_groups or ["default"]
     item = FactoryAccessKey(
         name=payload.name,
-        key=raw_key,
+        key=hash_access_key(raw_key),
+        key_preview=access_key_preview(raw_key),
         is_active=True,
     )
     item.rule_groups = groups
@@ -1887,7 +1908,7 @@ async def update_factory_access_key(
     return FactoryAccessKeyOut(
         id=item.id,
         name=item.name,
-        key_preview=_mask_key(item.key),
+        key_preview=_factory_access_key_preview(item),
         key=None,
         rule_groups=item.rule_groups,
         is_active=item.is_active,
@@ -1906,7 +1927,8 @@ async def rotate_factory_access_key(
         raise HTTPException(status_code=404, detail="Factory access key not found")
     before_snapshot = audit_snapshot(item)
     raw_key = f"fk-{secrets.token_urlsafe(24)}"
-    item.key = raw_key
+    item.key = hash_access_key(raw_key)
+    item.key_preview = access_key_preview(raw_key)
     await record_audit_log(
         session,
         action="rotate",
