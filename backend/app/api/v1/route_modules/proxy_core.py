@@ -1,4 +1,4 @@
-from typing import AsyncGenerator, Callable
+from typing import Callable
 import time
 import uuid
 
@@ -10,6 +10,9 @@ from app.api.v1.route_helpers import (
     _dump_proxy_record,
     _find_dump_rule,
     _resolve_rule_group_from_token,
+)
+from app.api.v1.route_modules.proxy_agent_streams import (
+    agent_stream_generator as _agent_stream_generator,
 )
 from app.api.v1.route_modules.proxy_attempts import (
     elapsed_ms as _elapsed_ms,
@@ -50,21 +53,17 @@ from app.api.v1.route_proxy_helpers import (
     _build_debug_headers,
     _build_target_url,
     _build_upstream_headers,
-    _calculate_tps,
     _filter_response_headers,
     _get_agent_name,
-    _inspect_stream_chunk,
     _merge_headers,
     _stream_response,
 )
 from app.core.http_client import get_http_client
 from app.core.providers import normalize_provider_name
 from app.core.redis import get_redis
-from app.db.models import RoutingRule
 from app.db.session import get_session
 from app.services.agent_transport import (
     AgentRequest,
-    AgentResponse,
     AgentUnavailableError,
     get_agent_manager,
 )
@@ -77,84 +76,6 @@ from app.services.billing import (
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
-
-
-async def _agent_stream_generator(
-    *,
-    agent_response: AgentResponse,
-    request_start: float,
-    request_id: str,
-    trace_id: str,
-    model_alias: str,
-    candidate: RouteCandidate,
-    requested_rule_group: str | None,
-    effective_group: str,
-    status_code: int,
-    agent_name: str | None,
-    upstream_url: str,
-    dump_rule: RoutingRule | None,
-    upstream_body: bytes,
-    session_id: str | None,
-    request_path: str,
-) -> AsyncGenerator[bytes, None]:
-    buffer = ""
-    usage_payload = None
-    first_data_at: float | None = None
-    chunks: list[bytes] = []
-    async for chunk in agent_response.iter_bytes():
-        if chunk:
-            chunks.append(chunk)
-            buffer, usage_payload, data_seen = _inspect_stream_chunk(
-                buffer, usage_payload, chunk
-            )
-            if data_seen and first_data_at is None:
-                first_data_at = time.perf_counter()
-        yield chunk
-    stream_end = time.perf_counter()
-    ttft_ms = (
-        int((first_data_at - request_start) * 1000)
-        if first_data_at is not None
-        else None
-    )
-    prompt_tokens, completion_tokens, total_tokens = extract_usage(usage_payload)
-    tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
-    latency_ms = (
-        ttft_ms if ttft_ms is not None else int((stream_end - request_start) * 1000)
-    )
-    metrics = RequestMetrics(
-        request_id=request_id,
-        trace_id=trace_id,
-        model_alias=model_alias,
-        endpoint_id=candidate.endpoint.id,
-        api_key_id=candidate.api_key.id,
-        requested_rule_group=requested_rule_group,
-        rule_group=effective_group,
-        status_code=status_code,
-        latency_ms=latency_ms,
-        ttft_ms=ttft_ms,
-        tps=tps,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-        execution_mode=candidate.execution_mode,
-        agent_node=agent_name,
-        upstream_url=upstream_url,
-    )
-    safe_create_task(write_request_log(metrics))
-    safe_create_task(
-        _dump_proxy_record(
-            dump_rule,
-            request_id,
-            trace_id,
-            candidate.endpoint.name,
-            model_alias,
-            upstream_body,
-            b"".join(chunks),
-            status_code,
-            session_id=session_id,
-            request_path=request_path,
-        )
-    )
 
 
 async def _proxy_openai_request(
