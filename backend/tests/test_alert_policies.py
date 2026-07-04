@@ -3,20 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.services.notifications import AlertPolicyStore
-
-
-class MemoryRedis:
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-
-    async def get(self, key: str) -> str | None:
-        return self.store.get(key)
-
-    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool:
-        if nx and key in self.store:
-            return False
-        self.store[key] = value
-        return True
+from conftest import TestMemoryRedis as MemoryRedis
 
 
 @pytest.mark.asyncio

@@ -67,6 +67,7 @@ tests/test_agent_heartbeat_auth.py
 tests/test_agent_services.py
 tests/test_agent_transport.py
 tests/test_agent_worker.py
+tests/conftest.py
 tests/test_alert_policies.py
 tests/test_alert_routes.py
 tests/test_auth_routes.py

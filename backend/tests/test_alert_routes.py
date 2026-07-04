@@ -8,20 +8,7 @@ from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.db.session import get_session
 from app.services.notifications import AlertPolicyStore
-
-
-class MemoryRedis:
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-
-    async def get(self, key: str) -> str | None:
-        return self.store.get(key)
-
-    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool:
-        if nx and key in self.store:
-            return False
-        self.store[key] = value
-        return True
+from conftest import TestMemoryRedis as MemoryRedis
 
 
 class FakeSession:

@@ -2,43 +2,7 @@ import pytest
 
 from app.core.config import Settings
 from app.services.circuit_breaker import CircuitBreaker
-
-
-class MemoryRedis:
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-        self.expirations: dict[str, int] = {}
-
-    async def get(self, key: str) -> str | None:
-        return self.store.get(key)
-
-    async def mget(self, keys: list[str]) -> list[str | None]:
-        return [self.store.get(key) for key in keys]
-
-    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool:
-        if nx and key in self.store:
-            return False
-        self.store[key] = value
-        if ex is not None:
-            self.expirations[key] = ex
-        return True
-
-    async def incr(self, key: str) -> int:
-        value = int(self.store.get(key, "0")) + 1
-        self.store[key] = str(value)
-        return value
-
-    async def expire(self, key: str, seconds: int) -> bool:
-        self.expirations[key] = seconds
-        return True
-
-    async def ttl(self, key: str) -> int:
-        return self.expirations.get(key, -1)
-
-    async def delete(self, key: str) -> bool:
-        self.store.pop(key, None)
-        self.expirations.pop(key, None)
-        return True
+from conftest import TestMemoryRedis as MemoryRedis
 
 
 @pytest.mark.asyncio
