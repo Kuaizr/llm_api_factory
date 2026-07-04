@@ -136,6 +136,7 @@ def test_target_allowlist_wildcard_does_not_allow_restricted_ip_literals() -> No
     assert _is_target_allowed("http://169.254.169.254/latest/meta-data", "*") is False
     assert _is_target_allowed("http://127.0.0.1:9000/v1/models", "*") is False
     assert _is_target_allowed("http://localhost:9000/v1/models", "*") is False
+    assert _is_target_allowed("http://api.example.com:bad/v1/models", "*") is False
 
 
 def test_target_allowlist_allows_restricted_targets_when_explicit() -> None:

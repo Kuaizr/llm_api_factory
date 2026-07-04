@@ -92,7 +92,11 @@ def _parse_target(url: str) -> tuple[str, int | None] | None:
         return None
     if not parsed.hostname:
         return None
-    return parsed.hostname.lower(), parsed.port
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return parsed.hostname.lower(), port
 
 
 def _has_wildcard_entry(entries: list[str]) -> bool:
