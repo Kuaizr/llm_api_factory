@@ -15,16 +15,16 @@ import {
   type UsageTrendRange,
   usageTrendConfig,
 } from "./shared";
-
-type PublicEndpoint = Omit<
-  Endpoint,
-  "keys" | "model_count" | "is_agent_enabled" | "strategy" | "is_active"
->;
-
-type DashboardStatusPayload = {
-  endpoints: PublicEndpoint[];
-  agents: AgentNode[];
-};
+import {
+  parseAgentList,
+  parseDashboardStatus,
+  parseEndpointList,
+  parseHealthStatusList,
+  parseMetricsBucketList,
+  parseRoutingRuleList,
+  parseTelegramConfig,
+  parseUsageStats,
+} from "./response-validators";
 
 export const useConsoleData = () => {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -71,7 +71,16 @@ export const useConsoleData = () => {
         setIsAdmin(false);
         return;
       }
-      const data = (await response.json()) as { is_admin: boolean };
+      const data = await response.json();
+      if (
+        typeof data !== "object" ||
+        data === null ||
+        !("is_admin" in data) ||
+        typeof data.is_admin !== "boolean"
+      ) {
+        setIsAdmin(false);
+        return;
+      }
       setIsAdmin(Boolean(data.is_admin));
     } catch {
       setIsAdmin(false);
@@ -86,7 +95,11 @@ export const useConsoleData = () => {
       if (response.status === 401) {
         setIsAdmin(false);
         const fallback = await fetch(`${apiBase}/v1/status/dashboard`);
-        const publicData = (await fallback.json()) as DashboardStatusPayload;
+        const publicData = parseDashboardStatus(await fallback.json());
+        if (!publicData) {
+          setEndpoints([]);
+          return;
+        }
         setEndpoints(
           publicData.endpoints.map((endpoint) => ({
             ...endpoint,
@@ -101,7 +114,11 @@ export const useConsoleData = () => {
         );
         return;
       }
-      const data = (await response.json()) as Endpoint[];
+      const data = parseEndpointList(await response.json());
+      if (!data) {
+        setEndpoints([]);
+        return;
+      }
       setEndpoints(data);
     } catch {
       setEndpoints([]);
@@ -115,11 +132,19 @@ export const useConsoleData = () => {
       });
       if (response.status === 401) {
         const fallback = await fetch(`${apiBase}/v1/status/dashboard`);
-        const publicData = (await fallback.json()) as DashboardStatusPayload;
+        const publicData = parseDashboardStatus(await fallback.json());
+        if (!publicData) {
+          setAgents([]);
+          return;
+        }
         setAgents(publicData.agents);
         return;
       }
-      const data = (await response.json()) as AgentNode[];
+      const data = parseAgentList(await response.json());
+      if (!data) {
+        setAgents([]);
+        return;
+      }
       setAgents(data);
     } catch {
       setAgents([]);
@@ -135,7 +160,11 @@ export const useConsoleData = () => {
         setRules([]);
         return;
       }
-      const data = (await response.json()) as RoutingRule[];
+      const data = parseRoutingRuleList(await response.json());
+      if (!data) {
+        setRules([]);
+        return;
+      }
       setRules(data);
     } catch {
       setRules([]);
@@ -155,7 +184,11 @@ export const useConsoleData = () => {
         setUsageStats(null);
         return;
       }
-      const data = (await response.json()) as UsageStats;
+      const data = parseUsageStats(await response.json());
+      if (!data) {
+        setUsageStats(null);
+        return;
+      }
       setUsageStats(data);
     } catch {
       setUsageStats(null);
@@ -189,7 +222,12 @@ export const useConsoleData = () => {
         setUsageTrendError("无法获取趋势数据");
         return;
       }
-      const data = (await response.json()) as MetricsBucket[];
+      const data = parseMetricsBucketList(await response.json());
+      if (!data) {
+        setUsageTrendBuckets([]);
+        setUsageTrendError("无法获取趋势数据");
+        return;
+      }
       setUsageTrendBuckets(data);
       setUsageTrendUpdatedAt(new Date().toISOString());
       setUsageTrendError(null);
@@ -223,7 +261,11 @@ export const useConsoleData = () => {
         setHealthStatusMap({});
         return;
       }
-      const data = (await response.json()) as HealthStatus[];
+      const data = parseHealthStatusList(await response.json());
+      if (!data) {
+        setHealthStatusMap({});
+        return;
+      }
       const map: Record<number, HealthStatus> = {};
       data.forEach((item) => {
         map[item.api_key_id] = item;
@@ -247,7 +289,11 @@ export const useConsoleData = () => {
         setTelegramConfig(null);
         return;
       }
-      const data = (await response.json()) as TelegramConfig;
+      const data = parseTelegramConfig(await response.json());
+      if (!data) {
+        setTelegramConfig(null);
+        return;
+      }
       setTelegramConfig(data);
     } catch {
       setTelegramConfig(null);
@@ -363,7 +409,10 @@ export const useConsoleData = () => {
         }
         return { ok: false, message };
       }
-      const data = (await response.json()) as TelegramConfig;
+      const data = parseTelegramConfig(await response.json());
+      if (!data) {
+        return { ok: false, message: "服务端返回了无效的 Telegram 配置" };
+      }
       setTelegramConfig(data);
       return { ok: true, message: "Telegram 配置已更新" };
     } catch {

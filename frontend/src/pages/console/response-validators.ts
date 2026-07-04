@@ -1,0 +1,409 @@
+import type {
+  AgentNode,
+  ApiKey,
+  Endpoint,
+  EndpointStatus,
+  HealthStatus,
+  MetricsBucket,
+  RoutingRule,
+  TelegramConfig,
+  UsageGroup,
+  UsageStats,
+  UsageTopKey,
+} from "./shared";
+
+type PublicEndpoint = Omit<
+  Endpoint,
+  "keys" | "model_count" | "is_agent_enabled" | "strategy" | "is_active"
+>;
+
+export type DashboardStatusPayload = {
+  endpoints: PublicEndpoint[];
+  agents: AgentNode[];
+};
+
+const endpointStatuses = new Set<EndpointStatus>(["online", "degraded", "offline"]);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isString = (value: unknown): value is string => typeof value === "string";
+const isNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
+const isNullableString = (value: unknown): value is string | null =>
+  value === null || isString(value);
+const isNullableNumber = (value: unknown): value is number | null =>
+  value === null || isNumber(value);
+
+const parseStringArray = (value: unknown): string[] | null => {
+  if (!Array.isArray(value) || value.some((item) => !isString(item))) {
+    return null;
+  }
+  return value;
+};
+
+const parseNumberArray = (value: unknown): number[] | null => {
+  if (!Array.isArray(value) || value.some((item) => !isNumber(item))) {
+    return null;
+  }
+  return value;
+};
+
+const parseStringRecord = (value: unknown): Record<string, string> | null => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  const entries = Object.entries(value);
+  if (entries.some(([, item]) => !isString(item))) {
+    return null;
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
+};
+
+const parseArray = <T>(
+  value: unknown,
+  parser: (item: unknown) => T | null
+): T[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const parsed: T[] = [];
+  for (const item of value) {
+    const next = parser(item);
+    if (next === null) {
+      return null;
+    }
+    parsed.push(next);
+  }
+  return parsed;
+};
+
+const parseEndpointStatus = (value: unknown): EndpointStatus | null =>
+  isString(value) && endpointStatuses.has(value as EndpointStatus)
+    ? (value as EndpointStatus)
+    : null;
+
+const parseApiKey = (value: unknown): ApiKey | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = value.id;
+  const keyPreview = value.key_preview;
+  const rpmLimit = value.rpm_limit;
+  const dailyLimit = value.daily_limit;
+  const usedToday = value.used_today;
+  const isActive = value.is_active;
+  if (
+    !isNumber(id) ||
+    !isString(keyPreview) ||
+    !isNullableNumber(rpmLimit) ||
+    !isNullableNumber(dailyLimit) ||
+    !isNumber(usedToday) ||
+    !isBoolean(isActive)
+  ) {
+    return null;
+  }
+  const ruleGroups =
+    value.rule_groups === undefined ? undefined : parseStringArray(value.rule_groups);
+  if (value.rule_groups !== undefined && ruleGroups === null) {
+    return null;
+  }
+  return {
+    id,
+    key_preview: keyPreview,
+    rule_group: isString(value.rule_group) ? value.rule_group : undefined,
+    rule_groups: ruleGroups ?? undefined,
+    rpm_limit: rpmLimit,
+    daily_limit: dailyLimit,
+    used_today: usedToday,
+    is_active: isActive,
+    name: isNullableString(value.name) ? value.name : undefined,
+  };
+};
+
+const parseEndpoint = (value: unknown, requireAdminFields: boolean): Endpoint | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = value.id;
+  const name = value.name;
+  const baseUrl = value.base_url;
+  const provider = value.provider;
+  const status = parseEndpointStatus(value.status);
+  const latency = value.latency;
+  const uptime = value.uptime;
+  const agentNode = value.agent_node;
+  const probeInterval =
+    value.probe_interval_seconds === undefined ? null : value.probe_interval_seconds;
+  if (
+    !isNumber(id) ||
+    !isString(name) ||
+    !isString(baseUrl) ||
+    !isString(provider) ||
+    status === null ||
+    !isNumber(latency) ||
+    !isNumber(uptime) ||
+    !isNullableString(agentNode) ||
+    !isNullableNumber(probeInterval)
+  ) {
+    return null;
+  }
+  const keys = value.keys === undefined ? [] : parseArray(value.keys, parseApiKey);
+  if (keys === null) {
+    return null;
+  }
+  if (requireAdminFields && value.model_count !== undefined && !isNumber(value.model_count)) {
+    return null;
+  }
+  const accessMode =
+    value.access_mode === "direct" || value.access_mode === "via_agent"
+      ? value.access_mode
+      : undefined;
+  return {
+    id,
+    name,
+    base_url: baseUrl,
+    auth_header_name: isString(value.auth_header_name) ? value.auth_header_name : undefined,
+    auth_header_prefix: isString(value.auth_header_prefix) ? value.auth_header_prefix : undefined,
+    provider,
+    access_mode: accessMode,
+    is_active: isBoolean(value.is_active) ? value.is_active : status !== "offline",
+    status,
+    latency,
+    uptime,
+    is_agent_enabled: isBoolean(value.is_agent_enabled)
+      ? value.is_agent_enabled
+      : accessMode === "via_agent" || Boolean(agentNode),
+    agent_node: agentNode,
+    probe_interval_seconds: probeInterval,
+    model_count: isNumber(value.model_count) ? value.model_count : 0,
+    keys,
+    strategy: isString(value.strategy) ? value.strategy : "weighted_round_robin",
+    url_path_suffix: isNullableString(value.url_path_suffix) ? value.url_path_suffix : null,
+    extra_headers: parseStringRecord(value.extra_headers),
+    extra_cookies: isNullableString(value.extra_cookies) ? value.extra_cookies : null,
+    extra_query_params: parseStringRecord(value.extra_query_params),
+    oauth_config: parseStringRecord(value.oauth_config),
+    request_body_template: isNullableString(value.request_body_template)
+      ? value.request_body_template
+      : null,
+  };
+};
+
+export const parseEndpointList = (value: unknown): Endpoint[] | null =>
+  parseArray(value, (item) => parseEndpoint(item, true));
+
+export const parseAgent = (value: unknown): AgentNode | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = value.id;
+  const name = value.name;
+  const status = value.status;
+  const lastSeen = value.last_seen_at;
+  const endpointUrl = value.endpoint_url;
+  if (
+    !isNumber(id) ||
+    !isString(name) ||
+    !isString(status) ||
+    !isNullableString(lastSeen) ||
+    !isNullableString(endpointUrl)
+  ) {
+    return null;
+  }
+  const labels = value.labels === undefined ? undefined : parseStringArray(value.labels);
+  if (value.labels !== undefined && labels === null) {
+    return null;
+  }
+  return {
+    id,
+    name,
+    region: isNullableString(value.region) ? value.region : null,
+    network_group: isNullableString(value.network_group) ? value.network_group : null,
+    labels: labels ?? undefined,
+    status,
+    last_seen_at: lastSeen,
+    endpoint_url: endpointUrl,
+    supports_gpt: typeof value.supports_gpt === "boolean" ? value.supports_gpt : null,
+    supports_gemini: typeof value.supports_gemini === "boolean" ? value.supports_gemini : null,
+    supports_claude: typeof value.supports_claude === "boolean" ? value.supports_claude : null,
+    probe_latency_ms: isNullableNumber(value.probe_latency_ms) ? value.probe_latency_ms : null,
+    probe_checked_at: isNullableString(value.probe_checked_at) ? value.probe_checked_at : null,
+    is_draining: isBoolean(value.is_draining) ? value.is_draining : false,
+  };
+};
+
+export const parseAgentList = (value: unknown): AgentNode[] | null =>
+  parseArray(value, parseAgent);
+
+export const parseDashboardStatus = (value: unknown): DashboardStatusPayload | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const endpoints = parseArray(value.endpoints, (item) => parseEndpoint(item, false));
+  const agents = parseAgentList(value.agents);
+  if (endpoints === null || agents === null) {
+    return null;
+  }
+  return { endpoints, agents };
+};
+
+export const parseRoutingRule = (value: unknown): RoutingRule | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const targetKeyIds = parseNumberArray(value.target_key_ids);
+  if (
+    !isNumber(value.id) ||
+    !isString(value.model_pattern) ||
+    !isString(value.group_name) ||
+    targetKeyIds === null ||
+    !isNumber(value.priority) ||
+    !isBoolean(value.is_active)
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    model_pattern: value.model_pattern,
+    group_name: value.group_name,
+    target_key_ids: targetKeyIds,
+    priority: value.priority,
+    strategy: isString(value.strategy) ? value.strategy : "weighted_round_robin",
+    is_active: value.is_active,
+    dump_enabled: isBoolean(value.dump_enabled) ? value.dump_enabled : false,
+    dump_path: isNullableString(value.dump_path) ? value.dump_path : null,
+    request_count: isNumber(value.request_count) ? value.request_count : 0,
+    total_tokens: isNumber(value.total_tokens) ? value.total_tokens : 0,
+    avg_ttft_ms: isNullableNumber(value.avg_ttft_ms) ? value.avg_ttft_ms : null,
+    avg_tps: isNullableNumber(value.avg_tps) ? value.avg_tps : null,
+  };
+};
+
+export const parseRoutingRuleList = (value: unknown): RoutingRule[] | null =>
+  parseArray(value, parseRoutingRule);
+
+const parseUsageGroup = (value: unknown): UsageGroup | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.group_name) ||
+    !isNumber(value.percent) ||
+    !isNumber(value.total_tokens)
+  ) {
+    return null;
+  }
+  return {
+    group_name: value.group_name,
+    percent: value.percent,
+    total_tokens: value.total_tokens,
+  };
+};
+
+const parseUsageTopKey = (value: unknown): UsageTopKey | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.api_key_id) ||
+    !isString(value.endpoint_name) ||
+    !isString(value.key_preview) ||
+    !isNumber(value.total_tokens)
+  ) {
+    return null;
+  }
+  return {
+    api_key_id: value.api_key_id,
+    endpoint_name: value.endpoint_name,
+    key_preview: value.key_preview,
+    total_tokens: value.total_tokens,
+  };
+};
+
+export const parseUsageStats = (value: unknown): UsageStats | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const groups = parseArray(value.groups, parseUsageGroup);
+  const topKeys = parseArray(value.top_keys, parseUsageTopKey);
+  if (groups === null || topKeys === null || !isString(value.generated_at)) {
+    return null;
+  }
+  return {
+    groups,
+    top_keys: topKeys,
+    total_tokens_today: isNumber(value.total_tokens_today) ? value.total_tokens_today : 0,
+    generated_at: value.generated_at,
+  };
+};
+
+const parseMetricsBucket = (value: unknown): MetricsBucket | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.bucket_start) ||
+    !isNumber(value.request_count) ||
+    !isNumber(value.rps) ||
+    !isNumber(value.prompt_tokens) ||
+    !isNumber(value.completion_tokens) ||
+    !isNumber(value.total_tokens) ||
+    !isNullableNumber(value.avg_latency_ms)
+  ) {
+    return null;
+  }
+  return {
+    bucket_start: value.bucket_start,
+    request_count: value.request_count,
+    rps: value.rps,
+    prompt_tokens: value.prompt_tokens,
+    completion_tokens: value.completion_tokens,
+    total_tokens: value.total_tokens,
+    avg_latency_ms: value.avg_latency_ms,
+  };
+};
+
+export const parseMetricsBucketList = (value: unknown): MetricsBucket[] | null =>
+  parseArray(value, parseMetricsBucket);
+
+export const parseHealthStatus = (value: unknown): HealthStatus | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.api_key_id) ||
+    !isString(value.probe_status) ||
+    !isNullableNumber(value.probe_status_code) ||
+    !isNullableNumber(value.probe_latency_ms) ||
+    !isNullableString(value.probe_checked_at) ||
+    !isString(value.circuit_state) ||
+    !isNumber(value.circuit_failures)
+  ) {
+    return null;
+  }
+  return {
+    api_key_id: value.api_key_id,
+    probe_status: value.probe_status,
+    probe_status_code: value.probe_status_code,
+    probe_latency_ms: value.probe_latency_ms,
+    probe_checked_at: value.probe_checked_at,
+    circuit_state: value.circuit_state,
+    circuit_failures: value.circuit_failures,
+  };
+};
+
+export const parseHealthStatusList = (value: unknown): HealthStatus[] | null =>
+  parseArray(value, parseHealthStatus);
+
+export const parseTelegramConfig = (value: unknown): TelegramConfig | null => {
+  if (
+    !isRecord(value) ||
+    !isBoolean(value.configured) ||
+    !isNullableString(value.bot_token_masked) ||
+    !isNullableString(value.chat_id)
+  ) {
+    return null;
+  }
+  return {
+    configured: value.configured,
+    bot_token_masked: value.bot_token_masked,
+    chat_id: value.chat_id,
+  };
+};
