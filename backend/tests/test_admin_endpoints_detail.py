@@ -11,7 +11,7 @@ from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.core.redis import MemoryRedis
 from app.db.base import Base
-from app.db.models import APIKey, Endpoint, ModelMap, RequestAttemptLog
+from app.db.models import APIKey, Endpoint, ModelMap, RequestAttemptLog, RequestLog
 from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
@@ -826,6 +826,84 @@ async def test_api_key_create_encrypts_storage_and_direct_test_decrypts(
     assert decrypt_secret_value(stored_key.key, settings=settings) == "sk-encrypted"
     assert test_response.status_code == 200
     assert requests[0].headers["authorization"] == "Bearer sk-encrypted"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_key_delete_removes_related_request_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="DeleteKeyEndpoint",
+        base_url="https://api.example.com/v1",
+        provider="openai",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-delete", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    session.add(
+        RequestLog(
+            request_id="req-delete",
+            trace_id="trace-delete",
+            model_alias="gpt-delete",
+            endpoint_id=endpoint.id,
+            api_key_id=api_key.id,
+            rule_group="default",
+            latency_ms=10,
+            status_code=200,
+        )
+    )
+    session.add(
+        RequestAttemptLog(
+            request_id="req-delete",
+            trace_id="trace-delete",
+            model_alias="gpt-delete",
+            endpoint_id=endpoint.id,
+            api_key_id=api_key.id,
+            rule_group="default",
+            attempt_order=1,
+            outcome="success",
+            latency_ms=10,
+        )
+    )
+    await session.commit()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            f"/admin/api-keys/{api_key.id}",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    assert (await session.execute(select(RequestLog))).scalars().all() == []
+    assert (await session.execute(select(RequestAttemptLog))).scalars().all() == []
 
     await session.close()
     await engine.dispose()

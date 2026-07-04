@@ -1,5 +1,6 @@
 import asyncio
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -44,7 +45,36 @@ RESERVED_API_PREFIXES = (
     "auth/",
 )
 
-app = FastAPI(title="LLM API Factory")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setup_logging()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await apply_schema_updates(engine)
+
+    if settings.health_probe_enabled:
+        monitor = HealthMonitor()
+        app.state.health_monitor = monitor
+        app.state.health_task = asyncio.create_task(monitor.run())
+
+    try:
+        yield
+    finally:
+        monitor = getattr(app.state, "health_monitor", None)
+        task = getattr(app.state, "health_task", None)
+        if monitor:
+            await monitor.stop()
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        await close_http_client()
+        await close_redis()
+
+
+app = FastAPI(title="LLM API Factory", lifespan=lifespan)
 origins = _parse_origins(settings.cors_allow_origins)
 app.add_middleware(
     CORSMiddleware,
@@ -96,31 +126,3 @@ async def serve_frontend_fallback(full_path: str) -> FileResponse:
         status_code=404,
         detail="Frontend dist not found, run `npm run build` in frontend",
     )
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    setup_logging()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await apply_schema_updates(engine)
-
-    if settings.health_probe_enabled:
-        monitor = HealthMonitor()
-        app.state.health_monitor = monitor
-        app.state.health_task = asyncio.create_task(monitor.run())
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    monitor = getattr(app.state, "health_monitor", None)
-    task = getattr(app.state, "health_task", None)
-    if monitor:
-        await monitor.stop()
-    if task:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-
-    await close_http_client()
-    await close_redis()

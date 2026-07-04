@@ -1298,6 +1298,10 @@ async def delete_api_key(
         previous_groups=api_key.rule_groups,
         current_groups=[],
     )
+    await session.execute(
+        delete(RequestAttemptLog).where(RequestAttemptLog.api_key_id == api_key.id)
+    )
+    await session.execute(delete(RequestLog).where(RequestLog.api_key_id == api_key.id))
     await session.delete(api_key)
     await session.commit()
     return DeleteResponse()

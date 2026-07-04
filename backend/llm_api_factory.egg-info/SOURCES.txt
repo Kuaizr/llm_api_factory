@@ -26,6 +26,7 @@ app/core/__init__.py
 app/core/config.py
 app/core/http_client.py
 app/core/logging.py
+app/core/providers.py
 app/core/redis.py
 app/db/__init__.py
 app/db/base.py
@@ -79,5 +80,6 @@ tests/test_model_router_wrr.py
 tests/test_openai_proxy_routes.py
 tests/test_route_explain.py
 tests/test_secret_encryption.py
+tests/test_schema_metadata.py
 tests/test_stream_metrics.py
 tests/test_telegram.py

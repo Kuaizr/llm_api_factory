@@ -30,9 +30,10 @@ from app.api.v1.route_proxy_helpers import (
     _merge_headers,
     _stream_response,
 )
-from app.core.http_client import get_http_client
-from app.core.redis import get_redis
 from app.core.config import get_settings
+from app.core.http_client import get_http_client
+from app.core.providers import normalize_provider_filters, normalize_provider_name
+from app.core.redis import get_redis
 from app.db.models import Endpoint, ModelMap, RoutingRule
 from app.db.session import get_session
 from app.services.admin_auth import verify_admin_session_token
@@ -111,28 +112,6 @@ GEMINI_MODEL_PATH_PATTERN = re.compile(
     r"(?P<model>[^:?#]+)"
     r"(?P<suffix>:[^/?#]+)?"
 )
-
-
-def _normalize_provider_name(value: object) -> str:
-    if not isinstance(value, str):
-        return "openai"
-    normalized = value.strip().lower()
-    return normalized or "openai"
-
-
-def _normalize_provider_filters(
-    provider_filter: str | tuple[str, ...] | None,
-) -> set[str] | None:
-    if provider_filter is None:
-        return None
-    if isinstance(provider_filter, str):
-        return {_normalize_provider_name(provider_filter)}
-    filters = {
-        _normalize_provider_name(provider)
-        for provider in provider_filter
-        if isinstance(provider, str) and provider.strip()
-    }
-    return filters or None
 
 
 def _include_debug_headers(request: Request) -> bool:
@@ -421,7 +400,7 @@ async def _list_accessible_model_aliases(
     provider_filter_fallback_to_any: bool = False,
 ) -> list[str]:
     allowed_groups = await _resolve_allowed_rule_groups_from_token(session, request)
-    provider_filters = _normalize_provider_filters(provider_filter)
+    provider_filters = normalize_provider_filters(provider_filter)
 
     result = await session.execute(
         select(ModelMap.model_alias, Endpoint.provider)
@@ -431,7 +410,7 @@ async def _list_accessible_model_aliases(
     )
     rows = result.all()
     normalized_rows = [
-        (str(model_alias), _normalize_provider_name(provider))
+        (str(model_alias), normalize_provider_name(provider))
         for model_alias, provider in rows
         if model_alias
     ]
@@ -639,7 +618,7 @@ async def _proxy_openai_request(
             include_internal=include_internal_debug,
         )
         agent_name = _get_agent_name(candidate.endpoint)
-        candidate_provider = _normalize_provider_name(
+        candidate_provider = normalize_provider_name(
             getattr(candidate.endpoint, "provider", None)
         )
 

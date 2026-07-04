@@ -158,6 +158,8 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
         "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_model_alias ON request_attempt_logs(model_alias)",
         "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_rule_group ON request_attempt_logs(rule_group)",
         "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_outcome ON request_attempt_logs(outcome)",
+        "CREATE INDEX IF NOT EXISTS ix_request_logs_model_alias_created_at ON request_logs(model_alias, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_request_logs_endpoint_id_created_at ON request_logs(endpoint_id, created_at)",
     ]
 
     async with engine.begin() as conn:

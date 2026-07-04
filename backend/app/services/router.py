@@ -8,30 +8,11 @@ from typing import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.providers import normalize_provider_filters, normalize_provider_name
 from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
 from app.services.agent_transport import get_agent_manager
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.model_patterns import model_pattern_matches
-
-
-def _normalize_provider_name(value: object) -> str:
-    normalized = str(value or "").strip().lower()
-    return normalized or "openai"
-
-
-def _normalize_provider_filters(
-    provider_filters: str | Sequence[str] | set[str] | None,
-) -> set[str] | None:
-    if provider_filters is None:
-        return None
-    if isinstance(provider_filters, str):
-        return {_normalize_provider_name(provider_filters)}
-    filters = {
-        _normalize_provider_name(provider)
-        for provider in provider_filters
-        if str(provider or "").strip()
-    }
-    return filters or None
 
 
 @dataclass(frozen=True)
@@ -275,13 +256,13 @@ class ModelRouter:
         *,
         fallback_to_any: bool,
     ) -> list[RouteCandidate]:
-        filters = _normalize_provider_filters(provider_filters)
+        filters = normalize_provider_filters(provider_filters)
         if not filters:
             return list(candidates)
         filtered = [
             candidate
             for candidate in candidates
-            if _normalize_provider_name(getattr(candidate.endpoint, "provider", None))
+            if normalize_provider_name(getattr(candidate.endpoint, "provider", None))
             in filters
         ]
         if filtered or not fallback_to_any:
@@ -382,7 +363,7 @@ class ModelRouter:
         provider_filters: str | Sequence[str] | set[str] | None,
         target_key_ids: list[int] | None,
     ) -> str:
-        normalized_filters = sorted(_normalize_provider_filters(provider_filters) or [])
+        normalized_filters = sorted(normalize_provider_filters(provider_filters) or [])
         payload = {
             "model_alias": model_alias,
             "effective_group": effective_group,

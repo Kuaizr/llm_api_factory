@@ -1,7 +1,7 @@
 from datetime import date, datetime
 import json
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -32,15 +32,23 @@ class Endpoint(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    api_keys: Mapped[list["APIKey"]] = relationship(back_populates="endpoint")
-    model_maps: Mapped[list["ModelMap"]] = relationship(back_populates="endpoint")
+    api_keys: Mapped[list["APIKey"]] = relationship(
+        back_populates="endpoint",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    model_maps: Mapped[list["ModelMap"]] = relationship(
+        back_populates="endpoint",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class APIKey(Base):
     __tablename__ = "api_keys"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
+    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id", ondelete="CASCADE"))
     name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     key: Mapped[str] = mapped_column(Text)
     rule_group: Mapped[str] = mapped_column(String(64), default="default", index=True)
@@ -176,7 +184,7 @@ class ModelMap(Base):
     __tablename__ = "model_maps"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
+    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id", ondelete="CASCADE"))
     model_alias: Mapped[str] = mapped_column(String(128), index=True)
     real_model: Mapped[str] = mapped_column(String(128))
     probe_managed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -244,13 +252,17 @@ class Agent(Base):
 
 class RequestLog(Base):
     __tablename__ = "request_logs"
+    __table_args__ = (
+        Index("ix_request_logs_model_alias_created_at", "model_alias", "created_at"),
+        Index("ix_request_logs_endpoint_id_created_at", "endpoint_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     request_id: Mapped[str] = mapped_column(String(64), index=True)
     trace_id: Mapped[str] = mapped_column(String(64), index=True)
     model_alias: Mapped[str] = mapped_column(String(128), index=True)
-    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
-    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id"))
+    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id", ondelete="CASCADE"))
     requested_rule_group: Mapped[str | None] = mapped_column(
         String(64), index=True, nullable=True
     )
@@ -277,8 +289,8 @@ class RequestAttemptLog(Base):
     request_id: Mapped[str] = mapped_column(String(64), index=True)
     trace_id: Mapped[str] = mapped_column(String(64), index=True)
     model_alias: Mapped[str] = mapped_column(String(128), index=True)
-    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id"))
-    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id"))
+    endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id", ondelete="CASCADE"))
     requested_rule_group: Mapped[str | None] = mapped_column(
         String(64), index=True, nullable=True
     )
