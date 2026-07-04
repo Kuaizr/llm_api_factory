@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import asyncio
+import hmac
 import json
 import re
 import secrets
@@ -354,7 +355,7 @@ async def _authorize_agent_token(
     header_token = _parse_bearer_token(header_value)
 
     if settings.agent_auth_token:
-        if header_token == settings.agent_auth_token:
+        if header_token and hmac.compare_digest(header_token, settings.agent_auth_token):
             return None
         if not token:
             raise HTTPException(status_code=401, detail="Unauthorized")
