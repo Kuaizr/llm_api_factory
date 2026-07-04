@@ -274,6 +274,19 @@ export const buildHeaders = (token: string | null, jsonBody = false) => {
   return headers;
 };
 
+export const readStoredAdminToken = () => {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return null;
+  }
+  return localStorage.getItem(tokenStorageKey);
+};
+
+export const buildStoredAdminHeaders = (jsonBody = false) =>
+  buildHeaders(readStoredAdminToken(), jsonBody);
+
 export const formatTokens = (value: number) => {
   if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(1)}T`;
   if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}G`;

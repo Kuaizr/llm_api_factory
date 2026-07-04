@@ -58,7 +58,7 @@ async def test_metrics_timeseries_endpoint(monkeypatch: pytest.MonkeyPatch) -> N
         ),
     ]
     session = FakeSession(logs)
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
 
     async def override_session():
         yield session

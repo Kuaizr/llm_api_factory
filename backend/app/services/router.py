@@ -1,8 +1,8 @@
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
-import re
 from typing import Sequence
 
 from sqlalchemy import select
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
 from app.services.agent_transport import get_agent_manager
 from app.services.circuit_breaker import CircuitBreaker
+from app.services.model_patterns import model_pattern_matches
 
 
 def _normalize_provider_name(value: object) -> str:
@@ -66,8 +67,10 @@ class RouteCandidate:
 
 
 DEFAULT_RULE_STRATEGY = "weighted_round_robin"
+SEQUENTIAL_STATE_TTL_SECONDS = 86400
+WRR_STATE_MAX_POOLS = 1024
 
-_wrr_state: dict[str, dict[int, int]] = {}
+_wrr_state: OrderedDict[str, dict[int, int]] = OrderedDict()
 
 
 class ModelRouter:
@@ -185,7 +188,9 @@ class ModelRouter:
         if not self._last_sequential_state_key:
             return
         await self.circuit_breaker.redis.set(
-            self._last_sequential_state_key, str(candidate.api_key.id)
+            self._last_sequential_state_key,
+            str(candidate.api_key.id),
+            ex=SEQUENTIAL_STATE_TTL_SECONDS,
         )
 
     async def get_sequential_active_key_id(
@@ -324,11 +329,8 @@ class ModelRouter:
         )
         rules = result.scalars().all()
         for rule in rules:
-            try:
-                if re.match(rule.model_pattern, model_alias):
-                    return self._parse_rule_config(rule.target_key_ids_json)
-            except re.error:
-                continue
+            if model_pattern_matches(rule.model_pattern, model_alias):
+                return self._parse_rule_config(rule.target_key_ids_json)
         return [], DEFAULT_RULE_STRATEGY
 
     @staticmethod
@@ -411,6 +413,10 @@ class ModelRouter:
         if state is None or set(state.keys()) != set(weights.keys()):
             state = {candidate_id: 0 for candidate_id in weights}
             _wrr_state[pool_key] = state
+            while len(_wrr_state) > WRR_STATE_MAX_POOLS:
+                _wrr_state.popitem(last=False)
+        else:
+            _wrr_state.move_to_end(pool_key)
 
         total_weight = sum(weights.values())
         selected: RouteCandidate | None = None

@@ -60,7 +60,7 @@ async def test_admin_endpoints_detail_includes_keys(monkeypatch: pytest.MonkeyPa
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     redis = MemoryRedis()
@@ -134,7 +134,7 @@ async def test_admin_endpoint_accepts_disable_probe_interval(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -176,7 +176,7 @@ async def test_admin_standard_endpoint_clears_custom_only_fields(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -240,7 +240,7 @@ async def test_manual_probe_records_success_status(monkeypatch: pytest.MonkeyPat
     await session.refresh(api_key)
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         circuit_breaker_failures=1,
         circuit_breaker_ttl_seconds=90,
     )
@@ -348,7 +348,7 @@ async def test_manual_probe_sync_overwrites_auto_keeps_manual(
     await session.refresh(api_key)
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         circuit_breaker_failures=1,
         circuit_breaker_ttl_seconds=90,
     )
@@ -433,7 +433,7 @@ async def test_manual_probe_records_failure_status(monkeypatch: pytest.MonkeyPat
     await session.refresh(api_key)
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         circuit_breaker_failures=1,
         circuit_breaker_ttl_seconds=90,
     )
@@ -513,7 +513,7 @@ async def test_manual_probe_records_request_exception(
     await session.refresh(api_key)
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         circuit_breaker_failures=1,
         circuit_breaker_ttl_seconds=90,
     )
@@ -604,7 +604,7 @@ async def test_manual_probe_anthropic_uses_messages(monkeypatch: pytest.MonkeyPa
     await session.refresh(api_key)
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         circuit_breaker_failures=1,
         circuit_breaker_ttl_seconds=90,
     )
@@ -718,7 +718,7 @@ async def test_api_key_direct_test_uses_selected_key(
     async def override_http_client() -> httpx.AsyncClient:
         return upstream_client
 
-    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True))
     monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
 
     app = FastAPI()
@@ -829,7 +829,7 @@ async def test_api_key_direct_test_supports_request_templates(
     async def override_http_client() -> httpx.AsyncClient:
         return upstream_client
 
-    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True))
     monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
 
     app = FastAPI()
@@ -919,7 +919,7 @@ async def test_request_attempt_logs_endpoint_filters_by_request_id(
     async def override_session():
         yield session
 
-    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True))
 
     app = FastAPI()
     app.include_router(routes_module.router)

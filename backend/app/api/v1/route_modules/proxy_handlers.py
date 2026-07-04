@@ -1,5 +1,4 @@
 from typing import AsyncGenerator, Callable
-import asyncio
 import json
 import re
 import time
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.route_helpers import (
     _dump_proxy_record,
+    _extract_factory_api_key,
     _find_dump_rule,
     _resolve_allowed_rule_groups_from_token,
     _resolve_rule_group_from_token,
@@ -32,9 +32,12 @@ from app.api.v1.route_proxy_helpers import (
 )
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
+from app.core.config import get_settings
 from app.db.models import Endpoint, ModelMap, RoutingRule
 from app.db.session import get_session
+from app.services.admin_auth import verify_admin_session_token
 from app.services.agent_transport import AgentRequest, AgentUnavailableError, get_agent_manager
+from app.services.background_tasks import safe_create_task
 from app.services.billing import (
     RequestAttemptMetrics,
     RequestMetrics,
@@ -43,6 +46,7 @@ from app.services.billing import (
     write_request_log,
 )
 from app.services.circuit_breaker import CircuitBreaker
+from app.services.model_patterns import model_pattern_matches
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
@@ -129,6 +133,14 @@ def _normalize_provider_filters(
         if isinstance(provider, str) and provider.strip()
     }
     return filters or None
+
+
+def _include_debug_headers(request: Request) -> bool:
+    debug_value = str(request.headers.get("X-Debug") or "").strip().lower()
+    if debug_value not in {"1", "true", "yes"}:
+        return False
+    token = _extract_factory_api_key(request.headers)
+    return verify_admin_session_token(token, get_settings())
 
 
 def _extract_text(value: object) -> str | None:
@@ -398,7 +410,7 @@ def _record_attempt_log(
         agent_node=agent_node,
         upstream_url=upstream_url,
     )
-    asyncio.create_task(write_request_attempt_log(metrics))
+    safe_create_task(write_request_attempt_log(metrics))
 
 
 async def _list_accessible_model_aliases(
@@ -461,12 +473,9 @@ async def _list_accessible_model_aliases(
         for group in non_default_groups:
             matched = False
             for rule in rules_by_group.get(group.lower(), []):
-                try:
-                    if re.match(rule.model_pattern, model_alias):
-                        matched = True
-                        break
-                except re.error:
-                    continue
+                if model_pattern_matches(rule.model_pattern, model_alias):
+                    matched = True
+                    break
             if matched:
                 allowed_aliases.add(model_alias)
                 break
@@ -563,6 +572,7 @@ async def _proxy_openai_request(
     session_id = _resolve_session_id(request, payload)
     trace_id = _resolve_trace_id(request, payload, session_id)
     request_start = time.perf_counter()
+    include_internal_debug = _include_debug_headers(request)
     client = await get_http_client()
     attempt_order = 0
 
@@ -621,7 +631,13 @@ async def _proxy_openai_request(
         )
         accept_header = request.headers.get("accept", "").lower()
         is_stream = bool(upstream_payload.get("stream")) or "text/event-stream" in accept_header
-        debug_headers = _build_debug_headers(request_id, trace_id, candidate, model_alias)
+        debug_headers = _build_debug_headers(
+            request_id,
+            trace_id,
+            candidate,
+            model_alias,
+            include_internal=include_internal_debug,
+        )
         agent_name = _get_agent_name(candidate.endpoint)
         candidate_provider = _normalize_provider_name(
             getattr(candidate.endpoint, "provider", None)
@@ -730,7 +746,7 @@ async def _proxy_openai_request(
                         continue
                     if candidate != candidates[-1]:
                         break
-                    asyncio.create_task(
+                    safe_create_task(
                         _dump_proxy_record(
                             dump_rule,
                             request_id,
@@ -823,8 +839,8 @@ async def _proxy_openai_request(
                             agent_node=agent_name,
                             upstream_url=url,
                         )
-                        asyncio.create_task(write_request_log(metrics))
-                        asyncio.create_task(
+                        safe_create_task(write_request_log(metrics))
+                        safe_create_task(
                             _dump_proxy_record(
                                 dump_rule,
                                 request_id,
@@ -873,7 +889,7 @@ async def _proxy_openai_request(
                     )
                     if candidate != candidates[-1]:
                         break
-                    asyncio.create_task(
+                    safe_create_task(
                         _dump_proxy_record(
                             dump_rule,
                             request_id,
@@ -934,9 +950,9 @@ async def _proxy_openai_request(
                     agent_node=agent_name,
                     upstream_url=url,
                 )
-                asyncio.create_task(write_request_log(metrics))
+                safe_create_task(write_request_log(metrics))
 
-                asyncio.create_task(
+                safe_create_task(
                     _dump_proxy_record(
                         dump_rule,
                         request_id,
@@ -1065,7 +1081,7 @@ async def _proxy_openai_request(
                     continue
                 if candidate != candidates[-1]:
                     break
-                asyncio.create_task(
+                safe_create_task(
                     _dump_proxy_record(
                         dump_rule,
                         request_id,
@@ -1167,7 +1183,7 @@ async def _proxy_openai_request(
                 )
                 if candidate != candidates[-1]:
                     break
-                asyncio.create_task(
+                safe_create_task(
                     _dump_proxy_record(
                         dump_rule,
                         request_id,
@@ -1228,9 +1244,9 @@ async def _proxy_openai_request(
                 agent_node=agent_name,
                 upstream_url=url,
             )
-            asyncio.create_task(write_request_log(metrics))
+            safe_create_task(write_request_log(metrics))
 
-            asyncio.create_task(
+            safe_create_task(
                 _dump_proxy_record(
                     dump_rule,
                     request_id,

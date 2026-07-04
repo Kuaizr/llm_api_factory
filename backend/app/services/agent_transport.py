@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from app.core.config import get_settings
+
 
 @dataclass(frozen=True)
 class AgentRequest:
@@ -69,8 +71,9 @@ class AgentUnavailableError(RuntimeError):
 
 
 class AgentManager:
-    def __init__(self) -> None:
+    def __init__(self, request_timeout_seconds: float | None = None) -> None:
         self._connections: dict[str, AgentConnection] = {}
+        self.request_timeout_seconds = request_timeout_seconds
 
     def register(self, name: str, channel: Any) -> AgentConnection:
         connection = AgentConnection(name=name, channel=channel, last_seen_at=datetime.now(timezone.utc))
@@ -82,6 +85,11 @@ class AgentManager:
 
     def get(self, name: str) -> AgentConnection | None:
         return self._connections.get(name)
+
+    def _request_timeout(self) -> float:
+        if self.request_timeout_seconds is not None:
+            return max(0.001, float(self.request_timeout_seconds))
+        return max(0.001, float(get_settings().agent_request_timeout_seconds))
 
     async def send_request(self, agent_name: str, request: AgentRequest) -> AgentResponse | AgentStream:
         connection = self._connections.get(agent_name)
@@ -102,15 +110,35 @@ class AgentManager:
         if request.stream:
             stream = AgentStream(request_id=request_id)
             connection.pending[request_id] = stream
-            await connection.send(payload)
-            await stream.wait_started()
-            return stream
+            try:
+                await connection.send(payload)
+                await asyncio.wait_for(stream.wait_started(), timeout=self._request_timeout())
+                return stream
+            except asyncio.TimeoutError as exc:
+                connection.pending.pop(request_id, None)
+                await stream._queue.put(None)
+                raise AgentUnavailableError(f"Agent {agent_name} request timed out") from exc
+            except Exception:
+                connection.pending.pop(request_id, None)
+                await stream._queue.put(None)
+                raise
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future[AgentResponse] = loop.create_future()
         connection.pending[request_id] = future
-        await connection.send(payload)
-        return await future
+        try:
+            await connection.send(payload)
+            return await asyncio.wait_for(future, timeout=self._request_timeout())
+        except asyncio.TimeoutError as exc:
+            connection.pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            raise AgentUnavailableError(f"Agent {agent_name} request timed out") from exc
+        except Exception:
+            connection.pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            raise
 
     async def handle_message(self, agent_name: str, message: dict[str, Any]) -> None:
         connection = self._connections.get(agent_name)

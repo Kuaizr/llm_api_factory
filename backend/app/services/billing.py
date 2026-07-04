@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import case, func, update
+
 from app.db.models import APIKey, RequestAttemptLog, RequestLog
 from app.db.session import SessionLocal
 
@@ -104,14 +106,22 @@ async def write_request_log(metrics: RequestMetrics) -> None:
         tokens = metrics.total_tokens
         if tokens is None:
             tokens = (metrics.prompt_tokens or 0) + (metrics.completion_tokens or 0)
-        api_key = await session.get(APIKey, metrics.api_key_id)
-        if api_key is not None:
-            today = datetime.now(timezone.utc).date()
-            if api_key.used_today_date != today:
-                api_key.used_today = 0
-                api_key.used_today_date = today
-            api_key.used_today = (api_key.used_today or 0) + tokens
-            api_key.total_usage = (api_key.total_usage or 0) + tokens
+        today = datetime.now(timezone.utc).date()
+        await session.execute(
+            update(APIKey)
+            .where(APIKey.id == metrics.api_key_id)
+            .values(
+                used_today=case(
+                    (
+                        APIKey.used_today_date == today,
+                        func.coalesce(APIKey.used_today, 0) + tokens,
+                    ),
+                    else_=tokens,
+                ),
+                used_today_date=today,
+                total_usage=func.coalesce(APIKey.total_usage, 0) + tokens,
+            )
+        )
 
         await session.commit()
 

@@ -9,6 +9,7 @@ from fastapi import Request
 
 from app.api.v1.route_helpers import _dump_proxy_record
 from app.db.models import RoutingRule
+from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.router import RouteCandidate
 
@@ -24,6 +25,22 @@ STANDARD_PROVIDER_NAMES = {"openai", "anthropic", "gemini"}
 # 先匹配被双引号包裹的占位符，避免字符串转义问题
 QUOTED_TEMPLATE_VARIABLE_PATTERN = re.compile(r'"\{\{(\w+)}}"')
 TEMPLATE_VARIABLE_PATTERN = re.compile(r"\{\{(\w+)}}")
+PASSTHROUGH_HEADER_ALLOWLIST = {
+    "accept",
+    "anthropic-beta",
+    "anthropic-version",
+    "content-type",
+    "idempotency-key",
+    "openai-beta",
+    "openai-organization",
+    "openai-project",
+    "user-agent",
+    "x-goog-api-client",
+    "x-goog-fieldmask",
+    "x-goog-request-params",
+    "x-goog-user-project",
+}
+PASSTHROUGH_HEADER_PREFIXES = ("x-stainless-",)
 
 
 def _is_custom_provider(endpoint: object | None) -> bool:
@@ -141,7 +158,12 @@ def _build_upstream_headers(
         "x-goog-api-key",
     }
     for key, value in incoming_headers.items():
-        if key.lower() in skip_headers:
+        lowered_key = key.lower()
+        if lowered_key in skip_headers:
+            continue
+        if lowered_key not in PASSTHROUGH_HEADER_ALLOWLIST and not any(
+            lowered_key.startswith(prefix) for prefix in PASSTHROUGH_HEADER_PREFIXES
+        ):
             continue
         headers[key] = value
 
@@ -524,17 +546,26 @@ def _build_debug_headers(
     trace_id: str,
     candidate: RouteCandidate,
     model_alias: str,
+    *,
+    include_internal: bool = False,
 ) -> dict:
     headers = {
         "x-request-id": request_id,
         "x-trace-id": trace_id,
-        "x-endpoint-id": str(candidate.endpoint.id),
-        "x-endpoint-name": candidate.endpoint.name,
-        "x-api-key-id": str(candidate.api_key.id),
-        "x-model-alias": model_alias,
-        "x-real-model": candidate.real_model,
-        "x-execution-mode": candidate.execution_mode,
     }
+    if not include_internal:
+        return headers
+
+    headers.update(
+        {
+            "x-endpoint-id": str(candidate.endpoint.id),
+            "x-endpoint-name": candidate.endpoint.name,
+            "x-api-key-id": str(candidate.api_key.id),
+            "x-model-alias": model_alias,
+            "x-real-model": candidate.real_model,
+            "x-execution-mode": candidate.execution_mode,
+        }
+    )
     if candidate.agent_name:
         headers["x-agent-node"] = candidate.agent_name
     return headers
@@ -621,9 +652,9 @@ async def _stream_response(
             agent_node=agent_node,
             upstream_url=upstream_url,
         )
-        asyncio.create_task(write_request_log(metrics))
+        safe_create_task(write_request_log(metrics))
         if dump_rule is not None and dump_endpoint_name:
-            asyncio.create_task(
+            safe_create_task(
                 _dump_proxy_record(
                     dump_rule,
                     request_id,

@@ -44,7 +44,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -130,6 +130,98 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_admin_rule_rejects_unsafe_model_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(
+        master_auth_token="token",
+        admin_legacy_master_bearer_enabled=True,
+        proxy_dump_root="/tmp",
+    )
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "^(a+)+$",
+                "group_name": "unsafe",
+                "priority": 10,
+                "target_key_ids": [],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "Nested quantifiers" in response.json()["detail"]
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_rule_rejects_dump_path_outside_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(
+        master_auth_token="token",
+        admin_legacy_master_bearer_enabled=True,
+        proxy_dump_root="/tmp/factory-dumps",
+    )
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4.*",
+                "group_name": "dump-check",
+                "priority": 10,
+                "target_key_ids": [],
+                "dump_enabled": True,
+                "dump_path": "/etc",
+            },
+        )
+
+    assert response.status_code == 400
+    assert "dump_path must stay under" in response.json()["detail"]
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_admin_rules_list_bootstraps_default_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -143,7 +235,7 @@ async def test_admin_rules_list_bootstraps_default_group(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -189,7 +281,7 @@ async def test_admin_default_rule_access_keys_and_guards(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -286,7 +378,7 @@ async def test_create_endpoint_key_syncs_multi_rule_group_targets(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -380,7 +472,7 @@ async def test_update_key_resyncs_rule_group_targets(monkeypatch: pytest.MonkeyP
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -484,7 +576,7 @@ async def test_update_rule_target_keys_syncs_api_key_rule_groups(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     app = FastAPI()
@@ -581,7 +673,7 @@ async def test_rule_group_eligibility_auto_probes_when_model_maps_missing(
     async def override_session():
         yield session
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, proxy_dump_root="/tmp")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
 
     captured_paths: list[str] = []

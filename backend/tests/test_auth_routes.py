@@ -6,6 +6,7 @@ from app.api.v1 import routes as routes_module
 from app.api.v1 import routes_legacy as legacy_module
 from app.core.config import Settings
 from app.db.session import get_session
+from app.services.admin_auth import issue_admin_session_token
 
 
 async def override_session():
@@ -27,7 +28,8 @@ async def test_auth_login_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["token"] == "token"
+    assert payload["token"].startswith("adm.")
+    assert payload["token"] != "token"
     assert payload["role"] == "admin"
     assert payload["issued_at"]
 
@@ -59,7 +61,10 @@ async def test_auth_me(monkeypatch: pytest.MonkeyPatch) -> None:
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/auth/me", headers={"Authorization": "Bearer token"})
+        token = issue_admin_session_token(settings)
+        response = await client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
 
     assert response.status_code == 200
     payload = response.json()
@@ -84,6 +89,26 @@ async def test_auth_me_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_auth_me_rejects_master_password_as_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(master_auth_token="token")
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/auth/me", headers={"Authorization": "Bearer token"}
+        )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_auth_me_with_x_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(master_auth_token="token")
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
@@ -94,7 +119,8 @@ async def test_auth_me_with_x_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/auth/me", headers={"x-api-key": "token"})
+        token = issue_admin_session_token(settings)
+        response = await client.get("/auth/me", headers={"x-api-key": token})
 
     assert response.status_code == 200
     payload = response.json()
@@ -113,16 +139,18 @@ async def test_auth_password_update_success(monkeypatch: pytest.MonkeyPatch) -> 
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = issue_admin_session_token(settings)
         update_response = await client.post(
             "/auth/password",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": f"Bearer {token}"},
             json={"current_password": "token", "new_password": "next-token"},
         )
         old_login = await client.post("/auth/login", json={"password": "token"})
         new_login = await client.post("/auth/login", json={"password": "next-token"})
 
     assert update_response.status_code == 200
-    assert update_response.json()["token"] == "next-token"
+    assert update_response.json()["token"].startswith("adm.")
+    assert update_response.json()["token"] != "next-token"
     assert old_login.status_code == 401
     assert new_login.status_code == 200
 
@@ -140,9 +168,10 @@ async def test_auth_password_update_validates_current_password(
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = issue_admin_session_token(settings)
         response = await client.post(
             "/auth/password",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": f"Bearer {token}"},
             json={"current_password": "wrong", "new_password": "next-token"},
         )
 

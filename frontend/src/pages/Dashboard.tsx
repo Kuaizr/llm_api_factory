@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiBase, buildStoredAdminHeaders } from "@/pages/console/shared";
 
 type Overview = {
   endpoints: number;
@@ -62,17 +63,8 @@ type AgentStatus = {
   status: string;
 };
 
-const apiBase =
-  import.meta.env.VITE_API_BASE ??
-  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
-const adminToken = import.meta.env.VITE_ADMIN_TOKEN;
-
 const buildHeaders = () => {
-  const headers: Record<string, string> = {};
-  if (adminToken) {
-    headers.Authorization = `Bearer ${adminToken}`;
-  }
-  return headers;
+  return buildStoredAdminHeaders();
 };
 
 const formatTimestamp = (value: string | null) =>

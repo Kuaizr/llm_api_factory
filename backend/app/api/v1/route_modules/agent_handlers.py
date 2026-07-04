@@ -139,6 +139,7 @@ async def admin_agent_bootstrap(
         endpoint_url=None,
         repo_url=repo_url,
         repo_ref=repo_ref,
+        allowed_targets=settings.agent_allowed_targets,
     )
     return AgentBootstrapOut(
         agent_id=agent.id,
@@ -436,6 +437,7 @@ async def admin_rotate_agent_token(
         endpoint_url=agent.endpoint_url,
         repo_url=repo_url,
         repo_ref=repo_ref,
+        allowed_targets=settings.agent_allowed_targets,
     )
     return AgentBootstrapOut(
         agent_id=agent.id,

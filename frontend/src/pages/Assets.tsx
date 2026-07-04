@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiBase, buildStoredAdminHeaders } from "@/pages/console/shared";
 
 type Endpoint = {
   id: number;
@@ -50,22 +51,13 @@ type ModelMapDraft = {
   real_model: string;
 };
 
-const apiBase =
-  import.meta.env.VITE_API_BASE ??
-  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
-const adminToken = import.meta.env.VITE_ADMIN_TOKEN;
-
 const inputClass =
   "w-full rounded-md border border-muted bg-background/60 px-3 py-2 text-sm text-foreground";
 const tableInputClass =
   "w-full rounded-md border border-muted bg-background/60 px-2 py-1 text-xs text-foreground";
 
 const authHeaders = () => {
-  const headers: Record<string, string> = {};
-  if (adminToken) {
-    headers.Authorization = `Bearer ${adminToken}`;
-  }
-  return headers;
+  return buildStoredAdminHeaders();
 };
 
 const jsonHeaders = () => ({

@@ -40,7 +40,7 @@ async def test_admin_alert_routes_update_and_list(monkeypatch: pytest.MonkeyPatc
     async def override_session():
         yield FakeSession()
 
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
 
     monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
     monkeypatch.setattr(routes_module, "get_redis", fake_get_redis)

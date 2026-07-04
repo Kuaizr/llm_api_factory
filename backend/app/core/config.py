@@ -11,8 +11,12 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://localhost:6379/0"
     master_auth_token: str | None = None
+    admin_session_ttl_seconds: int = 86400
+    admin_legacy_master_bearer_enabled: bool = False
     agent_auth_token: str | None = None
+    agent_allowed_targets: str = "localhost,127.0.0.1,::1"
     agent_heartbeat_timeout_seconds: int = 120
+    agent_request_timeout_seconds: float = 60.0
     agent_ws_url: str | None = None
     agent_heartbeat_url: str | None = None
     agent_name: str | None = None
@@ -30,6 +34,7 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 60.0
     circuit_breaker_failures: int = 3
     circuit_breaker_ttl_seconds: int = 3600
+    memory_redis_max_keys: int = 4096
     health_probe_enabled: bool = True
     health_probe_interval_seconds: int = 60
     health_probe_timeout_seconds: float = 10.0
@@ -39,6 +44,7 @@ class Settings(BaseSettings):
     health_probe_result_ttl_seconds: int = 86400
     health_probe_series_ttl_seconds: int = 86400
     health_probe_series_max_entries: int = 500
+    proxy_dump_root: str = str(Path(__file__).resolve().parents[2] / "proxy_dumps")
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
 

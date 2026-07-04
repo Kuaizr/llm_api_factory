@@ -3,7 +3,7 @@ import base64
 
 import pytest
 
-from app.services.agent_transport import AgentManager, AgentRequest
+from app.services.agent_transport import AgentManager, AgentRequest, AgentUnavailableError
 
 
 class FakeChannel:
@@ -100,3 +100,47 @@ async def test_agent_manager_stream_request() -> None:
 
     chunks = [chunk async for chunk in stream.iter_bytes()]
     assert b"".join(chunks) == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_send_request_times_out_and_cleans_pending() -> None:
+    manager = AgentManager(request_timeout_seconds=0.001)
+    channel = FakeChannel()
+    connection = manager.register("edge-hk", channel)
+
+    with pytest.raises(AgentUnavailableError):
+        await manager.send_request(
+            "edge-hk",
+            AgentRequest(
+                method="POST",
+                url="https://api.example.com/v1/chat/completions",
+                headers={},
+                body=b"{}",
+                stream=False,
+            ),
+        )
+
+    assert channel.sent
+    assert connection.pending == {}
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_stream_request_times_out_and_cleans_pending() -> None:
+    manager = AgentManager(request_timeout_seconds=0.001)
+    channel = FakeChannel()
+    connection = manager.register("edge-hk", channel)
+
+    with pytest.raises(AgentUnavailableError):
+        await manager.send_request(
+            "edge-hk",
+            AgentRequest(
+                method="POST",
+                url="https://api.example.com/v1/chat/completions",
+                headers={},
+                body=b"{}",
+                stream=True,
+            ),
+        )
+
+    assert channel.sent
+    assert connection.pending == {}

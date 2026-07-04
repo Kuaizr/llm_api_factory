@@ -84,7 +84,7 @@ def build_proxy_app(
     *,
     agent_manager: object | None = None,
 ) -> FastAPI:
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
     redis = MemoryRedis()
     candidates = (
         list(candidate_or_candidates)
@@ -189,7 +189,7 @@ async def test_completions_proxy_success(monkeypatch: pytest.MonkeyPatch) -> Non
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "gpt-4o-mini", "prompt": "hi"},
         )
 
@@ -238,6 +238,10 @@ async def test_completions_proxy_accepts_x_api_key(monkeypatch: pytest.MonkeyPat
     assert response.status_code == 200
     assert response.json() == upstream_payload
     assert recorded["rule_group"] == "default"
+    assert response.headers.get("x-request-id")
+    assert response.headers.get("x-trace-id")
+    assert "x-real-model" not in response.headers
+    assert "x-api-key-id" not in response.headers
     assert requests
     sent_request = requests[0]
     assert sent_request.headers.get("authorization") == "Bearer sk-test-x"
@@ -440,7 +444,7 @@ async def test_openai_responses_passthrough_endpoint(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/responses",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "gpt-4.1-mini", "input": "hi"},
         )
 
@@ -475,7 +479,7 @@ async def test_legacy_v1_routes_removed(monkeypatch: pytest.MonkeyPatch) -> None
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/v1/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "gpt-4o-mini", "prompt": "legacy"},
         )
 
@@ -731,7 +735,7 @@ async def test_gemini_passthrough_rewrites_model_path(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/gemini/v1beta/models/gemini-alias:generateContent",
-            headers={"x-goog-api-key": "token"},
+            headers={"x-goog-api-key": "token", "X-Debug": "true"},
             json=body,
         )
 
@@ -794,7 +798,7 @@ async def test_openai_chat_preserves_tools_and_response_format(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json=body,
         )
 
@@ -950,7 +954,7 @@ async def test_responses_proxy_passthrough_payload(monkeypatch: pytest.MonkeyPat
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/responses",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json=raw_payload,
         )
 
@@ -1000,7 +1004,7 @@ async def test_embeddings_proxy_success(monkeypatch: pytest.MonkeyPatch) -> None
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/embeddings",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "text-embedding-small", "input": "hello"},
         )
 
@@ -1041,7 +1045,7 @@ async def test_embeddings_missing_model(monkeypatch: pytest.MonkeyPatch) -> None
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/embeddings",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"input": "hello"},
         )
 
@@ -1162,12 +1166,12 @@ async def test_proxy_retries_primary_then_skips_open_circuit_on_next_request(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "gpt-4o-mini", "prompt": "hi"},
         )
         second_response = await client.post(
             "/openai/v1/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "gpt-4o-mini", "prompt": "hi again"},
         )
 
@@ -1342,7 +1346,7 @@ async def test_proxy_falls_back_on_semantic_error_response(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -1468,7 +1472,7 @@ async def test_proxy_uses_agent_transport_when_endpoint_has_agent(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -1537,7 +1541,7 @@ async def test_proxy_falls_back_when_agent_unavailable(monkeypatch: pytest.Monke
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/openai/v1/completions",
-            headers={"Authorization": "Bearer token"},
+            headers={"Authorization": "Bearer token", "X-Debug": "true"},
             json={"model": "gpt-4o-mini", "prompt": "hi"},
         )
 

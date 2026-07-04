@@ -5,6 +5,7 @@ import pytest
 import respx
 
 from app.services.agent_worker import handle_proxy_request
+from app.core.config import Settings
 
 
 class FakeSender:
@@ -17,7 +18,7 @@ class FakeSender:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_handle_proxy_request_non_stream() -> None:
+async def test_handle_proxy_request_non_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     sender = FakeSender()
     payload = {
         "type": "proxy_request",
@@ -33,6 +34,13 @@ async def test_handle_proxy_request_non_stream() -> None:
         return_value=httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
     )
 
+    from app.services import agent_worker
+
+    monkeypatch.setattr(
+        agent_worker,
+        "get_settings",
+        lambda: Settings(agent_allowed_targets="api.example.com"),
+    )
     async with httpx.AsyncClient() as client:
         await handle_proxy_request(payload, client, sender.send)
 
@@ -45,7 +53,7 @@ async def test_handle_proxy_request_non_stream() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_handle_proxy_request_stream() -> None:
+async def test_handle_proxy_request_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     sender = FakeSender()
     payload = {
         "type": "proxy_request",
@@ -63,6 +71,13 @@ async def test_handle_proxy_request_stream() -> None:
         )
     )
 
+    from app.services import agent_worker
+
+    monkeypatch.setattr(
+        agent_worker,
+        "get_settings",
+        lambda: Settings(agent_allowed_targets="api.example.com"),
+    )
     async with httpx.AsyncClient() as client:
         await handle_proxy_request(payload, client, sender.send)
 
@@ -71,3 +86,35 @@ async def test_handle_proxy_request_stream() -> None:
     assert sender.messages[1]["type"] == "proxy_stream"
     assert base64.b64decode(sender.messages[1]["data"]) == b"chunk"
     assert sender.messages[2]["type"] == "proxy_stream_end"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_handle_proxy_request_rejects_disallowed_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = FakeSender()
+    payload = {
+        "type": "proxy_request",
+        "request_id": "req-3",
+        "method": "GET",
+        "url": "http://169.254.169.254/latest/meta-data",
+        "headers": {},
+        "body": "",
+        "stream": False,
+    }
+
+    from app.services import agent_worker
+
+    monkeypatch.setattr(
+        agent_worker,
+        "get_settings",
+        lambda: Settings(agent_allowed_targets="api.example.com"),
+    )
+    async with httpx.AsyncClient() as client:
+        await handle_proxy_request(payload, client, sender.send)
+
+    assert sender.messages
+    response = sender.messages[0]
+    assert response["status_code"] == 403
+    assert base64.b64decode(response["body"]) == b"target_not_allowed"

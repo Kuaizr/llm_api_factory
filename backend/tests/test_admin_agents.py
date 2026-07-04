@@ -46,7 +46,7 @@ async def test_admin_agents_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
             last_seen_at=now,
         )
     ]
-    settings = Settings(master_auth_token="token", agent_heartbeat_timeout_seconds=60)
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, agent_heartbeat_timeout_seconds=60)
 
     async def override_session():
         yield FakeSession()
@@ -91,7 +91,7 @@ async def test_admin_agent_drain_survives_heartbeat(
     async def override_session():
         yield session
 
-    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True))
 
     app = FastAPI()
     app.include_router(routes_module.router)

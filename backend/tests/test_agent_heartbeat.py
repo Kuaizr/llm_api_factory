@@ -26,7 +26,7 @@ class FakeSession:
 
 @pytest.mark.asyncio
 async def test_agent_heartbeat_updates(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = Settings(master_auth_token="token", agent_auth_token="agent-token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, agent_auth_token="agent-token")
     now = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
     async def override_session():
@@ -67,7 +67,7 @@ async def test_agent_heartbeat_updates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_agent_heartbeat_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = Settings(master_auth_token="token", agent_auth_token="agent-token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True, agent_auth_token="agent-token")
 
     async def override_session():
         yield FakeSession()

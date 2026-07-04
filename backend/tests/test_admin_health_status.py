@@ -126,7 +126,7 @@ async def test_health_status_endpoint_returns_probe_and_circuit(monkeypatch: pyt
     )
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         circuit_breaker_failures=1,
         circuit_breaker_ttl_seconds=90,
     )

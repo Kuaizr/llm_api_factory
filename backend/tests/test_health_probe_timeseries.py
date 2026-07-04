@@ -177,7 +177,7 @@ async def test_admin_health_probe_timeseries(monkeypatch: pytest.MonkeyPatch) ->
         return redis
 
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         health_probe_series_ttl_seconds=3600,
         health_probe_series_max_entries=10,
     )

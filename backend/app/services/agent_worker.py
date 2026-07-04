@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+from ipaddress import ip_address, ip_network
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from httpx import AsyncClient, HTTPError
+
+from app.core.config import get_settings
 
 
 SendFunc = Callable[[dict[str, Any]], Awaitable[None]]
@@ -22,6 +26,79 @@ def _encode_body(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
 
+def _target_entries(raw: str | None) -> list[str]:
+    return [item.strip() for item in (raw or "").split(",") if item.strip()]
+
+
+def _split_host_port(entry: str) -> tuple[str, int | None]:
+    if entry.startswith("["):
+        host, _, rest = entry[1:].partition("]")
+        if rest.startswith(":") and rest[1:].isdigit():
+            return host.lower(), int(rest[1:])
+        return host.lower(), None
+    if entry.count(":") == 1:
+        host, port = entry.rsplit(":", 1)
+        if port.isdigit():
+            return host.lower(), int(port)
+    return entry.lower(), None
+
+
+def _entry_matches(host: str, port: int | None, entry: str) -> bool:
+    if entry == "*":
+        return True
+
+    entry_host, entry_port = _split_host_port(entry)
+    if entry_port is not None and port != entry_port:
+        return False
+
+    try:
+        network = ip_network(entry_host, strict=False)
+        target_ip = ip_address(host)
+    except ValueError:
+        network = None
+        target_ip = None
+    if network is not None and target_ip is not None:
+        return target_ip in network
+
+    normalized_host = host.lower().strip("[]")
+    if entry_host.startswith("*."):
+        suffix = entry_host[1:]
+        return normalized_host.endswith(suffix)
+    return normalized_host == entry_host
+
+
+def _is_target_allowed(url: str, allowed_targets: str | None) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not parsed.hostname:
+        return False
+
+    host = parsed.hostname.lower()
+    port = parsed.port
+    for entry in _target_entries(allowed_targets):
+        if _entry_matches(host, port, entry):
+            return True
+    return False
+
+
+async def _send_error(
+    send: SendFunc,
+    request_id: str,
+    status_code: int,
+    message: bytes,
+) -> None:
+    await send(
+        {
+            "type": "proxy_response",
+            "request_id": request_id,
+            "status_code": status_code,
+            "headers": {},
+            "body": _encode_body(message),
+        }
+    )
+
+
 async def handle_proxy_request(
     payload: dict[str, Any],
     client: AsyncClient,
@@ -34,15 +111,12 @@ async def handle_proxy_request(
     method = str(payload.get("method") or "POST")
     url = payload.get("url")
     if not url:
-        await send(
-            {
-                "type": "proxy_response",
-                "request_id": request_id,
-                "status_code": 400,
-                "headers": {},
-                "body": _encode_body(b"missing url"),
-            }
-        )
+        await _send_error(send, request_id, 400, b"missing url")
+        return
+    url = str(url)
+    settings = get_settings()
+    if not _is_target_allowed(url, settings.agent_allowed_targets):
+        await _send_error(send, request_id, 403, b"target_not_allowed")
         return
 
     headers = payload.get("headers") or {}

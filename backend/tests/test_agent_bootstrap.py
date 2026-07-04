@@ -29,7 +29,7 @@ class FakeSession:
 @pytest.mark.asyncio
 async def test_agent_bootstrap_returns_command(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         agent_install_script_url="https://raw.githubusercontent.com/acme/llm/main/scripts/agent_install.sh",
     )
 
@@ -77,7 +77,7 @@ async def test_agent_bootstrap_returns_command(monkeypatch: pytest.MonkeyPatch) 
 async def test_agent_bootstrap_falls_back_to_local_script(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = Settings(master_auth_token="token")
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
 
     async def override_session():
         yield FakeSession()
@@ -122,7 +122,7 @@ async def test_agent_bootstrap_uses_public_base_and_repo_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(
-        master_auth_token="token",
+        master_auth_token="token", admin_legacy_master_bearer_enabled=True,
         agent_public_base_url="https://factory.example.com/control",
         agent_install_script_url="https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts/agent_install.sh",
         agent_install_repo_url="https://github.com/Kuaizr/llm_api_factory.git",

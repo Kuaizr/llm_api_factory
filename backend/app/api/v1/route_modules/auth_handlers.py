@@ -11,6 +11,11 @@ from app.api.v1.route_models import (
     AuthPasswordUpdateResponse,
 )
 from app.core.config import get_settings
+from app.services.admin_auth import (
+    issue_admin_session_token,
+    verify_admin_session_token,
+    verify_master_password,
+)
 
 
 def _is_master_authorized(request: Request) -> bool:
@@ -18,15 +23,15 @@ def _is_master_authorized(request: Request) -> bool:
     if not settings.master_auth_token:
         return True
     token = _extract_factory_api_key(request.headers)
-    return token == settings.master_auth_token
+    return verify_admin_session_token(token, settings)
 
 
 async def auth_login(payload: AuthLoginRequest) -> AuthLoginResponse:
     settings = get_settings()
-    if not settings.master_auth_token or payload.password != settings.master_auth_token:
+    if not verify_master_password(payload.password, settings):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return AuthLoginResponse(
-        token=settings.master_auth_token,
+        token=issue_admin_session_token(settings),
         role="admin",
         issued_at=datetime.now(timezone.utc),
     )
@@ -48,7 +53,7 @@ async def auth_update_password(
         raise HTTPException(status_code=400, detail="Master auth is disabled")
     if not _is_master_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if payload.current_password != current_password:
+    if not verify_master_password(payload.current_password, settings):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     new_password = payload.new_password.strip()
@@ -57,6 +62,6 @@ async def auth_update_password(
 
     settings.master_auth_token = new_password
     return AuthPasswordUpdateResponse(
-        token=new_password,
+        token=issue_admin_session_token(settings),
         updated_at=datetime.now(timezone.utc),
     )

@@ -34,6 +34,7 @@ from app.db.session import get_session
 from app.services.agent_transport import get_agent_manager
 from app.services.agents import build_agent_statuses, list_agents
 from app.services.circuit_breaker import CircuitBreaker
+from app.services.model_patterns import model_pattern_matches
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
@@ -209,16 +210,9 @@ async def _matching_route_rule(
         .order_by(RoutingRule.priority.desc(), RoutingRule.id)
     )
     for rule in result.scalars().all():
-        try:
-            import re
-
-            if re.match(rule.model_pattern, model_alias):
-                target_key_ids, strategy = _deserialize_rule_config(
-                    rule.target_key_ids_json
-                )
-                return rule, target_key_ids, strategy
-        except re.error:
-            continue
+        if model_pattern_matches(rule.model_pattern, model_alias):
+            target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+            return rule, target_key_ids, strategy
     return None, [], "weighted_round_robin"
 
 

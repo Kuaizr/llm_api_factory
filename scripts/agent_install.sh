@@ -12,6 +12,7 @@ AGENT_REGION=""
 AGENT_NETWORK_GROUP=""
 AGENT_LABELS=""
 AGENT_ENDPOINT_URL=""
+AGENT_ALLOWED_TARGETS=""
 REPO_URL="${LLM_AGENT_INSTALL_REPO_URL:-$DEFAULT_REPO}"
 REPO_REF="${LLM_AGENT_INSTALL_REPO_REF:-$DEFAULT_REF}"
 INSTALL_DIR="${LLM_AGENT_INSTALL_DIR:-}"
@@ -37,6 +38,7 @@ Options:
   --agent-network-group <group>  Optional network group label.
   --agent-labels <csv>           Optional comma-separated labels.
   --agent-endpoint-url <url>     Optional public endpoint metadata.
+  --allowed-targets <list>       Comma-separated URL target allowlist for proxying.
   --repo <url>                   Git repository to clone.
   --repo-ref <ref>               Git branch/tag/commit to checkout.
   --install-dir <path>           Install directory.
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --agent-endpoint-url)
       AGENT_ENDPOINT_URL="$2"
+      shift 2
+      ;;
+    --allowed-targets)
+      AGENT_ALLOWED_TARGETS="$2"
       shift 2
       ;;
     --repo)
@@ -226,6 +232,9 @@ write_env_file() {
   fi
   if [[ -n "$AGENT_ENDPOINT_URL" ]]; then
     write_env_var "LLM_AGENT_ENDPOINT_URL" "$AGENT_ENDPOINT_URL" >>"$env_file"
+  fi
+  if [[ -n "$AGENT_ALLOWED_TARGETS" ]]; then
+    write_env_var "LLM_AGENT_ALLOWED_TARGETS" "$AGENT_ALLOWED_TARGETS" >>"$env_file"
   fi
 }
 

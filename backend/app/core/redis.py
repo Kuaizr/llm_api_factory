@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import logging
 import time
+from collections import OrderedDict
 from typing import Any
 
 from redis.asyncio import Redis
 
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 class MemoryRedis:
-    def __init__(self) -> None:
-        self._store: dict[str, tuple[Any, float | None]] = {}
+    def __init__(self, max_keys: int = 4096) -> None:
+        self._store: OrderedDict[str, tuple[Any, float | None]] = OrderedDict()
+        self.max_keys = max(1, int(max_keys))
 
     def _purge(self, key: str) -> None:
         item = self._store.get(key)
@@ -20,9 +25,17 @@ class MemoryRedis:
         if expires_at is not None and expires_at <= time.time():
             del self._store[key]
 
+    def _remember(self, key: str, value: Any, expires_at: float | None) -> None:
+        self._store[key] = (value, expires_at)
+        self._store.move_to_end(key)
+        while len(self._store) > self.max_keys:
+            self._store.popitem(last=False)
+
     async def get(self, key: str) -> str | None:
         self._purge(key)
         item = self._store.get(key)
+        if item:
+            self._store.move_to_end(key)
         value = item[0] if item else None
         return value if isinstance(value, str) else None
 
@@ -43,7 +56,7 @@ class MemoryRedis:
         if not isinstance(current, list):
             current = []
         current.insert(0, str(value))
-        self._store[key] = (current, expires_at)
+        self._remember(key, current, expires_at)
         return len(current)
 
     async def ltrim(self, key: str, start: int, end: int) -> bool:
@@ -63,7 +76,7 @@ class MemoryRedis:
             value = []
         else:
             value = value[resolved_start : resolved_end + 1]
-        self._store[key] = (value, expires_at)
+        self._remember(key, value, expires_at)
         return True
 
     async def lrange(self, key: str, start: int, end: int) -> list[str]:
@@ -90,7 +103,7 @@ class MemoryRedis:
         if nx and key in self._store:
             return False
         expires_at = time.time() + ex if ex is not None else None
-        self._store[key] = (str(value), expires_at)
+        self._remember(key, str(value), expires_at)
         return True
 
     async def incr(self, key: str) -> int:
@@ -99,7 +112,7 @@ class MemoryRedis:
         current = int(item[0]) if item else 0
         next_value = current + 1
         expires_at = item[1] if item else None
-        self._store[key] = (str(next_value), expires_at)
+        self._remember(key, str(next_value), expires_at)
         return next_value
 
     async def expire(self, key: str, ttl_seconds: int) -> bool:
@@ -107,7 +120,7 @@ class MemoryRedis:
         if key not in self._store:
             return False
         value, _ = self._store[key]
-        self._store[key] = (value, time.time() + ttl_seconds)
+        self._remember(key, value, time.time() + ttl_seconds)
         return True
 
     async def ttl(self, key: str) -> int:
@@ -149,8 +162,9 @@ async def get_redis() -> Redis | MemoryRedis:
         redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
         try:
             await redis_client.ping()
-        except Exception:
-            _redis_client = MemoryRedis()
+        except Exception as exc:
+            logger.warning("Redis unavailable, falling back to in-memory store: %s", exc)
+            _redis_client = MemoryRedis(max_keys=settings.memory_redis_max_keys)
         else:
             _redis_client = redis_client
     return _redis_client

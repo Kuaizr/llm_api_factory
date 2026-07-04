@@ -22,11 +22,14 @@ from app.api.v1.route_models import (
 )
 from app.core.config import get_settings
 from app.db.models import APIKey, Agent, Endpoint, FactoryAccessKey, RequestLog, RoutingRule
+from app.services.admin_auth import verify_admin_session_token
 from app.services.agents import get_agent_by_name, verify_agent_token
 from app.services.health_monitor import HealthProbeResult
+from app.services.model_patterns import model_pattern_matches
 
 
 VALID_ENDPOINT_ACCESS_MODES = {"direct", "via_agent"}
+MASKED_SECRET_VALUE = "********"
 
 
 def _normalize_endpoint_access_mode(raw: object, agent_node: object = None) -> str:
@@ -117,7 +120,7 @@ def _require_master_auth(request: Request) -> None:
         return
 
     token = _extract_factory_api_key(request.headers)
-    if token != settings.master_auth_token:
+    if not verify_admin_session_token(token, settings):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -132,7 +135,7 @@ async def _resolve_allowed_rule_groups_from_token(
     """解析对外访问 Key 并返回可访问的规则组列表。"""
     settings = get_settings()
     token = _extract_factory_api_key(request.headers)
-    if token and settings.master_auth_token and token == settings.master_auth_token:
+    if token and verify_admin_session_token(token, settings):
         return ["default"]
 
     if not token:
@@ -173,7 +176,7 @@ async def _resolve_rule_group_from_token(
     settings = get_settings()
     token = _extract_factory_api_key(request.headers)
     normalized_payload_group = (payload_rule_group or "default").strip() or "default"
-    if token and settings.master_auth_token and token == settings.master_auth_token:
+    if token and verify_admin_session_token(token, settings):
         return normalized_payload_group
 
     allowed_groups = await _resolve_allowed_rule_groups_from_token(session, request)
@@ -204,17 +207,40 @@ async def _find_dump_rule(
 
     rules = result.scalars().all()
     for rule in rules:
-        try:
-            if re.match(rule.model_pattern, model_alias):
-                return rule
-        except re.error:
-            continue
+        if model_pattern_matches(rule.model_pattern, model_alias):
+            return rule
     return None
 
 
 def _sanitize_dump_filename(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_.-]+", "_", value).strip("._")
     return normalized or "session"
+
+
+def _resolve_dump_directory(dump_path: str) -> Path:
+    settings = get_settings()
+    root = Path(settings.proxy_dump_root).expanduser().resolve()
+    candidate = Path(dump_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"dump_path must stay under {root.as_posix()}",
+        ) from exc
+    return resolved
+
+
+def _normalize_dump_path(dump_path: str | None) -> str | None:
+    if dump_path is None:
+        return None
+    trimmed = dump_path.strip()
+    if not trimmed:
+        return None
+    return _resolve_dump_directory(trimmed).as_posix()
 
 
 async def _dump_proxy_record(
@@ -236,7 +262,10 @@ async def _dump_proxy_record(
     if not dump_dir_raw:
         return
 
-    dump_dir = Path(dump_dir_raw).expanduser()
+    try:
+        dump_dir = _resolve_dump_directory(dump_dir_raw)
+    except HTTPException:
+        return
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     target_file = dump_dir / f"{timestamp}-{request_id}.json"
     resolved_session_id = (session_id or trace_id).strip() if (session_id or trace_id) else trace_id
@@ -284,6 +313,7 @@ def _build_agent_install_command(
     endpoint_url: str | None,
     repo_url: str | None,
     repo_ref: str | None = None,
+    allowed_targets: str | None = None,
 ) -> str:
     args = [
         "--ws-url",
@@ -303,6 +333,8 @@ def _build_agent_install_command(
         args.extend(["--agent-region", region])
     if endpoint_url:
         args.extend(["--agent-endpoint-url", endpoint_url])
+    if allowed_targets:
+        args.extend(["--allowed-targets", allowed_targets])
     quoted_args = " ".join(shlex.quote(arg) for arg in args)
     return f"curl -fsSL {shlex.quote(script_url)} | bash -s -- {quoted_args}"
 
@@ -339,6 +371,39 @@ def _mask_key(value: str) -> str:
     if len(trimmed) <= 6:
         return trimmed
     return f"{trimmed[:3]}...{trimmed[-4:]}"
+
+
+def _mask_oauth_config(config: object) -> dict[str, str] | None:
+    if not isinstance(config, dict):
+        return None
+    masked: dict[str, str] = {}
+    for key, value in config.items():
+        key_text = str(key)
+        value_text = str(value)
+        if "secret" in key_text.lower() and value_text:
+            masked[key_text] = MASKED_SECRET_VALUE
+        else:
+            masked[key_text] = value_text
+    return masked
+
+
+def _merge_masked_oauth_config(
+    existing_raw: str | None,
+    incoming: dict[str, str],
+) -> dict[str, str]:
+    existing: dict[str, str] = {}
+    if existing_raw:
+        try:
+            parsed = json.loads(existing_raw)
+            if isinstance(parsed, dict):
+                existing = {str(key): str(value) for key, value in parsed.items()}
+        except (json.JSONDecodeError, TypeError):
+            existing = {}
+    merged = {str(key): str(value) for key, value in incoming.items()}
+    for key, value in list(merged.items()):
+        if "secret" in key.lower() and value == MASKED_SECRET_VALUE and key in existing:
+            merged[key] = existing[key]
+    return merged
 
 
 def _build_endpoint_detail(
@@ -388,7 +453,7 @@ def _build_endpoint_detail(
     if endpoint.oauth_config:
         try:
             import json
-            oauth_config = json.loads(endpoint.oauth_config)
+            oauth_config = _mask_oauth_config(json.loads(endpoint.oauth_config))
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -466,7 +531,7 @@ def _build_endpoint_out(endpoint: Endpoint) -> EndpointOut:
     oauth_config = None
     if endpoint.oauth_config:
         try:
-            oauth_config = json.loads(endpoint.oauth_config)
+            oauth_config = _mask_oauth_config(json.loads(endpoint.oauth_config))
         except (json.JSONDecodeError, TypeError):
             pass
 

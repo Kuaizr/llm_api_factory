@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import json
+import logging
 import signal
 import time
 from contextlib import suppress
@@ -13,6 +14,8 @@ import httpx
 
 from app.core.config import get_settings
 from app.services.agent_worker import handle_proxy_request
+
+logger = logging.getLogger(__name__)
 
 
 def _build_heartbeat_url(ws_url: str, override: str | None) -> str | None:
@@ -179,7 +182,8 @@ class AgentClient:
                         status_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await status_task
-            except Exception:
+            except Exception as exc:
+                logger.warning("Agent connection loop failed: %s", exc)
                 await asyncio.sleep(self.reconnect_delay_seconds)
 
     async def _heartbeat(self, ws) -> None:

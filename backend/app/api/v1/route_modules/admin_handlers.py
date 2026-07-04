@@ -19,6 +19,8 @@ from app.api.v1.route_helpers import (
     _ensure_rule_group_available,
     _is_default_rule_group,
     _mask_key,
+    _merge_masked_oauth_config,
+    _normalize_dump_path,
     _normalize_endpoint_access_mode,
     _normalize_api_key_usage,
     _parse_iso_datetime,
@@ -72,6 +74,11 @@ from app.db.models import (
 from app.db.session import get_session
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
+from app.services.model_patterns import (
+    UnsafeModelPatternError,
+    compile_model_pattern,
+    validate_model_pattern,
+)
 from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
 SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
@@ -84,6 +91,21 @@ CUSTOM_ONLY_ENDPOINT_FIELDS = (
     "request_body_template",
 )
 logger = logging.getLogger(__name__)
+
+
+def _validate_rule_model_pattern(pattern: str) -> str:
+    try:
+        validate_model_pattern(pattern)
+    except UnsafeModelPatternError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return pattern
+
+
+def _validate_rule_dump_path(dump_path: str | None) -> str | None:
+    try:
+        return _normalize_dump_path(dump_path)
+    except HTTPException:
+        raise
 
 
 def _normalize_endpoint_provider(raw: object) -> str:
@@ -791,6 +813,10 @@ async def update_endpoint(
     if "extra_query_params" in data and data["extra_query_params"] is not None:
         data["extra_query_params"] = json.dumps(data["extra_query_params"])
     if "oauth_config" in data and data["oauth_config"] is not None:
+        data["oauth_config"] = _merge_masked_oauth_config(
+            endpoint.oauth_config,
+            data["oauth_config"],
+        )
         data["oauth_config"] = json.dumps(data["oauth_config"])
     # request_body_template 直接存储字符串，无需序列化
     for field, value in data.items():
@@ -1061,8 +1087,8 @@ async def check_key_rule_group_eligibility(
     matchers: list[re.Pattern[str]] = []
     for pattern in required_patterns:
         try:
-            matchers.append(re.compile(pattern))
-        except re.error:
+            matchers.append(compile_model_pattern(pattern))
+        except UnsafeModelPatternError:
             continue
 
     if not matchers:
@@ -1338,8 +1364,8 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
     for rule in rules:
         target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
         try:
-            matcher = re.compile(rule.model_pattern)
-        except re.error:
+            matcher = compile_model_pattern(rule.model_pattern)
+        except UnsafeModelPatternError:
             matcher = None
         request_count = 0
         total_tokens = 0
@@ -1389,13 +1415,15 @@ async def create_rule(
     payload: RoutingRuleCreate, session: AsyncSession = Depends(get_session)
 ) -> RoutingRuleOut:
     group_name = await _ensure_rule_group_available(session, payload.group_name)
+    model_pattern = _validate_rule_model_pattern(payload.model_pattern)
+    dump_path = _validate_rule_dump_path(payload.dump_path)
     rule = RoutingRule(
-        model_pattern=payload.model_pattern,
+        model_pattern=model_pattern,
         group_name=group_name,
         priority=payload.priority,
         is_active=payload.is_active,
         dump_enabled=payload.dump_enabled,
-        dump_path=payload.dump_path,
+        dump_path=dump_path,
         target_key_ids_json=_serialize_rule_config(
             payload.target_key_ids, payload.strategy
         ),
@@ -1459,6 +1487,11 @@ async def update_rule(
         next_targets = data.pop("target_key_ids", current_targets)
         next_strategy = data.pop("strategy", current_strategy)
         rule.target_key_ids_json = _serialize_rule_config(next_targets, next_strategy)
+
+    if "model_pattern" in data:
+        data["model_pattern"] = _validate_rule_model_pattern(data["model_pattern"])
+    if "dump_path" in data:
+        data["dump_path"] = _validate_rule_dump_path(data["dump_path"])
 
     for field, value in data.items():
         setattr(rule, field, value)
@@ -1709,8 +1742,8 @@ async def scan_rule_models(
     session: AsyncSession = Depends(get_session),
 ) -> list[str]:
     try:
-        matcher = re.compile(pattern)
-    except re.error as exc:
+        matcher = compile_model_pattern(pattern)
+    except UnsafeModelPatternError as exc:
         raise HTTPException(status_code=400, detail="Invalid model pattern") from exc
     result = await session.execute(
         select(ModelMap.model_alias).distinct().order_by(ModelMap.model_alias)

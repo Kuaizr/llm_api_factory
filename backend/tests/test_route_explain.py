@@ -141,7 +141,7 @@ async def test_route_explain_reports_candidates_and_excluded_agent(
     async def fake_get_redis():
         return MemoryRedis()
 
-    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token"))
+    monkeypatch.setattr(routes_module, "get_settings", lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True))
     monkeypatch.setattr(routes_module, "get_redis", fake_get_redis)
 
     app = FastAPI()

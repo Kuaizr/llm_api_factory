@@ -426,7 +426,10 @@ export const useConsoleData = () => {
       }
 
       const data = (await response.json()) as { token?: string };
-      const issuedToken = data.token ?? nextPassword;
+      const issuedToken = data.token;
+      if (!issuedToken) {
+        return { ok: false, message: "服务端未返回登录令牌" };
+      }
       if (
         typeof localStorage !== "undefined" &&
         typeof localStorage.setItem === "function"
