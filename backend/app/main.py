@@ -16,6 +16,7 @@ from app.core.redis import close_redis
 from app.db.base import Base
 from app.db.migrations import apply_schema_updates
 from app.db.session import engine
+from app.services.background_tasks import safe_create_task
 from app.services.health_monitor import HealthMonitor
 
 settings = get_settings()
@@ -56,7 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.health_probe_enabled:
         monitor = HealthMonitor()
         app.state.health_monitor = monitor
-        app.state.health_task = asyncio.create_task(monitor.run())
+        app.state.health_task = safe_create_task(monitor.run())
 
     try:
         yield

@@ -79,6 +79,7 @@ tests/test_agent_transport.py
 tests/test_agent_worker.py
 tests/conftest.py
 tests/test_audit_logs.py
+tests/test_background_tasks.py
 tests/test_alert_policies.py
 tests/test_alert_routes.py
 tests/test_auth_routes.py
