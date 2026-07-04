@@ -1,0 +1,121 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  readApiErrorMessage,
+  useConsoleActions,
+} from "./use-console-actions";
+import {
+  type EndpointFormState,
+  type RoutingRuleSavePayload,
+} from "./shared";
+
+const jsonResponse = (payload: unknown, status = 200) =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+
+const endpointForm: EndpointFormState = {
+  name: "OpenAI",
+  base_url: "https://api.openai.com/v1",
+  auth_header_name: "Authorization",
+  auth_header_prefix: "Bearer",
+  provider: "openai",
+  agent_node: "",
+  probe_interval_seconds: "",
+  is_active: true,
+};
+
+const rulePayload: RoutingRuleSavePayload = {
+  model_pattern: "gpt-.*",
+  group_name: "default",
+  target_key_ids: [],
+  priority: 10,
+  strategy: "sequential",
+  is_active: true,
+  dump_enabled: false,
+  dump_path: null,
+};
+
+type ConsoleActionsOptions = Parameters<typeof useConsoleActions>[0];
+
+const buildActions = (overrides: Partial<ConsoleActionsOptions> = {}) => {
+  const options: ConsoleActionsOptions = {
+    token: "adm.test",
+    isAdmin: true,
+    editingEndpoint: null,
+    setEditingEndpoint: vi.fn(),
+    manageKeysEndpoint: null,
+    setManageKeysEndpoint: vi.fn(),
+    editingRule: null,
+    setEditingRule: vi.fn(),
+    probeAliasEdits: {},
+    setProbeEndpoint: vi.fn(),
+    setProbeModels: vi.fn(),
+    setProbeDiscoveredModels: vi.fn(),
+    setProbeAliasEdits: vi.fn(),
+    setProbeError: vi.fn(),
+    setProbeLoading: vi.fn(),
+    setAgentDeployResult: vi.fn(),
+    setAgentDeployTarget: vi.fn(),
+    setAgentDeployOpen: vi.fn(),
+    loadEndpoints: vi.fn(),
+    loadHealthStatus: vi.fn(),
+    loadRules: vi.fn(),
+    loadAgents: vi.fn(),
+    ...overrides,
+  };
+  return useConsoleActions(options);
+};
+
+describe("console actions", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("extracts API error details from FastAPI validation payloads", async () => {
+    const response = jsonResponse(
+      { detail: [{ msg: "Invalid pattern" }, { msg: "Invalid path" }] },
+      422
+    );
+
+    await expect(readApiErrorMessage(response, "fallback")).resolves.toBe(
+      "Invalid pattern; Invalid path"
+    );
+  });
+
+  it("keeps endpoint editor open and surfaces backend detail on save failure", async () => {
+    const setEditingEndpoint = vi.fn();
+    const loadEndpoints = vi.fn();
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ detail: "Endpoint already exists" }, 409)))
+    );
+
+    const actions = buildActions({ setEditingEndpoint, loadEndpoints });
+
+    await expect(actions.handleSaveEndpoint(endpointForm)).resolves.toBe(false);
+    expect(alertSpy).toHaveBeenCalledWith("Endpoint already exists");
+    expect(loadEndpoints).not.toHaveBeenCalled();
+    expect(setEditingEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("keeps rule editor open and surfaces backend detail on save failure", async () => {
+    const setEditingRule = vi.fn();
+    const loadRules = vi.fn();
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ detail: "Unsafe dump path" }, 400)))
+    );
+
+    const actions = buildActions({ setEditingRule, loadRules });
+
+    await expect(actions.handleSaveRule(rulePayload)).resolves.toBe(false);
+    expect(alertSpy).toHaveBeenCalledWith("Unsafe dump path");
+    expect(loadRules).not.toHaveBeenCalled();
+    expect(setEditingRule).not.toHaveBeenCalled();
+  });
+});

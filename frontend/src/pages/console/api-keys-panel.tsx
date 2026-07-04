@@ -36,8 +36,11 @@ export const APIKeysView = ({
   isAdmin: boolean;
   authToken: string | null;
   onRefresh: () => void;
-  onCreate: (endpointId: number, payload: KeySavePayload) => void;
-  onUpdate: (keyId: number, payload: KeySavePayload) => void;
+  onCreate: (
+    endpointId: number,
+    payload: KeySavePayload
+  ) => boolean | Promise<boolean>;
+  onUpdate: (keyId: number, payload: KeySavePayload) => boolean | Promise<boolean>;
   onDelete: (keyId: number) => void;
 }) => {
   const keyRows = useMemo<GlobalKeyRow[]>(() => {
@@ -292,14 +295,18 @@ export const APIKeysView = ({
             setEditingKey(null);
             setIsAddingKey(false);
           }}
-          onSave={(payload) => {
+          onSave={async (payload) => {
+            let saved = false;
             if (editingKey) {
-              onUpdate(editingKey.id, payload);
+              saved = await onUpdate(editingKey.id, payload);
             } else {
-              onCreate(activeModalEndpointId, payload);
+              saved = await onCreate(activeModalEndpointId, payload);
             }
-            setEditingKey(null);
-            setIsAddingKey(false);
+            if (saved) {
+              setEditingKey(null);
+              setIsAddingKey(false);
+            }
+            return saved;
           }}
         />
       )}

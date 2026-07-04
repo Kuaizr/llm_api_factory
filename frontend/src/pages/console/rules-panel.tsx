@@ -38,7 +38,7 @@ export const RuleEditorModal = ({
   isAdmin: boolean;
   authToken: string | null;
   onClose: () => void;
-  onSave: (payload: RoutingRuleSavePayload) => void;
+  onSave: (payload: RoutingRuleSavePayload) => void | Promise<boolean>;
 }) => {
   const [modelPattern, setModelPattern] = useState(rule?.model_pattern ?? "");
   const [groupName, setGroupName] = useState(rule?.group_name ?? "custom");

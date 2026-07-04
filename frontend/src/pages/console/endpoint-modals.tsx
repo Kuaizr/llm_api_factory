@@ -38,7 +38,7 @@ export const EditEndpointModal = ({
   agents: AgentNode[];
   isAdmin: boolean;
   onClose: () => void;
-  onSave: (payload: EndpointFormState) => void;
+  onSave: (payload: EndpointFormState) => void | Promise<boolean>;
   onDelete?: (endpoint: Endpoint) => void;
 }) => {
   const [form, setForm] = useState<EndpointFormState>({
@@ -463,7 +463,7 @@ export const KeyConfigModal = ({
   isAdmin: boolean;
   availableRuleGroups: string[];
   onClose: () => void;
-  onSave: (payload: Partial<ApiKey> & { key?: string }) => void;
+  onSave: (payload: Partial<ApiKey> & { key?: string }) => boolean | Promise<boolean>;
 }) => {
   const [keyValue, setKeyValue] = useState("");
   const [name, setName] = useState(keyData?.name ?? "");
@@ -637,7 +637,7 @@ export const KeyConfigModal = ({
       normalizedRuleGroups.find((group) => group.toLowerCase() !== "default") || "default";
 
     setFormError(null);
-    onSave({
+    const saved = await onSave({
       key: keyValue.trim() || undefined,
       name: name.trim() || undefined,
       rule_group: primaryRuleGroup,
@@ -646,6 +646,9 @@ export const KeyConfigModal = ({
       rpm_limit: parsedRpmLimit,
       is_active: isActive,
     });
+    if (saved === false) {
+      setFormError("保存失败，请稍后再试。");
+    }
   };
 
   return (
@@ -818,8 +821,11 @@ export const ManageKeysModal = ({
   healthStatusMap: Record<number, HealthStatus>;
   availableRuleGroups: string[];
   onClose: () => void;
-  onCreate: (payload: Partial<ApiKey> & { key?: string }) => void;
-  onUpdate: (keyId: number, payload: Partial<ApiKey> & { key?: string }) => void;
+  onCreate: (payload: Partial<ApiKey> & { key?: string }) => boolean | Promise<boolean>;
+  onUpdate: (
+    keyId: number,
+    payload: Partial<ApiKey> & { key?: string }
+  ) => boolean | Promise<boolean>;
   onDelete: (keyId: number) => void;
   onRefresh: () => void;
 }) => {
@@ -1036,14 +1042,18 @@ export const ManageKeysModal = ({
             setEditingKey(null);
             setIsAddingKey(false);
           }}
-          onSave={(payload) => {
+          onSave={async (payload) => {
+            let saved = false;
             if (editingKey) {
-              onUpdate(editingKey.id, payload);
+              saved = await onUpdate(editingKey.id, payload);
             } else {
-              onCreate(payload);
+              saved = await onCreate(payload);
             }
-            setEditingKey(null);
-            setIsAddingKey(false);
+            if (saved) {
+              setEditingKey(null);
+              setIsAddingKey(false);
+            }
+            return saved;
           }}
         />
       )}

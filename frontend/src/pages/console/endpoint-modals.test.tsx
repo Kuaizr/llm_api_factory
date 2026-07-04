@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom";
 
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { EditEndpointModal } from "./endpoint-modals";
+import { EditEndpointModal, KeyConfigModal } from "./endpoint-modals";
 import { type Endpoint } from "./shared";
 
 const baseEndpoint: Endpoint = {
@@ -57,5 +58,30 @@ describe("EditEndpointModal", () => {
     expect(screen.getByText("额外请求头 (JSON)")).toBeInTheDocument();
     expect(screen.getByText("额外查询参数 (JSON)")).toBeInTheDocument();
     expect(screen.getByText("请求体模板 (JSON)")).toBeInTheDocument();
+  });
+
+  it("keeps API key form open when save fails", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(false);
+
+    render(
+      <KeyConfigModal
+        endpointId={baseEndpoint.id}
+        authToken="adm.test"
+        isAdmin
+        availableRuleGroups={["default"]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />
+    );
+
+    await act(async () => {
+      await user.type(screen.getByLabelText("API Key"), "sk-test");
+      await user.click(screen.getByRole("button", { name: "保存" }));
+    });
+
+    expect(onSave).toHaveBeenCalled();
+    expect(await screen.findByText("保存失败，请稍后再试。")).toBeInTheDocument();
+    expect(screen.getByText("添加新 API Key")).toBeInTheDocument();
   });
 });

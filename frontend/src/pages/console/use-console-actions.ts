@@ -40,6 +40,44 @@ type UseConsoleActionsOptions = {
   loadAgents: (authToken: string | null) => Promise<void>;
 };
 
+export const readApiErrorMessage = async (
+  response: Response,
+  fallback: string
+): Promise<string> => {
+  try {
+    const data = (await response.json()) as {
+      detail?: unknown;
+      message?: unknown;
+    };
+    if (typeof data.detail === "string" && data.detail.trim()) {
+      return data.detail;
+    }
+    if (Array.isArray(data.detail)) {
+      const details = data.detail
+        .map((item) => {
+          if (item && typeof item === "object" && "msg" in item) {
+            return String((item as { msg?: unknown }).msg || "").trim();
+          }
+          return "";
+        })
+        .filter(Boolean);
+      if (details.length > 0) {
+        return details.join("; ");
+      }
+    }
+    if (typeof data.message === "string" && data.message.trim()) {
+      return data.message;
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return fallback;
+};
+
+const notifyApiError = async (response: Response, fallback: string) => {
+  alert(await readApiErrorMessage(response, fallback));
+};
+
 export const useConsoleActions = ({
   token,
   isAdmin,
@@ -112,8 +150,8 @@ export const useConsoleActions = ({
     return data;
   };
 
-  const handleSaveEndpoint = async (payload: EndpointFormState) => {
-    if (!isAdmin) return;
+  const handleSaveEndpoint = async (payload: EndpointFormState): Promise<boolean> => {
+    if (!isAdmin) return false;
     const probeRaw = payload.probe_interval_seconds.trim();
     const probeInterval = probeRaw === "" ? null : Number(probeRaw);
     if (
@@ -121,7 +159,7 @@ export const useConsoleActions = ({
       (!Number.isFinite(probeInterval) || probeInterval < -1 || probeInterval > 86400)
     ) {
       alert("探针间隔需在 -1 到 86400 秒之间（-1 表示禁用自动探针）。");
-      return;
+      return false;
     }
 
     const method = editingEndpoint ? "PATCH" : "POST";
@@ -129,83 +167,107 @@ export const useConsoleActions = ({
       ? `${apiBase}/admin/endpoints/${editingEndpoint.id}`
       : `${apiBase}/admin/endpoints`;
     const isCustomProvider = payload.provider === "custom";
-    const response = await fetch(url, {
-      method,
-      headers: buildHeaders(token, true),
-      body: JSON.stringify({
-        name: payload.name,
-        base_url: payload.base_url,
-        auth_header_name: payload.auth_header_name,
-        auth_header_prefix: payload.auth_header_prefix,
-        provider: payload.provider,
-        agent_node: payload.agent_node,
-        probe_interval_seconds: probeInterval,
-        is_active: payload.is_active,
-        url_path_suffix: isCustomProvider ? payload.url_path_suffix || null : null,
-        extra_headers: isCustomProvider ? payload.extra_headers || null : null,
-        extra_cookies: isCustomProvider ? payload.extra_cookies || null : null,
-        extra_query_params: isCustomProvider ? payload.extra_query_params || null : null,
-        oauth_config: isCustomProvider ? payload.oauth_config || null : null,
-        request_body_template: isCustomProvider
-          ? payload.request_body_template || null
-          : null,
-      }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: buildHeaders(token, true),
+        body: JSON.stringify({
+          name: payload.name,
+          base_url: payload.base_url,
+          auth_header_name: payload.auth_header_name,
+          auth_header_prefix: payload.auth_header_prefix,
+          provider: payload.provider,
+          agent_node: payload.agent_node,
+          probe_interval_seconds: probeInterval,
+          is_active: payload.is_active,
+          url_path_suffix: isCustomProvider ? payload.url_path_suffix || null : null,
+          extra_headers: isCustomProvider ? payload.extra_headers || null : null,
+          extra_cookies: isCustomProvider ? payload.extra_cookies || null : null,
+          extra_query_params: isCustomProvider ? payload.extra_query_params || null : null,
+          oauth_config: isCustomProvider ? payload.oauth_config || null : null,
+          request_body_template: isCustomProvider
+            ? payload.request_body_template || null
+            : null,
+        }),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "保存 API 端点失败");
+        return false;
+      }
       await loadEndpoints(token);
+      setEditingEndpoint(null);
+      return true;
+    } catch {
+      alert("保存 API 端点失败");
+      return false;
     }
-    setEditingEndpoint(null);
   };
 
   const handleCreateKeyForEndpoint = async (
     endpointId: number,
     payload: Partial<ApiKey> & { key?: string }
-  ) => {
-    if (!isAdmin || endpointId <= 0) return;
-    const response = await fetch(`${apiBase}/admin/endpoints/${endpointId}/keys`, {
-      method: "POST",
-      headers: buildHeaders(token, true),
-      body: JSON.stringify({
-        key: payload.key,
-        name: payload.name,
-        rule_group: payload.rule_group || "default",
-        rule_groups: payload.rule_groups,
-        rpm_limit: payload.rpm_limit,
-        daily_limit: payload.daily_limit,
-        used_today: payload.used_today ?? 0,
-        total_usage: 0,
-        is_active: payload.is_active ?? true,
-      }),
-    });
-    if (response.ok) {
+  ): Promise<boolean> => {
+    if (!isAdmin || endpointId <= 0) return false;
+    try {
+      const response = await fetch(`${apiBase}/admin/endpoints/${endpointId}/keys`, {
+        method: "POST",
+        headers: buildHeaders(token, true),
+        body: JSON.stringify({
+          key: payload.key,
+          name: payload.name,
+          rule_group: payload.rule_group || "default",
+          rule_groups: payload.rule_groups,
+          rpm_limit: payload.rpm_limit,
+          daily_limit: payload.daily_limit,
+          used_today: payload.used_today ?? 0,
+          total_usage: 0,
+          is_active: payload.is_active ?? true,
+        }),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "创建 API Key 失败");
+        return false;
+      }
       await refreshKeys();
+      return true;
+    } catch {
+      alert("创建 API Key 失败");
+      return false;
     }
   };
 
   const handleCreateKey = async (payload: Partial<ApiKey> & { key?: string }) => {
-    if (!manageKeysEndpoint) return;
-    await handleCreateKeyForEndpoint(manageKeysEndpoint.id, payload);
+    if (!manageKeysEndpoint) return false;
+    return handleCreateKeyForEndpoint(manageKeysEndpoint.id, payload);
   };
 
   const handleUpdateKey = async (
     keyId: number,
     payload: Partial<ApiKey> & { key?: string }
-  ) => {
-    const response = await fetch(`${apiBase}/admin/keys/${keyId}`, {
-      method: "PUT",
-      headers: buildHeaders(token, true),
-      body: JSON.stringify({
-        key: payload.key,
-        name: payload.name,
-        rule_group: payload.rule_group,
-        rule_groups: payload.rule_groups,
-        rpm_limit: payload.rpm_limit,
-        daily_limit: payload.daily_limit,
-        is_active: payload.is_active,
-      }),
-    });
-    if (response.ok) {
+  ): Promise<boolean> => {
+    try {
+      const response = await fetch(`${apiBase}/admin/keys/${keyId}`, {
+        method: "PUT",
+        headers: buildHeaders(token, true),
+        body: JSON.stringify({
+          key: payload.key,
+          name: payload.name,
+          rule_group: payload.rule_group,
+          rule_groups: payload.rule_groups,
+          rpm_limit: payload.rpm_limit,
+          daily_limit: payload.daily_limit,
+          is_active: payload.is_active,
+        }),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "更新 API Key 失败");
+        return false;
+      }
       await refreshKeys();
+      return true;
+    } catch {
+      alert("更新 API Key 失败");
+      return false;
     }
   };
 
@@ -380,30 +442,40 @@ export const useConsoleActions = ({
     await loadEndpoints(token);
   };
 
-  const handleSaveRule = async (payload: RoutingRuleSavePayload) => {
-    if (!isAdmin) return;
+  const handleSaveRule = async (
+    payload: RoutingRuleSavePayload
+  ): Promise<boolean> => {
+    if (!isAdmin) return false;
     const method = payload.id ? "PATCH" : "POST";
     const url = payload.id
       ? `${apiBase}/admin/rules/${payload.id}`
       : `${apiBase}/admin/rules`;
-    const response = await fetch(url, {
-      method,
-      headers: buildHeaders(token, true),
-      body: JSON.stringify({
-        model_pattern: payload.model_pattern,
-        group_name: payload.group_name,
-        priority: payload.priority,
-        strategy: payload.strategy,
-        is_active: payload.is_active,
-        dump_enabled: payload.dump_enabled,
-        dump_path: payload.dump_path,
-        target_key_ids: payload.target_key_ids,
-      }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: buildHeaders(token, true),
+        body: JSON.stringify({
+          model_pattern: payload.model_pattern,
+          group_name: payload.group_name,
+          priority: payload.priority,
+          strategy: payload.strategy,
+          is_active: payload.is_active,
+          dump_enabled: payload.dump_enabled,
+          dump_path: payload.dump_path,
+          target_key_ids: payload.target_key_ids,
+        }),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "保存路由规则失败");
+        return false;
+      }
       await loadRules(token);
+      setEditingRule(null);
+      return true;
+    } catch {
+      alert("保存路由规则失败");
+      return false;
     }
-    setEditingRule(null);
   };
 
   const handleDeleteRule = async (rule: RoutingRule) => {
