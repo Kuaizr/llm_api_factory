@@ -4,6 +4,7 @@ from app.api.v1.route_helpers import _require_master_auth
 from app.api.v1.route_models import (
     APIKeyOut,
     APIKeyDirectTestOut,
+    AuditLogOut,
     DeleteResponse,
     EndpointDetailOut,
     EndpointOut,
@@ -34,6 +35,7 @@ from app.api.v1.route_modules.admin_handlers import (
     delete_model_map,
     delete_rule,
     list_api_keys,
+    list_audit_logs,
     list_endpoints,
     list_factory_access_keys,
     list_model_maps,
@@ -260,6 +262,13 @@ router.add_api_route(
     delete_model_map,
     methods=["DELETE"],
     response_model=DeleteResponse,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/audit-logs",
+    list_audit_logs,
+    methods=["GET"],
+    response_model=list[AuditLogOut],
     dependencies=_admin_dependencies,
 )
 router.add_api_route(

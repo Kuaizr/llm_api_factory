@@ -27,6 +27,7 @@ from app.services.agents import (
     list_agents,
     upsert_agent,
 )
+from app.services.audit import audit_snapshot, record_audit_log
 
 AGENT_INSTALL_SCRIPT_PATH = (
     Path(__file__).resolve().parents[5] / "scripts" / "agent_install.sh"
@@ -326,6 +327,21 @@ async def admin_delete_agent(
     agent_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> DeleteResponse:
+    agent = await session.get(Agent, agent_id)
+    if agent is not None:
+        before_snapshot = audit_snapshot(agent)
+        resource_name = agent.name
+        await session.delete(agent)
+        await record_audit_log(
+            session,
+            action="delete",
+            resource_type="agent",
+            resource_id=agent_id,
+            resource_name=resource_name,
+            before=before_snapshot,
+        )
+        await session.commit()
+        return DeleteResponse()
     stmt = delete(Agent).where(Agent.id == agent_id)
     await session.execute(stmt)
     await session.commit()
@@ -340,6 +356,7 @@ async def admin_update_agent(
     agent = await session.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    before_snapshot = audit_snapshot(agent)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -350,6 +367,15 @@ async def admin_update_agent(
     if "labels" in data:
         agent.labels = data["labels"]
 
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="agent",
+        resource_id=agent.id,
+        resource_name=agent.name,
+        before=before_snapshot,
+        after=agent,
+    )
     await session.commit()
     await session.refresh(agent)
     return _agent_status_out(agent)
@@ -364,8 +390,19 @@ async def _set_agent_state(
     agent = await session.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    before_snapshot = audit_snapshot(agent)
     agent.is_active = is_active
     agent.is_draining = is_draining
+    action = "enable" if is_active and not is_draining else "drain" if is_draining else "disable"
+    await record_audit_log(
+        session,
+        action=action,
+        resource_type="agent",
+        resource_id=agent.id,
+        resource_name=agent.name,
+        before=before_snapshot,
+        after=agent,
+    )
     await session.commit()
     await session.refresh(agent)
     return _agent_status_out(agent)
@@ -416,9 +453,19 @@ async def admin_rotate_agent_token(
         )
 
     # 未部署，可以重新生成Token
+    before_snapshot = audit_snapshot(agent)
     token = issue_agent_token()
     token_hash = hash_agent_token(token)
     agent.auth_token_hash = token_hash
+    await record_audit_log(
+        session,
+        action="rotate_token",
+        resource_type="agent",
+        resource_id=agent.id,
+        resource_name=agent.name,
+        before=before_snapshot,
+        after=agent,
+    )
     await session.commit()
     settings = get_settings()
     base = _agent_control_base_url(request)

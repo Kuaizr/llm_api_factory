@@ -162,6 +162,29 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             "CREATE INDEX IF NOT EXISTS ix_request_logs_endpoint_id_created_at ON request_logs(endpoint_id, created_at)",
         ),
     ),
+    SchemaMigration(
+        migration_id="20260705_audit_logs",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY,
+                actor VARCHAR(128) DEFAULT 'admin' NOT NULL,
+                action VARCHAR(64) NOT NULL,
+                resource_type VARCHAR(64) NOT NULL,
+                resource_id VARCHAR(128),
+                resource_name VARCHAR(256),
+                before_json TEXT,
+                after_json TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_audit_logs_actor ON audit_logs(actor)",
+            "CREATE INDEX IF NOT EXISTS ix_audit_logs_action ON audit_logs(action)",
+            "CREATE INDEX IF NOT EXISTS ix_audit_logs_resource_type ON audit_logs(resource_type)",
+            "CREATE INDEX IF NOT EXISTS ix_audit_logs_resource_created_at ON audit_logs(resource_type, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_audit_logs_action_created_at ON audit_logs(action, created_at)",
+        ),
+    ),
 )
 
 

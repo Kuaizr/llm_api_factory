@@ -400,6 +400,18 @@ class RequestAttemptLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AuditLogOut(BaseModel):
+    id: int
+    actor: str
+    action: str
+    resource_type: str
+    resource_id: str | None = None
+    resource_name: str | None = None
+    before: object | None = None
+    after: object | None = None
+    created_at: datetime
+
+
 class OverviewOut(BaseModel):
     endpoints: int
     api_keys: int

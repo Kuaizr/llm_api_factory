@@ -35,6 +35,7 @@ from app.api.v1.route_models import (
     APIKeyDirectTestRequest,
     APIKeyOut,
     APIKeyUpdate,
+    AuditLogOut,
     DeleteResponse,
     EndpointCreate,
     EndpointDetailOut,
@@ -65,6 +66,7 @@ from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.db.models import (
     APIKey,
+    AuditLog,
     Endpoint,
     FactoryAccessKey,
     ModelMap,
@@ -85,6 +87,7 @@ from app.services.secrets import (
     encrypt_oauth_config,
     encrypt_secret_value,
 )
+from app.services.audit import audit_snapshot, record_audit_log
 from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
 SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
@@ -97,6 +100,37 @@ CUSTOM_ONLY_ENDPOINT_FIELDS = (
     "request_body_template",
 )
 logger = logging.getLogger(__name__)
+
+
+def _parse_audit_json(raw: str | None) -> object | None:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _build_audit_log_out(log: AuditLog) -> AuditLogOut:
+    return AuditLogOut(
+        id=log.id,
+        actor=log.actor,
+        action=log.action,
+        resource_type=log.resource_type,
+        resource_id=log.resource_id,
+        resource_name=log.resource_name,
+        before=_parse_audit_json(log.before_json),
+        after=_parse_audit_json(log.after_json),
+        created_at=log.created_at,
+    )
+
+
+def _api_key_resource_name(api_key: APIKey) -> str:
+    return api_key.name or f"api_key:{api_key.id}"
+
+
+def _model_map_resource_name(model_map: ModelMap) -> str:
+    return f"{model_map.model_alias}->{model_map.real_model}"
 
 
 def _validate_rule_model_pattern(pattern: str) -> str:
@@ -776,6 +810,15 @@ async def create_endpoint(
     # request_body_template 直接存储字符串，无需序列化
     endpoint = Endpoint(**data)
     session.add(endpoint)
+    await session.flush()
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="endpoint",
+        resource_id=endpoint.id,
+        resource_name=endpoint.name,
+        after=endpoint,
+    )
     await session.commit()
     await session.refresh(endpoint)
     return _build_endpoint_out(endpoint)
@@ -790,6 +833,7 @@ async def update_endpoint(
     endpoint = await session.get(Endpoint, endpoint_id)
     if not endpoint:
         raise HTTPException(status_code=404, detail="Endpoint not found")
+    before_snapshot = audit_snapshot(endpoint)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -832,6 +876,15 @@ async def update_endpoint(
     # request_body_template 直接存储字符串，无需序列化
     for field, value in data.items():
         setattr(endpoint, field, value)
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="endpoint",
+        resource_id=endpoint.id,
+        resource_name=endpoint.name,
+        before=before_snapshot,
+        after=endpoint,
+    )
     await session.commit()
     await session.refresh(endpoint)
     return _build_endpoint_out(endpoint)
@@ -983,6 +1036,8 @@ async def delete_endpoint(
     endpoint = await session.get(Endpoint, endpoint_id)
     if not endpoint:
         raise HTTPException(status_code=404, detail="Endpoint not found")
+    before_snapshot = audit_snapshot(endpoint)
+    endpoint_name = endpoint.name
     await session.execute(
         delete(RequestAttemptLog).where(RequestAttemptLog.endpoint_id == endpoint_id)
     )
@@ -990,6 +1045,14 @@ async def delete_endpoint(
     await session.execute(delete(ModelMap).where(ModelMap.endpoint_id == endpoint_id))
     await session.execute(delete(APIKey).where(APIKey.endpoint_id == endpoint_id))
     await session.delete(endpoint)
+    await record_audit_log(
+        session,
+        action="delete",
+        resource_type="endpoint",
+        resource_id=endpoint_id,
+        resource_name=endpoint_name,
+        before=before_snapshot,
+    )
     await session.commit()
     return DeleteResponse()
 
@@ -1024,6 +1087,14 @@ async def create_endpoint_key(
         api_key_id=api_key.id,
         previous_groups=[],
         current_groups=normalized_groups,
+    )
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="api_key",
+        resource_id=api_key.id,
+        resource_name=_api_key_resource_name(api_key),
+        after=api_key,
     )
     await session.commit()
     await session.refresh(api_key)
@@ -1216,6 +1287,14 @@ async def create_api_key(
         previous_groups=[],
         current_groups=normalized_groups,
     )
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="api_key",
+        resource_id=api_key.id,
+        resource_name=_api_key_resource_name(api_key),
+        after=api_key,
+    )
     await session.commit()
     await session.refresh(api_key)
     return _build_api_key_out(api_key)
@@ -1231,6 +1310,7 @@ async def _update_api_key_record(
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    before_snapshot = audit_snapshot(api_key)
     previous_groups = api_key.rule_groups
     raw_rule_groups = data.pop("rule_groups", None)
     has_rule_group_update = raw_rule_groups is not None or "rule_group" in data
@@ -1258,6 +1338,15 @@ async def _update_api_key_record(
             current_groups=normalized_groups,
         )
 
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="api_key",
+        resource_id=api_key.id,
+        resource_name=_api_key_resource_name(api_key),
+        before=before_snapshot,
+        after=api_key,
+    )
     await session.commit()
     await session.refresh(api_key)
     return _build_api_key_out(api_key)
@@ -1291,6 +1380,8 @@ async def delete_api_key(
     api_key = await session.get(APIKey, api_key_id)
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
+    before_snapshot = audit_snapshot(api_key)
+    resource_name = _api_key_resource_name(api_key)
 
     await _sync_rule_targets_for_api_key(
         session=session,
@@ -1303,6 +1394,14 @@ async def delete_api_key(
     )
     await session.execute(delete(RequestLog).where(RequestLog.api_key_id == api_key.id))
     await session.delete(api_key)
+    await record_audit_log(
+        session,
+        action="delete",
+        resource_type="api_key",
+        resource_id=api_key.id,
+        resource_name=resource_name,
+        before=before_snapshot,
+    )
     await session.commit()
     return DeleteResponse()
 
@@ -1457,6 +1556,18 @@ async def create_rule(
         previous_target_key_ids=[],
         current_target_key_ids=payload.target_key_ids,
     )
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="routing_rule",
+        resource_id=rule.id,
+        resource_name=rule.group_name,
+        after={
+            **audit_snapshot(rule),
+            "target_key_ids": payload.target_key_ids,
+            "strategy": payload.strategy,
+        },
+    )
     await session.commit()
     await session.refresh(rule)
     target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
@@ -1475,6 +1586,12 @@ async def update_rule(
     rule = await session.get(RoutingRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Routing rule not found")
+    before_targets, before_strategy = _deserialize_rule_config(rule.target_key_ids_json)
+    before_snapshot = {
+        **audit_snapshot(rule),
+        "target_key_ids": before_targets,
+        "strategy": before_strategy,
+    }
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -1544,6 +1661,19 @@ async def update_rule(
                 current_target_key_ids=next_targets,
             )
 
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="routing_rule",
+        resource_id=rule.id,
+        resource_name=rule.group_name,
+        before=before_snapshot,
+        after={
+            **audit_snapshot(rule),
+            "target_key_ids": next_targets,
+            "strategy": next_strategy,
+        },
+    )
     await session.commit()
     await session.refresh(rule)
     target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
@@ -1567,6 +1697,11 @@ async def delete_rule(
         )
 
     target_key_ids, _ = _deserialize_rule_config(rule.target_key_ids_json)
+    before_snapshot = {
+        **audit_snapshot(rule),
+        "target_key_ids": target_key_ids,
+    }
+    resource_name = rule.group_name
     await _sync_api_key_groups_for_rule_targets(
         session=session,
         group_name=rule.group_name,
@@ -1575,6 +1710,14 @@ async def delete_rule(
     )
 
     await session.delete(rule)
+    await record_audit_log(
+        session,
+        action="delete",
+        resource_type="routing_rule",
+        resource_id=rule.id,
+        resource_name=resource_name,
+        before=before_snapshot,
+    )
     await session.commit()
     return DeleteResponse()
 
@@ -1601,6 +1744,15 @@ async def create_rule_access_key(
     item = FactoryAccessKey(name=payload.name, key=raw_key, is_active=True)
     item.rule_groups = [rule.group_name]
     session.add(item)
+    await session.flush()
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="factory_access_key",
+        resource_id=item.id,
+        resource_name=item.name,
+        after=item,
+    )
     await session.commit()
     await session.refresh(item)
     return RuleAccessKeyIssueOut(
@@ -1682,6 +1834,15 @@ async def create_factory_access_key(
     )
     item.rule_groups = groups
     session.add(item)
+    await session.flush()
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="factory_access_key",
+        resource_id=item.id,
+        resource_name=item.name,
+        after=item,
+    )
     await session.commit()
     await session.refresh(item)
     return FactoryAccessKeyIssueOut(
@@ -1703,6 +1864,7 @@ async def update_factory_access_key(
     item = await session.get(FactoryAccessKey, key_id)
     if not item:
         raise HTTPException(status_code=404, detail="Factory access key not found")
+    before_snapshot = audit_snapshot(item)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -1710,6 +1872,15 @@ async def update_factory_access_key(
         item.rule_groups = data.pop("rule_groups")
     for field, value in data.items():
         setattr(item, field, value)
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="factory_access_key",
+        resource_id=item.id,
+        resource_name=item.name,
+        before=before_snapshot,
+        after=item,
+    )
     await session.commit()
     await session.refresh(item)
     return FactoryAccessKeyOut(
@@ -1732,8 +1903,18 @@ async def rotate_factory_access_key(
     item = await session.get(FactoryAccessKey, key_id)
     if not item:
         raise HTTPException(status_code=404, detail="Factory access key not found")
+    before_snapshot = audit_snapshot(item)
     raw_key = f"fk-{secrets.token_urlsafe(24)}"
     item.key = raw_key
+    await record_audit_log(
+        session,
+        action="rotate",
+        resource_type="factory_access_key",
+        resource_id=item.id,
+        resource_name=item.name,
+        before=before_snapshot,
+        after=item,
+    )
     await session.commit()
     await session.refresh(item)
     return FactoryAccessKeyIssueOut(
@@ -1753,7 +1934,17 @@ async def delete_factory_access_key(
     item = await session.get(FactoryAccessKey, key_id)
     if not item:
         raise HTTPException(status_code=404, detail="Factory access key not found")
+    before_snapshot = audit_snapshot(item)
+    resource_name = item.name
     await session.delete(item)
+    await record_audit_log(
+        session,
+        action="delete",
+        resource_type="factory_access_key",
+        resource_id=item.id,
+        resource_name=resource_name,
+        before=before_snapshot,
+    )
     await session.commit()
     return DeleteResponse()
 
@@ -1792,6 +1983,15 @@ async def create_model_map(
 ) -> ModelMapOut:
     model_map = ModelMap(**payload.model_dump(), probe_managed=False)
     session.add(model_map)
+    await session.flush()
+    await record_audit_log(
+        session,
+        action="create",
+        resource_type="model_map",
+        resource_id=model_map.id,
+        resource_name=_model_map_resource_name(model_map),
+        after=model_map,
+    )
     await session.commit()
     await session.refresh(model_map)
     return model_map
@@ -1805,6 +2005,7 @@ async def update_model_map(
     model_map = await session.get(ModelMap, model_map_id)
     if not model_map:
         raise HTTPException(status_code=404, detail="Model map not found")
+    before_snapshot = audit_snapshot(model_map)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -1812,6 +2013,15 @@ async def update_model_map(
         setattr(model_map, field, value)
     # 用户手动保存后，条目转为手动维护，不再被自动探测覆盖。
     model_map.probe_managed = False
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="model_map",
+        resource_id=model_map.id,
+        resource_name=_model_map_resource_name(model_map),
+        before=before_snapshot,
+        after=model_map,
+    )
     await session.commit()
     await session.refresh(model_map)
     return model_map
@@ -1823,9 +2033,34 @@ async def delete_model_map(
     model_map = await session.get(ModelMap, model_map_id)
     if not model_map:
         raise HTTPException(status_code=404, detail="Model map not found")
+    before_snapshot = audit_snapshot(model_map)
+    resource_name = _model_map_resource_name(model_map)
     await session.delete(model_map)
+    await record_audit_log(
+        session,
+        action="delete",
+        resource_type="model_map",
+        resource_id=model_map.id,
+        resource_name=resource_name,
+        before=before_snapshot,
+    )
     await session.commit()
     return DeleteResponse()
+
+
+async def list_audit_logs(
+    limit: int = Query(default=100, ge=1, le=1000),
+    resource_type: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> list[AuditLogOut]:
+    stmt = select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)
+    if resource_type:
+        stmt = stmt.where(AuditLog.resource_type == resource_type)
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    result = await session.execute(stmt)
+    return [_build_audit_log_out(log) for log in result.scalars().all()]
 
 
 async def list_request_logs(

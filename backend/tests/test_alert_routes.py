@@ -3,21 +3,24 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import routes as routes_module
 from app.core.config import Settings
+from app.db.base import Base
+from app.db.models import AuditLog
 from app.db.session import get_session
 from app.services.notifications import AlertPolicyStore
 from conftest import TestMemoryRedis as MemoryRedis
 
 
-class FakeSession:
-    async def execute(self, stmt):  # noqa: ANN001
-        raise AssertionError("DB should not be hit in alert routes")
-
-
 @pytest.mark.asyncio
 async def test_admin_alert_routes_update_and_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
     redis = MemoryRedis()
     store = AlertPolicyStore(redis)
 
@@ -25,7 +28,8 @@ async def test_admin_alert_routes_update_and_list(monkeypatch: pytest.MonkeyPatc
         return redis
 
     async def override_session():
-        yield FakeSession()
+        async with session_maker() as session:
+            yield session
 
     settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
 
@@ -75,3 +79,13 @@ async def test_admin_alert_routes_update_and_list(monkeypatch: pytest.MonkeyPatc
 
     probe_policy = await store.get_policy("probe_latency")
     assert probe_policy.threshold_ms == 1500
+
+    async with session_maker() as session:
+        audit_logs = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.resource_type == "alert_policy")
+            )
+        ).scalars().all()
+    assert {log.resource_id for log in audit_logs} == {"circuit_open", "probe_latency"}
+
+    await engine.dispose()

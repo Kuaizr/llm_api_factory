@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.core.redis import get_redis
 from app.db.models import APIKey, Endpoint
 from app.db.session import get_session
+from app.services.audit import record_audit_log
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeStore
 from app.services.notifications import ALERT_EVENTS, AlertPolicyStore, get_notifier
@@ -42,12 +43,22 @@ async def admin_alert_policies() -> list[AlertPolicyOut]:
     ]
 
 
-async def admin_alert_policy_update(event: str, payload: AlertPolicyUpdate) -> AlertPolicyOut:
+async def admin_alert_policy_update(
+    event: str,
+    payload: AlertPolicyUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> AlertPolicyOut:
     if event not in ALERT_EVENTS:
         raise HTTPException(status_code=404, detail="Unknown alert event")
     redis = await get_redis()
     store = AlertPolicyStore(redis)
     current = await store.get_policy(event)
+    before = {
+        "event": current.event,
+        "enabled": current.enabled,
+        "silence_until": current.silence_until,
+        "threshold_ms": current.threshold_ms,
+    }
 
     enabled = payload.enabled if payload.enabled is not None else current.enabled
     silence_until = payload.silence_until
@@ -73,6 +84,21 @@ async def admin_alert_policy_update(event: str, payload: AlertPolicyUpdate) -> A
         silence_until=silence_until,
         threshold_ms=threshold_ms,
     )
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="alert_policy",
+        resource_id=event,
+        resource_name=event,
+        before=before,
+        after={
+            "event": policy.event,
+            "enabled": policy.enabled,
+            "silence_until": policy.silence_until,
+            "threshold_ms": policy.threshold_ms,
+        },
+    )
+    await session.commit()
     return AlertPolicyOut(
         event=policy.event,
         enabled=policy.enabled,
@@ -105,8 +131,15 @@ async def admin_telegram_config() -> TelegramConfigOut:
     return _build_telegram_config_out()
 
 
-async def admin_telegram_config_update(payload: TelegramConfigUpdate) -> TelegramConfigOut:
+async def admin_telegram_config_update(
+    payload: TelegramConfigUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> TelegramConfigOut:
     settings = get_settings()
+    before = {
+        "bot_token": settings.telegram_bot_token,
+        "chat_id": settings.telegram_chat_id,
+    }
 
     if "bot_token" in payload.model_fields_set:
         next_token = (payload.bot_token or "").strip()
@@ -117,6 +150,19 @@ async def admin_telegram_config_update(payload: TelegramConfigUpdate) -> Telegra
         settings.telegram_chat_id = next_chat_id or None
 
     get_notifier.cache_clear()
+    await record_audit_log(
+        session,
+        action="update",
+        resource_type="telegram_config",
+        resource_id="default",
+        resource_name="telegram",
+        before=before,
+        after={
+            "bot_token": settings.telegram_bot_token,
+            "chat_id": settings.telegram_chat_id,
+        },
+    )
+    await session.commit()
     return _build_telegram_config_out()
 
 

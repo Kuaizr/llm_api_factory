@@ -35,6 +35,7 @@ app/db/models.py
 app/db/session.py
 app/services/__init__.py
 app/services/admin_auth.py
+app/services/audit.py
 app/services/agent_client.py
 app/services/agent_transport.py
 app/services/agent_worker.py
@@ -68,6 +69,7 @@ tests/test_agent_services.py
 tests/test_agent_transport.py
 tests/test_agent_worker.py
 tests/conftest.py
+tests/test_audit_logs.py
 tests/test_alert_policies.py
 tests/test_alert_routes.py
 tests/test_auth_routes.py
