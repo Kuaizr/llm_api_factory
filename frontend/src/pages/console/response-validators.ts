@@ -17,6 +17,45 @@ import type {
   UsageTopKey,
 } from "./shared";
 
+export type DashboardOverview = {
+  endpoints: number;
+  api_keys: number;
+  model_maps: number;
+  request_logs: number;
+  generated_at: string;
+};
+
+export type DashboardHealthStatus = {
+  api_key_id: number;
+  endpoint_id: number;
+  endpoint_name: string;
+  rule_group: string;
+  is_active: boolean;
+  probe_status: string;
+  probe_status_code: number | null;
+  probe_latency_ms: number | null;
+  probe_checked_at: string | null;
+  probe_real_model: string | null;
+  circuit_state: string;
+  circuit_failures: number;
+  circuit_ttl_seconds: number | null;
+};
+
+export type DashboardHealthProbeBucket = {
+  bucket_start: string;
+  success_count: number;
+  failure_count: number;
+  error_count: number;
+  avg_latency_ms: number | null;
+};
+
+export type DashboardAlertPolicy = {
+  event: string;
+  enabled: boolean;
+  silence_until: string | null;
+  threshold_ms: number | null;
+};
+
 type PublicEndpoint = Omit<
   Endpoint,
   "keys" | "model_count" | "is_agent_enabled" | "strategy" | "is_active"
@@ -513,6 +552,26 @@ const parseMetricsBucket = (value: unknown): MetricsBucket | null => {
 export const parseMetricsBucketList = (value: unknown): MetricsBucket[] | null =>
   parseArray(value, parseMetricsBucket);
 
+export const parseDashboardOverview = (value: unknown): DashboardOverview | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.endpoints) ||
+    !isNumber(value.api_keys) ||
+    !isNumber(value.model_maps) ||
+    !isNumber(value.request_logs) ||
+    !isString(value.generated_at)
+  ) {
+    return null;
+  }
+  return {
+    endpoints: value.endpoints,
+    api_keys: value.api_keys,
+    model_maps: value.model_maps,
+    request_logs: value.request_logs,
+    generated_at: value.generated_at,
+  };
+};
+
 export const parseHealthStatus = (value: unknown): HealthStatus | null => {
   if (
     !isRecord(value) ||
@@ -539,6 +598,95 @@ export const parseHealthStatus = (value: unknown): HealthStatus | null => {
 
 export const parseHealthStatusList = (value: unknown): HealthStatus[] | null =>
   parseArray(value, parseHealthStatus);
+
+const parseDashboardHealthStatus = (value: unknown): DashboardHealthStatus | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.api_key_id) ||
+    !isNumber(value.endpoint_id) ||
+    !isString(value.endpoint_name) ||
+    !isString(value.rule_group) ||
+    !isBoolean(value.is_active) ||
+    !isString(value.probe_status) ||
+    !isNullableNumber(value.probe_status_code) ||
+    !isNullableNumber(value.probe_latency_ms) ||
+    !isNullableString(value.probe_checked_at) ||
+    !isNullableString(value.probe_real_model) ||
+    !isString(value.circuit_state) ||
+    !isNumber(value.circuit_failures) ||
+    !isNullableNumber(value.circuit_ttl_seconds)
+  ) {
+    return null;
+  }
+  return {
+    api_key_id: value.api_key_id,
+    endpoint_id: value.endpoint_id,
+    endpoint_name: value.endpoint_name,
+    rule_group: value.rule_group,
+    is_active: value.is_active,
+    probe_status: value.probe_status,
+    probe_status_code: value.probe_status_code,
+    probe_latency_ms: value.probe_latency_ms,
+    probe_checked_at: value.probe_checked_at,
+    probe_real_model: value.probe_real_model,
+    circuit_state: value.circuit_state,
+    circuit_failures: value.circuit_failures,
+    circuit_ttl_seconds: value.circuit_ttl_seconds,
+  };
+};
+
+export const parseDashboardHealthStatusList = (
+  value: unknown
+): DashboardHealthStatus[] | null => parseArray(value, parseDashboardHealthStatus);
+
+const parseDashboardHealthProbeBucket = (
+  value: unknown
+): DashboardHealthProbeBucket | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.bucket_start) ||
+    !isNumber(value.success_count) ||
+    !isNumber(value.failure_count) ||
+    !isNumber(value.error_count) ||
+    !isNullableNumber(value.avg_latency_ms)
+  ) {
+    return null;
+  }
+  return {
+    bucket_start: value.bucket_start,
+    success_count: value.success_count,
+    failure_count: value.failure_count,
+    error_count: value.error_count,
+    avg_latency_ms: value.avg_latency_ms,
+  };
+};
+
+export const parseDashboardHealthProbeBucketList = (
+  value: unknown
+): DashboardHealthProbeBucket[] | null =>
+  parseArray(value, parseDashboardHealthProbeBucket);
+
+const parseDashboardAlertPolicy = (value: unknown): DashboardAlertPolicy | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.event) ||
+    !isBoolean(value.enabled) ||
+    !isNullableString(value.silence_until) ||
+    !isNullableNumber(value.threshold_ms)
+  ) {
+    return null;
+  }
+  return {
+    event: value.event,
+    enabled: value.enabled,
+    silence_until: value.silence_until,
+    threshold_ms: value.threshold_ms,
+  };
+};
+
+export const parseDashboardAlertPolicyList = (
+  value: unknown
+): DashboardAlertPolicy[] | null => parseArray(value, parseDashboardAlertPolicy);
 
 export const parseTelegramConfig = (value: unknown): TelegramConfig | null => {
   if (

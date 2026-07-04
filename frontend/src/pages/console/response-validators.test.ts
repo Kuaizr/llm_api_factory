@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   parseAgentBootstrapResult,
   parseApiKeyDirectTestResult,
+  parseDashboardAlertPolicyList,
+  parseDashboardHealthProbeBucketList,
+  parseDashboardHealthStatusList,
+  parseDashboardOverview,
   parseDashboardStatus,
   parseEndpointList,
   parseEndpointProbeResult,
@@ -122,6 +126,65 @@ describe("console response validators", () => {
       ])
     ).not.toBeNull();
     expect(parseHealthStatusList([{ api_key_id: "1" }])).toBeNull();
+  });
+
+  it("validates dashboard response payloads", () => {
+    expect(
+      parseDashboardOverview({
+        endpoints: 1,
+        api_keys: 2,
+        model_maps: 3,
+        request_logs: 4,
+        generated_at: "2026-07-05T00:00:00Z",
+      })?.request_logs
+    ).toBe(4);
+    expect(parseDashboardOverview({ endpoints: "1" })).toBeNull();
+
+    expect(
+      parseDashboardHealthStatusList([
+        {
+          api_key_id: 1,
+          endpoint_id: 2,
+          endpoint_name: "OpenAI",
+          rule_group: "default",
+          is_active: true,
+          probe_status: "success",
+          probe_status_code: 200,
+          probe_latency_ms: 120,
+          probe_checked_at: null,
+          probe_real_model: "gpt-5",
+          circuit_state: "closed",
+          circuit_failures: 0,
+          circuit_ttl_seconds: null,
+        },
+      ])?.[0].endpoint_name
+    ).toBe("OpenAI");
+    expect(parseDashboardHealthStatusList([{ api_key_id: 1 }])).toBeNull();
+
+    expect(
+      parseDashboardHealthProbeBucketList([
+        {
+          bucket_start: "2026-07-05T00:00:00Z",
+          success_count: 1,
+          failure_count: 2,
+          error_count: 3,
+          avg_latency_ms: null,
+        },
+      ])?.[0].error_count
+    ).toBe(3);
+    expect(parseDashboardHealthProbeBucketList([{ bucket_start: 1 }])).toBeNull();
+
+    expect(
+      parseDashboardAlertPolicyList([
+        {
+          event: "probe_latency",
+          enabled: true,
+          silence_until: null,
+          threshold_ms: 2000,
+        },
+      ])?.[0].threshold_ms
+    ).toBe(2000);
+    expect(parseDashboardAlertPolicyList([{ event: "probe_latency" }])).toBeNull();
   });
 
   it("validates console action response payloads", () => {

@@ -2,66 +2,24 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { apiBase, buildStoredAdminHeaders } from "@/pages/console/shared";
-
-type Overview = {
-  endpoints: number;
-  api_keys: number;
-  model_maps: number;
-  request_logs: number;
-  generated_at: string;
-};
-
-type HealthStatus = {
-  api_key_id: number;
-  endpoint_id: number;
-  endpoint_name: string;
-  rule_group: string;
-  is_active: boolean;
-  probe_status: string;
-  probe_status_code: number | null;
-  probe_latency_ms: number | null;
-  probe_checked_at: string | null;
-  probe_real_model: string | null;
-  circuit_state: string;
-  circuit_failures: number;
-  circuit_ttl_seconds: number | null;
-};
-
-type MetricsBucket = {
-  bucket_start: string;
-  request_count: number;
-  rps: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-  avg_latency_ms: number | null;
-};
-
-type HealthProbeBucket = {
-  bucket_start: string;
-  success_count: number;
-  failure_count: number;
-  error_count: number;
-  avg_latency_ms: number | null;
-};
-
-type AlertPolicy = {
-  event: string;
-  enabled: boolean;
-  silence_until: string | null;
-  threshold_ms: number | null;
-};
-
-type AgentStatus = {
-  id: number;
-  name: string;
-  region: string | null;
-  endpoint_url: string | null;
-  is_active: boolean;
-  last_seen_at: string | null;
-  status: string;
-};
+import {
+  parseAgentList,
+  parseDashboardAlertPolicyList,
+  parseDashboardHealthProbeBucketList,
+  parseDashboardHealthStatusList,
+  parseDashboardOverview,
+  parseMetricsBucketList,
+  type DashboardAlertPolicy,
+  type DashboardHealthProbeBucket,
+  type DashboardHealthStatus,
+  type DashboardOverview,
+} from "@/pages/console/response-validators";
+import {
+  apiBase,
+  buildStoredAdminHeaders,
+  type AgentNode,
+  type MetricsBucket,
+} from "@/pages/console/shared";
 
 const buildHeaders = () => {
   return buildStoredAdminHeaders();
@@ -109,13 +67,15 @@ const alertEventLabels: Record<string, string> = {
 const alertEventLabel = (event: string) => alertEventLabels[event] ?? event;
 
 export const Dashboard = () => {
-  const [overview, setOverview] = useState<Overview | null>(null);
+  const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [healthStatuses, setHealthStatuses] = useState<HealthStatus[]>([]);
+  const [healthStatuses, setHealthStatuses] = useState<DashboardHealthStatus[]>([]);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [healthUpdatedAt, setHealthUpdatedAt] = useState<string | null>(null);
-  const [healthProbeBuckets, setHealthProbeBuckets] = useState<HealthProbeBucket[]>([]);
+  const [healthProbeBuckets, setHealthProbeBuckets] = useState<
+    DashboardHealthProbeBucket[]
+  >([]);
   const [healthProbeError, setHealthProbeError] = useState<string | null>(null);
   const [healthProbeLoading, setHealthProbeLoading] = useState(false);
   const [healthProbeUpdatedAt, setHealthProbeUpdatedAt] = useState<string | null>(null);
@@ -123,11 +83,11 @@ export const Dashboard = () => {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsUpdatedAt, setMetricsUpdatedAt] = useState<string | null>(null);
-  const [agentStatuses, setAgentStatuses] = useState<AgentStatus[]>([]);
+  const [agentStatuses, setAgentStatuses] = useState<AgentNode[]>([]);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentUpdatedAt, setAgentUpdatedAt] = useState<string | null>(null);
-  const [alertPolicies, setAlertPolicies] = useState<AlertPolicy[]>([]);
+  const [alertPolicies, setAlertPolicies] = useState<DashboardAlertPolicy[]>([]);
   const [alertError, setAlertError] = useState<string | null>(null);
   const [alertLoading, setAlertLoading] = useState(false);
   const [alertUpdatedAt, setAlertUpdatedAt] = useState<string | null>(null);
@@ -145,7 +105,10 @@ export const Dashboard = () => {
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`);
       }
-      const data = (await response.json()) as Overview;
+      const data = parseDashboardOverview(await response.json());
+      if (!data) {
+        throw new Error("Invalid overview response");
+      }
       setOverview(data);
       setError(null);
     } catch (err) {
@@ -162,7 +125,10 @@ export const Dashboard = () => {
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`);
       }
-      const data = (await response.json()) as HealthStatus[];
+      const data = parseDashboardHealthStatusList(await response.json());
+      if (!data) {
+        throw new Error("Invalid health status response");
+      }
       setHealthStatuses(data);
       setHealthError(null);
       setHealthUpdatedAt(new Date().toISOString());
@@ -185,7 +151,10 @@ export const Dashboard = () => {
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`);
       }
-      const data = (await response.json()) as HealthProbeBucket[];
+      const data = parseDashboardHealthProbeBucketList(await response.json());
+      if (!data) {
+        throw new Error("Invalid health probe trend response");
+      }
       setHealthProbeBuckets(data);
       setHealthProbeError(null);
       setHealthProbeUpdatedAt(new Date().toISOString());
@@ -205,7 +174,10 @@ export const Dashboard = () => {
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`);
       }
-      const data = (await response.json()) as MetricsBucket[];
+      const data = parseMetricsBucketList(await response.json());
+      if (!data) {
+        throw new Error("Invalid metrics response");
+      }
       setMetricsBuckets(data);
       setMetricsError(null);
       setMetricsUpdatedAt(new Date().toISOString());
@@ -225,7 +197,10 @@ export const Dashboard = () => {
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`);
       }
-      const data = (await response.json()) as AgentStatus[];
+      const data = parseAgentList(await response.json());
+      if (!data) {
+        throw new Error("Invalid agent response");
+      }
       setAgentStatuses(data);
       setAgentError(null);
       setAgentUpdatedAt(new Date().toISOString());
@@ -245,7 +220,10 @@ export const Dashboard = () => {
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`);
       }
-      const data = (await response.json()) as AlertPolicy[];
+      const data = parseDashboardAlertPolicyList(await response.json());
+      if (!data) {
+        throw new Error("Invalid alert policy response");
+      }
       setAlertPolicies(data);
       setAlertError(null);
       setAlertUpdatedAt(new Date().toISOString());

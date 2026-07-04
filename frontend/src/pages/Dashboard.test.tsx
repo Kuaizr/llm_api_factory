@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Console } from "./Console";
+import { Dashboard } from "./Dashboard";
 
 type FetchMockOptions = {
   bootstrapStatus?: number;
@@ -265,5 +266,22 @@ describe("Console layout", () => {
       url.toString().includes("/auth/password")
     );
     expect(updateCall).toBeDefined();
+  });
+
+  it("rejects malformed dashboard overview payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/admin/overview")) {
+          return buildJsonResponse({ endpoints: "broken" });
+        }
+        return buildJsonResponse([]);
+      })
+    );
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText("无法获取概览数据")).toBeInTheDocument();
   });
 });
