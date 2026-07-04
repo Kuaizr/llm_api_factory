@@ -143,11 +143,20 @@ async def _resolve_host_ips(host: str, port: int | None) -> list[ResolvedAddress
     return addresses
 
 
+async def _hostname_resolves_to_global(
+    host: str,
+    port: int | None,
+    resolve_host_ips: ResolveHostFunc,
+) -> bool:
+    addresses = await resolve_host_ips(host, port)
+    return bool(addresses) and all(address.is_global for address in addresses)
+
+
 async def _is_target_allowed_for_request(
     url: str,
     allowed_targets: str | None,
     *,
-    resolve_host_ips: ResolveHostFunc = _resolve_host_ips,
+    resolve_host_ips: ResolveHostFunc | None = None,
 ) -> bool:
     target = _parse_target(url)
     if target is None:
@@ -155,19 +164,24 @@ async def _is_target_allowed_for_request(
 
     host, port = target
     entries = _target_entries(allowed_targets)
+    resolver = resolve_host_ips or _resolve_host_ips
     if _is_restricted_literal_target(host):
         return any(entry != "*" and _entry_matches(host, port, entry) for entry in entries)
 
-    if any(entry != "*" and _entry_matches(host, port, entry) for entry in entries):
-        return True
+    matching_entries = [
+        entry for entry in entries if entry != "*" and _entry_matches(host, port, entry)
+    ]
+    if matching_entries:
+        if _parse_ip_literal(host) is not None:
+            return True
+        return await _hostname_resolves_to_global(host, port, resolver)
     if not _has_wildcard_entry(entries):
         return False
 
     if _parse_ip_literal(host) is not None:
         return True
 
-    addresses = await resolve_host_ips(host, port)
-    return bool(addresses) and all(address.is_global for address in addresses)
+    return await _hostname_resolves_to_global(host, port, resolver)
 
 
 async def _send_error(

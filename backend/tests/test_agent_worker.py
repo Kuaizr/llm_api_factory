@@ -1,4 +1,5 @@
 import base64
+from ipaddress import ip_address
 
 import httpx
 import pytest
@@ -18,6 +19,10 @@ class FakeSender:
 
     async def send(self, payload: dict) -> None:
         self.messages.append(payload)
+
+
+async def resolve_public_host(_host: str, _port: int | None):
+    return [ip_address("93.184.216.34")]
 
 
 @pytest.mark.asyncio
@@ -45,6 +50,7 @@ async def test_handle_proxy_request_non_stream(monkeypatch: pytest.MonkeyPatch) 
         "get_settings",
         lambda: Settings(agent_allowed_targets="api.example.com"),
     )
+    monkeypatch.setattr(agent_worker, "_resolve_host_ips", resolve_public_host)
     async with httpx.AsyncClient() as client:
         await handle_proxy_request(payload, client, sender.send)
 
@@ -82,6 +88,7 @@ async def test_handle_proxy_request_stream(monkeypatch: pytest.MonkeyPatch) -> N
         "get_settings",
         lambda: Settings(agent_allowed_targets="api.example.com"),
     )
+    monkeypatch.setattr(agent_worker, "_resolve_host_ips", resolve_public_host)
     async with httpx.AsyncClient() as client:
         await handle_proxy_request(payload, client, sender.send)
 
@@ -146,8 +153,6 @@ def test_target_allowlist_allows_restricted_targets_when_explicit() -> None:
 @pytest.mark.asyncio
 async def test_target_allowlist_wildcard_rejects_hostname_resolving_private() -> None:
     async def parsed_resolver(_host: str, _port: int | None):
-        from ipaddress import ip_address
-
         return [ip_address("10.0.0.5")]
 
     assert (
@@ -163,8 +168,6 @@ async def test_target_allowlist_wildcard_rejects_hostname_resolving_private() ->
 @pytest.mark.asyncio
 async def test_target_allowlist_wildcard_allows_hostname_resolving_public() -> None:
     async def parsed_resolver(_host: str, _port: int | None):
-        from ipaddress import ip_address
-
         return [ip_address("93.184.216.34")]
 
     assert (
@@ -178,15 +181,42 @@ async def test_target_allowlist_wildcard_allows_hostname_resolving_public() -> N
 
 
 @pytest.mark.asyncio
-async def test_target_allowlist_explicit_hostname_does_not_resolve_dns() -> None:
-    async def failing_resolver(_host: str, _port: int | None):
-        raise AssertionError("explicit host should not resolve DNS")
+async def test_target_allowlist_explicit_hostname_rejects_private_dns() -> None:
+    async def parsed_resolver(_host: str, _port: int | None):
+        return [ip_address("10.0.0.5")]
 
     assert (
         await _is_target_allowed_for_request(
             "https://api.example.com/v1/models",
             "api.example.com",
-            resolve_host_ips=failing_resolver,
+            resolve_host_ips=parsed_resolver,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_allowlist_explicit_hostname_allows_public_dns() -> None:
+    assert (
+        await _is_target_allowed_for_request(
+            "https://api.example.com/v1/models",
+            "api.example.com",
+            resolve_host_ips=resolve_public_host,
         )
         is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_allowlist_wildcard_domain_rejects_private_dns() -> None:
+    async def parsed_resolver(_host: str, _port: int | None):
+        return [ip_address("172.16.0.10")]
+
+    assert (
+        await _is_target_allowed_for_request(
+            "https://llm.example.com/v1/models",
+            "*.example.com",
+            resolve_host_ips=parsed_resolver,
+        )
+        is False
     )

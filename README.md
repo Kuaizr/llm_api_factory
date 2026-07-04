@@ -415,6 +415,8 @@ curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts
 | `--repo-ref` | Agent 代码分支、tag 或 commit |
 | `--no-systemd` | 不注册 systemd，用 nohup 后台运行 |
 
+Agent 会对 hostname 目标做 DNS 解析，解析结果必须全部是公网地址；需要访问内网 mock/API 服务时，请显式配置对应 IP、IP:port 或 CIDR。
+
 ### 手动运行
 
 ```bash
