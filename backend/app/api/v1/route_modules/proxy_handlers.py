@@ -555,6 +555,34 @@ async def _proxy_openai_request(
     client = await get_http_client()
     attempt_order = 0
 
+    async def reserve_candidate_or_raise(
+        candidate: RouteCandidate,
+        attempt_order: int,
+        attempt_start: float,
+        agent_node: str | None,
+        upstream_url: str,
+    ) -> bool:
+        if await router_service.reserve_candidate_attempt(candidate):
+            return True
+        _record_attempt_log(
+            request_id=request_id,
+            trace_id=trace_id,
+            model_alias=model_alias,
+            candidate=candidate,
+            requested_rule_group=requested_rule_group,
+            rule_group=effective_group,
+            attempt_order=attempt_order,
+            status_code=None,
+            outcome="fallback" if candidate != candidates[-1] else "error",
+            failure_reason="rpm_limit",
+            latency_ms=_elapsed_ms(attempt_start),
+            agent_node=agent_node,
+            upstream_url=upstream_url,
+        )
+        if candidate != candidates[-1]:
+            return False
+        raise HTTPException(status_code=429, detail="API key rate limit exceeded")
+
     for candidate in candidates:
         upstream_payload = payload
         should_rewrite_body_model = (
@@ -627,6 +655,14 @@ async def _proxy_openai_request(
             for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
                 attempt_order += 1
                 attempt_start = time.perf_counter()
+                if not await reserve_candidate_or_raise(
+                    candidate,
+                    attempt_order,
+                    attempt_start,
+                    agent_name,
+                    url,
+                ):
+                    break
                 try:
                     agent_request = AgentRequest(
                         method=request.method,
@@ -960,6 +996,14 @@ async def _proxy_openai_request(
         for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
             attempt_order += 1
             attempt_start = time.perf_counter()
+            if not await reserve_candidate_or_raise(
+                candidate,
+                attempt_order,
+                attempt_start,
+                agent_name,
+                url,
+            ):
+                break
             try:
                 request_obj = client.build_request(
                     request.method,

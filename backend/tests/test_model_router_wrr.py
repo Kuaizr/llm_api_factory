@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -39,6 +40,10 @@ class CountingRedis(MemoryRedis):
 class APIKeyStub:
     id: int
     weight: int
+    rpm_limit: int | None = None
+    daily_limit: int | None = None
+    used_today: int = 0
+    used_today_date: date | None = None
 
 
 @dataclass
@@ -163,6 +168,44 @@ async def test_filter_available_candidates_batches_circuit_lookup() -> None:
     assert [candidate.api_key.id for candidate in available] == [1, 3]
     assert redis.mget_count == 1
     assert redis.get_count == 0
+
+
+@pytest.mark.asyncio
+async def test_filter_available_candidates_applies_daily_and_rpm_limits() -> None:
+    redis = CountingRedis()
+    router = ModelRouter(CircuitBreaker(redis, settings=Settings()))
+    today = datetime.now(timezone.utc).date()
+    candidates = build_candidates([1, 1, 1])
+    candidates[0].api_key.daily_limit = 10
+    candidates[0].api_key.used_today = 10
+    candidates[0].api_key.used_today_date = today
+    candidates[1].api_key.daily_limit = 10
+    candidates[1].api_key.used_today = 10
+    candidates[1].api_key.used_today_date = date(2024, 1, 1)
+    candidates[2].api_key.rpm_limit = 1
+    await redis.set(ModelRouter._rpm_state_key(candidates[2].api_key.id), "1")
+
+    available = await router._filter_available_candidates(
+        session=None,
+        candidates=candidates,
+        effective_group="default",
+        target_key_ids=[1, 2, 3],
+    )
+
+    assert [candidate.api_key.id for candidate in available] == [2]
+    assert redis.mget_count == 2
+
+
+@pytest.mark.asyncio
+async def test_reserve_candidate_attempt_counts_rpm_window() -> None:
+    redis = CountingRedis()
+    router = ModelRouter(CircuitBreaker(redis, settings=Settings()))
+    candidate = build_candidates([1])[0]
+    candidate.api_key.rpm_limit = 2
+
+    assert await router.reserve_candidate_attempt(candidate) is True
+    assert await router.reserve_candidate_attempt(candidate) is True
+    assert await router.reserve_candidate_attempt(candidate) is False
 
 
 def test_route_candidate_reports_direct_execution_by_default() -> None:

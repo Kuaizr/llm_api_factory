@@ -50,6 +50,7 @@ class RouteCandidate:
 DEFAULT_RULE_STRATEGY = "weighted_round_robin"
 SEQUENTIAL_STATE_TTL_SECONDS = 86400
 WRR_STATE_MAX_POOLS = 1024
+RPM_STATE_TTL_SECONDS = 120
 
 _wrr_state: OrderedDict[str, dict[int, int]] = OrderedDict()
 
@@ -243,10 +244,19 @@ class ModelRouter:
             [candidate.api_key.id for candidate in eligible]
         )
 
-        available: list[RouteCandidate] = []
+        circuit_available: list[RouteCandidate] = []
         for candidate in eligible:
             api_key = candidate.api_key
             if not circuit_availability.get(api_key.id, True):
+                continue
+            circuit_available.append(candidate)
+
+        rpm_counts = await self._load_rpm_counts(circuit_available)
+
+        available: list[RouteCandidate] = []
+        for candidate in circuit_available:
+            api_key = candidate.api_key
+            if not self._passes_rpm_limit(api_key, rpm_counts.get(api_key.id, 0)):
                 continue
             if candidate.execution_mode == "via_agent":
                 agent_name = candidate.agent_name
@@ -268,6 +278,56 @@ class ModelRouter:
             used_today = 0
         daily_limit = getattr(api_key, "daily_limit", None)
         return daily_limit is None or used_today < daily_limit
+
+    @staticmethod
+    def _rpm_limit(api_key: APIKey) -> int | None:
+        raw_limit = getattr(api_key, "rpm_limit", None)
+        if raw_limit is None:
+            return None
+        try:
+            return max(0, int(raw_limit))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _rpm_state_key(api_key_id: int, now: datetime | None = None) -> str:
+        timestamp = now or datetime.now(timezone.utc)
+        window = timestamp.astimezone(timezone.utc).strftime("%Y%m%d%H%M")
+        return f"rate:rpm:{api_key_id}:{window}"
+
+    @classmethod
+    def _passes_rpm_limit(cls, api_key: APIKey, current_count: int) -> bool:
+        rpm_limit = cls._rpm_limit(api_key)
+        return rpm_limit is None or current_count < rpm_limit
+
+    async def _load_rpm_counts(
+        self, candidates: Sequence[RouteCandidate]
+    ) -> dict[int, int]:
+        ids_and_keys = [
+            (candidate.api_key.id, self._rpm_state_key(candidate.api_key.id))
+            for candidate in candidates
+            if self._rpm_limit(candidate.api_key) is not None
+        ]
+        if not ids_and_keys:
+            return {}
+        values = await self.circuit_breaker.redis.mget([key for _, key in ids_and_keys])
+        counts: dict[int, int] = {}
+        for (api_key_id, _), value in zip(ids_and_keys, values, strict=False):
+            try:
+                counts[api_key_id] = int(value or 0)
+            except (TypeError, ValueError):
+                counts[api_key_id] = 0
+        return counts
+
+    async def reserve_candidate_attempt(self, candidate: RouteCandidate) -> bool:
+        rpm_limit = self._rpm_limit(candidate.api_key)
+        if rpm_limit is None:
+            return True
+        key = self._rpm_state_key(candidate.api_key.id)
+        count = await self.circuit_breaker.redis.incr(key)
+        if count == 1:
+            await self.circuit_breaker.redis.expire(key, RPM_STATE_TTL_SECONDS)
+        return count <= rpm_limit
 
     @staticmethod
     def _filter_provider_candidates(
