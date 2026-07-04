@@ -654,6 +654,55 @@ type RuleAccessKey = {
   created_at: string;
 };
 
+const parseRuleAccessKey = (value: unknown): RuleAccessKey | null => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  const id = item.id;
+  const ruleId = item.rule_id;
+  const name = item.name;
+  const keyPreview = item.key_preview;
+  const key = item.key;
+  const isActive = item.is_active;
+  const createdAt = item.created_at;
+  if (
+    typeof id !== "number" ||
+    typeof ruleId !== "number" ||
+    !(typeof name === "string" || name === null) ||
+    typeof keyPreview !== "string" ||
+    !(key === undefined || typeof key === "string" || key === null) ||
+    typeof isActive !== "boolean" ||
+    typeof createdAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id,
+    rule_id: ruleId,
+    name: name as string | null,
+    key_preview: keyPreview as string,
+    key: key as string | null | undefined,
+    is_active: isActive,
+    created_at: createdAt,
+  };
+};
+
+const parseRuleAccessKeyList = (value: unknown): RuleAccessKey[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const items: RuleAccessKey[] = [];
+  for (const item of value) {
+    const parsed = parseRuleAccessKey(item);
+    if (!parsed) {
+      return null;
+    }
+    items.push(parsed);
+  }
+  return items;
+};
+
 const RuleAccessKeysModal = ({
   rule,
   isAdmin,
@@ -682,7 +731,13 @@ const RuleAccessKeysModal = ({
         setError("访问 Key 获取失败。");
         return;
       }
-      setItems((await response.json()) as RuleAccessKey[]);
+      const data = parseRuleAccessKeyList(await response.json());
+      if (!data) {
+        setError("访问 Key 响应格式异常。");
+        setItems([]);
+        return;
+      }
+      setItems(data);
     } catch {
       setError("访问 Key 获取失败。");
     } finally {
@@ -708,7 +763,11 @@ const RuleAccessKeysModal = ({
         setError("访问 Key 创建失败。");
         return;
       }
-      const item = (await response.json()) as RuleAccessKey;
+      const item = parseRuleAccessKey(await response.json());
+      if (!item) {
+        setError("访问 Key 响应格式异常。");
+        return;
+      }
       setItems((prev) => [item, ...prev]);
       setNewName("");
     } catch {

@@ -33,6 +33,95 @@ export interface FactoryAccessKeyIssue {
   created_at: string;
 }
 
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+const parseFactoryAccessKeyItem = (
+  value: unknown
+): FactoryAccessKeyItem | null => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  const id = item.id;
+  const name = item.name;
+  const keyPreview = item.key_preview;
+  const key = item.key;
+  const ruleGroups = item.rule_groups;
+  const isActive = item.is_active;
+  const createdAt = item.created_at;
+  if (
+    typeof id !== "number" ||
+    !(typeof name === "string" || name === null) ||
+    typeof keyPreview !== "string" ||
+    !(typeof key === "string" || key === null) ||
+    !isStringList(ruleGroups) ||
+    typeof isActive !== "boolean" ||
+    typeof createdAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id,
+    name: name as string | null,
+    key_preview: keyPreview as string,
+    key: key as string | null,
+    rule_groups: ruleGroups as string[],
+    is_active: isActive,
+    created_at: createdAt,
+  };
+};
+
+const parseFactoryAccessKeyList = (
+  value: unknown
+): FactoryAccessKeyItem[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const items: FactoryAccessKeyItem[] = [];
+  for (const item of value) {
+    const parsed = parseFactoryAccessKeyItem(item);
+    if (!parsed) {
+      return null;
+    }
+    items.push(parsed);
+  }
+  return items;
+};
+
+const parseFactoryAccessKeyIssue = (
+  value: unknown
+): FactoryAccessKeyIssue | null => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  const id = item.id;
+  const name = item.name;
+  const key = item.key;
+  const ruleGroups = item.rule_groups;
+  const isActive = item.is_active;
+  const createdAt = item.created_at;
+  if (
+    typeof id !== "number" ||
+    !(typeof name === "string" || name === null) ||
+    typeof key !== "string" ||
+    !isStringList(ruleGroups) ||
+    typeof isActive !== "boolean" ||
+    typeof createdAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id,
+    name: name as string | null,
+    key: key as string,
+    rule_groups: ruleGroups as string[],
+    is_active: isActive,
+    created_at: createdAt,
+  };
+};
+
 export const FactoryKeysPanel = ({
   isAdmin,
   authToken,
@@ -61,7 +150,12 @@ export const FactoryKeysPanel = ({
         setKeys([]);
         return;
       }
-      const data = (await response.json()) as FactoryAccessKeyItem[];
+      const data = parseFactoryAccessKeyList(await response.json());
+      if (!data) {
+        setError("访问 Key 列表响应格式异常");
+        setKeys([]);
+        return;
+      }
       setKeys(data);
     } catch {
       setError("无法加载访问 Key 列表");
@@ -87,7 +181,11 @@ export const FactoryKeysPanel = ({
       setError("创建访问 Key 失败");
       return;
     }
-    const data = (await response.json()) as FactoryAccessKeyIssue;
+    const data = parseFactoryAccessKeyIssue(await response.json());
+    if (!data) {
+      setError("创建访问 Key 响应格式异常");
+      return;
+    }
     setIssuedKey(data);
     await loadKeys();
   };
@@ -119,7 +217,11 @@ export const FactoryKeysPanel = ({
       setError("轮换访问 Key 失败");
       return;
     }
-    const data = (await response.json()) as FactoryAccessKeyIssue;
+    const data = parseFactoryAccessKeyIssue(await response.json());
+    if (!data) {
+      setError("轮换访问 Key 响应格式异常");
+      return;
+    }
     setIssuedKey(data);
     await loadKeys();
   };
