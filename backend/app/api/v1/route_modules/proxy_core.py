@@ -19,6 +19,7 @@ from app.api.v1.route_modules.proxy_attempts import (
     record_attempt_log as _record_attempt_log,
     reserve_candidate_attempt_or_raise as _reserve_candidate_attempt_or_raise,
 )
+from app.api.v1.route_modules.proxy_context import prepare_candidate_request_context
 from app.api.v1.route_modules.proxy_failures import (
     CANDIDATE_FALLBACK_STATUSES,
     CIRCUIT_BREAKER_STATUSES,
@@ -29,9 +30,7 @@ from app.api.v1.route_modules.proxy_failures import (
 )
 from app.api.v1.route_modules.proxy_payloads import (
     extract_requested_rule_group,
-    is_stream_request,
     parse_request_payload,
-    prepare_upstream_payload_and_body,
     resolve_model_alias,
 )
 from app.api.v1.route_modules.proxy_trace import (
@@ -41,16 +40,11 @@ from app.api.v1.route_modules.proxy_trace import (
 )
 from app.api.v1.route_proxy_helpers import (
     _apply_oauth_access_token,
-    _build_debug_headers,
-    _build_target_url,
-    _build_upstream_headers,
     _filter_response_headers,
-    _get_agent_name,
     _merge_headers,
     _stream_response,
 )
 from app.core.http_client import get_http_client
-from app.core.providers import normalize_provider_name
 from app.core.redis import get_redis
 from app.services.agent_transport import (
     AgentRequest,
@@ -163,23 +157,21 @@ async def _proxy_openai_request(
     attempt_order = 0
 
     for candidate in candidates:
-        upstream_payload, upstream_body = prepare_upstream_payload_and_body(
-            payload,
-            raw_body,
-            candidate,
-            rewrite_model=rewrite_model,
-        )
-
-        headers = _build_upstream_headers(
-            request.headers, candidate.endpoint, candidate.api_key.key
-        )
-        oauth_enabled = False
         try:
-            headers, oauth_enabled = await _apply_oauth_access_token(
-                headers,
-                candidate.endpoint,
-                redis,
-                client,
+            candidate_context = await prepare_candidate_request_context(
+                request,
+                payload,
+                raw_body,
+                candidate,
+                rewrite_model=rewrite_model,
+                trace_id=trace_id,
+                request_id=request_id,
+                model_alias=model_alias,
+                include_internal_debug=include_internal_debug,
+                path_prefix=path_prefix,
+                target_path_rewriter=target_path_rewriter,
+                redis=redis,
+                client=client,
             )
         except Exception as exc:
             await circuit_breaker.record_failure(candidate.api_key.id)
@@ -187,32 +179,14 @@ async def _proxy_openai_request(
                 continue
             raise HTTPException(status_code=502, detail="OAuth token refresh failed") from exc
 
-        if not any(key.lower() == "x-trace-id" for key in headers):
-            headers["X-Trace-Id"] = trace_id
-        target_path = (
-            target_path_rewriter(request.url.path, candidate)
-            if target_path_rewriter is not None
-            else None
-        )
-        url = _build_target_url(
-            candidate.endpoint.base_url,
-            request,
-            path_prefix=path_prefix,
-            endpoint=candidate.endpoint,
-            path_override=target_path,
-        )
-        is_stream = is_stream_request(request, upstream_payload)
-        debug_headers = _build_debug_headers(
-            request_id,
-            trace_id,
-            candidate,
-            model_alias,
-            include_internal=include_internal_debug,
-        )
-        agent_name = _get_agent_name(candidate.endpoint)
-        candidate_provider = normalize_provider_name(
-            getattr(candidate.endpoint, "provider", None)
-        )
+        upstream_body = candidate_context.upstream_body
+        headers = candidate_context.headers
+        oauth_enabled = candidate_context.oauth_enabled
+        url = candidate_context.url
+        is_stream = candidate_context.is_stream
+        debug_headers = candidate_context.debug_headers
+        agent_name = candidate_context.agent_name
+        candidate_provider = candidate_context.candidate_provider
 
         if agent_name:
             agent_manager = get_agent_manager()

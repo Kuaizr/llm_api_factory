@@ -21,6 +21,7 @@ app/api/v1/route_modules/health_handlers.py
 app/api/v1/route_modules/proxy.py
 app/api/v1/route_modules/proxy_agent_streams.py
 app/api/v1/route_modules/proxy_attempts.py
+app/api/v1/route_modules/proxy_context.py
 app/api/v1/route_modules/proxy_core.py
 app/api/v1/route_modules/proxy_entrypoints.py
 app/api/v1/route_modules/proxy_failures.py
