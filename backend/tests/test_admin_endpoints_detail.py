@@ -832,6 +832,98 @@ async def test_api_key_create_encrypts_storage_and_direct_test_decrypts(
 
 
 @pytest.mark.asyncio
+async def test_admin_endpoint_oauth_secret_is_encrypted_and_masked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post(
+            "/admin/endpoints",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "name": "OAuthEndpoint",
+                "base_url": "https://api.example.com/v1",
+                "provider": "custom",
+                "oauth_config": {
+                    "token_url": "https://auth.example.com/oauth/token",
+                    "client_id": "client",
+                    "client_secret": "oauth-secret",
+                },
+            },
+        )
+
+        assert create_response.status_code == 200
+        create_payload = create_response.json()
+        endpoint_id = create_payload["id"]
+        assert create_payload["oauth_config"] == {
+            "token_url": "https://auth.example.com/oauth/token",
+            "client_id": "client",
+            "client_secret": "********",
+        }
+        assert "oauth-secret" not in str(create_payload)
+
+        stored_endpoint = await session.get(Endpoint, endpoint_id)
+        assert stored_endpoint is not None
+        stored_oauth = json.loads(stored_endpoint.oauth_config or "{}")
+        original_encrypted_secret = stored_oauth["client_secret"]
+        assert original_encrypted_secret.startswith(ENCRYPTED_SECRET_PREFIX)
+        assert decrypt_secret_value(original_encrypted_secret, settings=settings) == "oauth-secret"
+
+        list_response = await client.get(
+            "/admin/endpoints",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert list_response.status_code == 200
+        listed = next(item for item in list_response.json() if item["id"] == endpoint_id)
+        assert listed["oauth_config"]["client_secret"] == "********"
+        assert "oauth-secret" not in str(listed)
+
+        update_response = await client.patch(
+            f"/admin/endpoints/{endpoint_id}",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "oauth_config": {
+                    "token_url": "https://auth.example.com/oauth/token",
+                    "client_id": "client-updated",
+                    "client_secret": "********",
+                },
+            },
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["oauth_config"] == {
+            "token_url": "https://auth.example.com/oauth/token",
+            "client_id": "client-updated",
+            "client_secret": "********",
+        }
+
+    await session.refresh(stored_endpoint)
+    updated_oauth = json.loads(stored_endpoint.oauth_config or "{}")
+    assert updated_oauth["client_id"] == "client-updated"
+    assert updated_oauth["client_secret"] == original_encrypted_secret
+    assert decrypt_secret_value(updated_oauth["client_secret"], settings=settings) == "oauth-secret"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_api_key_delete_removes_related_request_logs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
