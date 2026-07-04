@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.base import Base
 from app.db.models import APIKey, Endpoint, ModelMap
+from app.db import session as db_session
 from app.db.session import create_database_engine
 
 
@@ -14,6 +15,26 @@ async def test_sqlite_engine_enables_foreign_key_checks() -> None:
         async with engine.connect() as conn:
             result = await conn.execute(text("PRAGMA foreign_keys"))
             assert result.scalar_one() == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_file_engine_uses_wal_and_busy_timeout(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "factory.db"
+    monkeypatch.setattr(db_session.settings, "sqlite_busy_timeout_ms", 1234)
+    monkeypatch.setattr(db_session.settings, "sqlite_journal_mode", "WAL")
+    engine = create_database_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    try:
+        async with engine.connect() as conn:
+            busy_timeout = await conn.execute(text("PRAGMA busy_timeout"))
+            journal_mode = await conn.execute(text("PRAGMA journal_mode"))
+
+            assert busy_timeout.scalar_one() == 1234
+            assert journal_mode.scalar_one().lower() == "wal"
     finally:
         await engine.dispose()
 

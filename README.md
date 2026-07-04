@@ -172,6 +172,8 @@ uv run uvicorn app.main:app --reload --port 8000
 export LLM_MASTER_AUTH_TOKEN="your-admin-token"
 export LLM_DATA_ENCRYPTION_KEY="long-random-secret-for-db-secrets"
 export LLM_DATABASE_URL="sqlite+aiosqlite:///./llm_api_factory.db"
+export LLM_SQLITE_BUSY_TIMEOUT_MS="5000"
+export LLM_SQLITE_JOURNAL_MODE="WAL"
 export LLM_REDIS_URL="redis://localhost:6379/0"
 ```
 
@@ -180,6 +182,8 @@ export LLM_REDIS_URL="redis://localhost:6379/0"
 ```text
 backend/llm_api_factory.db
 ```
+
+SQLite 连接默认启用外键约束、`busy_timeout=5000` 和 `journal_mode=WAL`，用于降低请求日志写入时的锁等待失败概率。高并发生产环境仍建议迁移到 PostgreSQL。
 
 上游 provider API key 和 OAuth `client_secret` 会以 `enc:v1:` 前缀加密后写入数据库。加密密钥优先使用 `LLM_DATA_ENCRYPTION_KEY`，未配置时回退到 `LLM_MASTER_AUTH_TOKEN`。生产环境建议显式配置 `LLM_DATA_ENCRYPTION_KEY`，并保持重启前后一致。
 

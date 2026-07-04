@@ -10,6 +10,8 @@ class Settings(BaseSettings):
         f"sqlite+aiosqlite:///{(Path(__file__).resolve().parents[2] / 'llm_api_factory.db').as_posix()}"
     )
     redis_url: str = "redis://localhost:6379/0"
+    sqlite_busy_timeout_ms: int = 5000
+    sqlite_journal_mode: str = "WAL"
     master_auth_token: str | None = None
     admin_session_ttl_seconds: int = 86400
     admin_legacy_master_bearer_enabled: bool = False
