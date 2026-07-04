@@ -226,7 +226,7 @@ class ModelRouter:
         agent_state = await self._load_agent_route_state(session, via_agent_names)
         agent_manager = get_agent_manager()
 
-        available: list[RouteCandidate] = []
+        eligible: list[RouteCandidate] = []
         for candidate in candidates:
             api_key = candidate.api_key
             if not target_key_ids:
@@ -235,7 +235,18 @@ class ModelRouter:
                         continue
                 elif getattr(api_key, "rule_group", "default") != effective_group:
                     continue
-            if not await self._is_key_available(api_key):
+            if not self._passes_key_limits(api_key):
+                continue
+            eligible.append(candidate)
+
+        circuit_availability = await self.circuit_breaker.are_available(
+            [candidate.api_key.id for candidate in eligible]
+        )
+
+        available: list[RouteCandidate] = []
+        for candidate in eligible:
+            api_key = candidate.api_key
+            if not circuit_availability.get(api_key.id, True):
                 continue
             if candidate.execution_mode == "via_agent":
                 agent_name = candidate.agent_name
@@ -248,6 +259,15 @@ class ModelRouter:
                     continue
             available.append(candidate)
         return available
+
+    @staticmethod
+    def _passes_key_limits(api_key: APIKey) -> bool:
+        today = datetime.now(timezone.utc).date()
+        used_today = getattr(api_key, "used_today", 0) or 0
+        if getattr(api_key, "used_today_date", None) != today:
+            used_today = 0
+        daily_limit = getattr(api_key, "daily_limit", None)
+        return daily_limit is None or used_today < daily_limit
 
     @staticmethod
     def _filter_provider_candidates(
@@ -270,11 +290,7 @@ class ModelRouter:
         return list(candidates)
 
     async def _is_key_available(self, api_key: APIKey) -> bool:
-        today = datetime.now(timezone.utc).date()
-        used_today = api_key.used_today or 0
-        if api_key.used_today_date != today:
-            used_today = 0
-        if api_key.daily_limit is not None and used_today >= api_key.daily_limit:
+        if not self._passes_key_limits(api_key):
             return False
         return await self.circuit_breaker.is_available(api_key.id)
 

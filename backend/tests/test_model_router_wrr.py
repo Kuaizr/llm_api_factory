@@ -2,7 +2,9 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.core.config import Settings
 from app.core.redis import MemoryRedis
+from app.services.circuit_breaker import CircuitBreaker
 from app.services import router as router_module
 from app.services.router import ModelRouter, RouteCandidate
 
@@ -13,6 +15,24 @@ class CircuitBreakerStub:
 
     async def is_available(self, _api_key_id: int) -> bool:
         return True
+
+    async def are_available(self, api_key_ids: list[int]) -> dict[int, bool]:
+        return {api_key_id: True for api_key_id in api_key_ids}
+
+
+class CountingRedis(MemoryRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.get_count = 0
+        self.mget_count = 0
+
+    async def get(self, key: str) -> str | None:
+        self.get_count += 1
+        return await super().get(key)
+
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        self.mget_count += 1
+        return await super().mget(keys)
 
 
 @dataclass
@@ -124,6 +144,25 @@ async def test_sequential_strategy_persists_success_as_active_key() -> None:
         target_key_ids=target_key_ids,
     )
     assert [candidate.api_key.id for candidate in second_order] == [2, 3, 1]
+
+
+@pytest.mark.asyncio
+async def test_filter_available_candidates_batches_circuit_lookup() -> None:
+    redis = CountingRedis()
+    await redis.set("circuit:2:state", "open")
+    router = ModelRouter(CircuitBreaker(redis, settings=Settings()))
+    candidates = build_candidates([1, 1, 1])
+
+    available = await router._filter_available_candidates(
+        session=None,
+        candidates=candidates,
+        effective_group="default",
+        target_key_ids=[1, 2, 3],
+    )
+
+    assert [candidate.api_key.id for candidate in available] == [1, 3]
+    assert redis.mget_count == 1
+    assert redis.get_count == 0
 
 
 def test_route_candidate_reports_direct_execution_by_default() -> None:

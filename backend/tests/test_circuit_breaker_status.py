@@ -12,6 +12,9 @@ class MemoryRedis:
     async def get(self, key: str) -> str | None:
         return self.store.get(key)
 
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        return [self.store.get(key) for key in keys]
+
     async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool:
         if nx and key in self.store:
             return False
@@ -63,3 +66,13 @@ async def test_get_status_reflects_failures_and_state() -> None:
     status = await breaker.get_status(42)
     assert status.state == "closed"
     assert status.failures == 0
+
+
+@pytest.mark.asyncio
+async def test_are_available_batches_circuit_state_lookup() -> None:
+    redis = MemoryRedis()
+    breaker = CircuitBreaker(redis, settings=Settings())
+
+    await redis.set("circuit:7:state", "open")
+
+    assert await breaker.are_available([6, 7, 6]) == {6: True, 7: False}

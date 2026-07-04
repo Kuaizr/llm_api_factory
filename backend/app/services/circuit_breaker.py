@@ -46,6 +46,17 @@ class CircuitBreaker:
         state = self._decode(await self.redis.get(self._state_key(api_key_id)))
         return state != "open"
 
+    async def are_available(self, api_key_ids: list[int]) -> dict[int, bool]:
+        unique_ids = list(dict.fromkeys(api_key_ids))
+        if not unique_ids:
+            return {}
+        keys = [self._state_key(api_key_id) for api_key_id in unique_ids]
+        states = await self.redis.mget(keys)
+        return {
+            api_key_id: self._decode(state) != "open"
+            for api_key_id, state in zip(unique_ids, states, strict=False)
+        }
+
     async def get_state(self, api_key_id: int) -> str | None:
         return self._decode(await self.redis.get(self._state_key(api_key_id)))
 
