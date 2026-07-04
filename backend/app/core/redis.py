@@ -44,6 +44,8 @@ class MemoryRedis:
         for key in keys:
             self._purge(key)
             item = self._store.get(key)
+            if item:
+                self._store.move_to_end(key)
             value = item[0] if item else None
             values.append(value if isinstance(value, str) else None)
         return values

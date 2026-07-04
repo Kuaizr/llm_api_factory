@@ -89,6 +89,7 @@ tests/test_config_defaults.py
 tests/test_health_monitor.py
 tests/test_health_probe_timeseries.py
 tests/test_migrations.py
+tests/test_memory_redis.py
 tests/test_metrics_timeseries.py
 tests/test_model_router_wrr.py
 tests/test_openai_proxy_access_key_routes.py
