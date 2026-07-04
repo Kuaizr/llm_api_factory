@@ -19,6 +19,7 @@ app/api/v1/route_modules/auth_handlers.py
 app/api/v1/route_modules/health.py
 app/api/v1/route_modules/health_handlers.py
 app/api/v1/route_modules/proxy.py
+app/api/v1/route_modules/proxy_core.py
 app/api/v1/route_modules/proxy_handlers.py
 app/api/v1/route_modules/stats.py
 app/api/v1/route_modules/stats_handlers.py

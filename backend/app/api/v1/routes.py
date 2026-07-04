@@ -9,6 +9,7 @@ from app.api.v1.route_modules import (
     agent_handlers,
     auth_handlers,
     health_handlers,
+    proxy_core,
     proxy_handlers,
     stats_handlers,
 )
@@ -27,6 +28,7 @@ _COMPAT_MODULES = (
     agent_handlers,
     auth_handlers,
     health_handlers,
+    proxy_core,
     proxy_handlers,
     stats_handlers,
 )
