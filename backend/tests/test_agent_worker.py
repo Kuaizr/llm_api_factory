@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from app.services.agent_worker import handle_proxy_request
+from app.services.agent_worker import _is_target_allowed, handle_proxy_request
 from app.core.config import Settings
 
 
@@ -118,3 +118,22 @@ async def test_handle_proxy_request_rejects_disallowed_target(
     response = sender.messages[0]
     assert response["status_code"] == 403
     assert base64.b64decode(response["body"]) == b"target_not_allowed"
+
+
+def test_target_allowlist_wildcard_does_not_allow_restricted_ip_literals() -> None:
+    assert _is_target_allowed("https://api.openai.com/v1/models", "*") is True
+    assert _is_target_allowed("http://169.254.169.254/latest/meta-data", "*") is False
+    assert _is_target_allowed("http://127.0.0.1:9000/v1/models", "*") is False
+    assert _is_target_allowed("http://localhost:9000/v1/models", "*") is False
+
+
+def test_target_allowlist_allows_restricted_targets_when_explicit() -> None:
+    assert (
+        _is_target_allowed(
+            "http://169.254.169.254/latest/meta-data",
+            "169.254.169.254",
+        )
+        is True
+    )
+    assert _is_target_allowed("http://127.0.0.1:9000/v1/models", "127.0.0.0/8") is True
+    assert _is_target_allowed("http://localhost:9000/v1/models", "localhost") is True

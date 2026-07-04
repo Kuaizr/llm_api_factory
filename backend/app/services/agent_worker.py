@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from ipaddress import ip_address, ip_network
+from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -67,6 +67,21 @@ def _entry_matches(host: str, port: int | None, entry: str) -> bool:
     return normalized_host == entry_host
 
 
+def _parse_ip_literal(host: str) -> IPv4Address | IPv6Address | None:
+    try:
+        return ip_address(host.strip("[]"))
+    except ValueError:
+        return None
+
+
+def _is_restricted_literal_target(host: str) -> bool:
+    target_ip = _parse_ip_literal(host)
+    if target_ip is None:
+        normalized = host.lower().strip("[]")
+        return normalized == "localhost" or normalized.endswith(".localhost")
+    return not target_ip.is_global
+
+
 def _is_target_allowed(url: str, allowed_targets: str | None) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
@@ -76,7 +91,11 @@ def _is_target_allowed(url: str, allowed_targets: str | None) -> bool:
 
     host = parsed.hostname.lower()
     port = parsed.port
-    for entry in _target_entries(allowed_targets):
+    entries = _target_entries(allowed_targets)
+    if _is_restricted_literal_target(host):
+        return any(entry != "*" and _entry_matches(host, port, entry) for entry in entries)
+
+    for entry in entries:
         if _entry_matches(host, port, entry):
             return True
     return False
