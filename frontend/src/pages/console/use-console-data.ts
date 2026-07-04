@@ -294,14 +294,19 @@ export const useConsoleData = () => {
         setIsAdmin(false);
         return;
       }
-      const data = (await response.json()) as { token: string };
+      const data = (await response.json()) as { token?: unknown };
+      const issuedToken = typeof data.token === "string" ? data.token.trim() : "";
+      if (!issuedToken) {
+        setIsAdmin(false);
+        return;
+      }
       if (
         typeof localStorage !== "undefined" &&
         typeof localStorage.setItem === "function"
       ) {
-        localStorage.setItem(tokenStorageKey, data.token);
+        localStorage.setItem(tokenStorageKey, issuedToken);
       }
-      setToken(data.token);
+      setToken(issuedToken);
     } catch {
       setIsAdmin(false);
     }
