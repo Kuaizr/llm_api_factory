@@ -282,12 +282,18 @@ export const useConsoleActions = ({
   const handleDeleteKey = async (keyId: number) => {
     if (!isAdmin) return;
     if (!window.confirm("确认删除该 API Key 吗？")) return;
-    const response = await fetch(`${apiBase}/admin/api-keys/${keyId}`, {
-      method: "DELETE",
-      headers: buildHeaders(token),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`${apiBase}/admin/api-keys/${keyId}`, {
+        method: "DELETE",
+        headers: buildHeaders(token),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "删除 API Key 失败");
+        return;
+      }
       await refreshKeys();
+    } catch {
+      alert("删除 API Key 失败");
     }
   };
 
@@ -357,11 +363,15 @@ export const useConsoleActions = ({
   const handleDeleteEndpoint = async (endpoint: Endpoint) => {
     if (!isAdmin) return;
     if (!window.confirm(`确认删除端点 "${endpoint.name}" 吗？`)) return;
-    const response = await fetch(`${apiBase}/admin/endpoints/${endpoint.id}`, {
-      method: "DELETE",
-      headers: buildHeaders(token),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`${apiBase}/admin/endpoints/${endpoint.id}`, {
+        method: "DELETE",
+        headers: buildHeaders(token),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "删除 API 端点失败");
+        return;
+      }
       await loadEndpoints(token);
       if (manageKeysEndpoint?.id === endpoint.id) {
         setManageKeysEndpoint(null);
@@ -369,6 +379,8 @@ export const useConsoleActions = ({
       if (editingEndpoint?.id === endpoint.id) {
         setEditingEndpoint(null);
       }
+    } catch {
+      alert("删除 API 端点失败");
     }
   };
 
@@ -504,15 +516,21 @@ export const useConsoleActions = ({
     if (!window.confirm(`确认删除路由规则 "${rule.model_pattern}" 吗？`)) {
       return;
     }
-    const response = await fetch(`${apiBase}/admin/rules/${rule.id}`, {
-      method: "DELETE",
-      headers: buildHeaders(token),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`${apiBase}/admin/rules/${rule.id}`, {
+        method: "DELETE",
+        headers: buildHeaders(token),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "删除路由规则失败");
+        return;
+      }
       await loadRules(token);
-    }
-    if (editingRule?.id === rule.id) {
-      setEditingRule(null);
+      if (editingRule?.id === rule.id) {
+        setEditingRule(null);
+      }
+    } catch {
+      alert("删除路由规则失败");
     }
   };
 
@@ -521,12 +539,18 @@ export const useConsoleActions = ({
     if (!window.confirm(`确认删除 Agent 节点 "${agent.name}" 吗？`)) {
       return;
     }
-    const response = await fetch(`${apiBase}/admin/agents/${agent.id}`, {
-      method: "DELETE",
-      headers: buildHeaders(token),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`${apiBase}/admin/agents/${agent.id}`, {
+        method: "DELETE",
+        headers: buildHeaders(token),
+      });
+      if (!response.ok) {
+        await notifyApiError(response, "删除 Agent 节点失败");
+        return;
+      }
       await loadAgents(token);
+    } catch {
+      alert("删除 Agent 节点失败");
     }
   };
 

@@ -37,6 +37,16 @@ const rulePayload: RoutingRuleSavePayload = {
   dump_path: null,
 };
 
+const savedRule = {
+  id: 42,
+  model_pattern: "gpt-.*",
+  group_name: "default",
+  target_key_ids: [],
+  priority: 10,
+  strategy: "sequential",
+  is_active: true,
+};
+
 type ConsoleActionsOptions = Parameters<typeof useConsoleActions>[0];
 
 const buildActions = (overrides: Partial<ConsoleActionsOptions> = {}) => {
@@ -115,6 +125,29 @@ describe("console actions", () => {
 
     await expect(actions.handleSaveRule(rulePayload)).resolves.toBe(false);
     expect(alertSpy).toHaveBeenCalledWith("Unsafe dump path");
+    expect(loadRules).not.toHaveBeenCalled();
+    expect(setEditingRule).not.toHaveBeenCalled();
+  });
+
+  it("keeps rule editor open and surfaces backend detail on delete failure", async () => {
+    const setEditingRule = vi.fn();
+    const loadRules = vi.fn();
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ detail: "Rule is still in use" }, 409)))
+    );
+
+    const actions = buildActions({
+      editingRule: savedRule,
+      setEditingRule,
+      loadRules,
+    });
+
+    await actions.handleDeleteRule(savedRule);
+
+    expect(alertSpy).toHaveBeenCalledWith("Rule is still in use");
     expect(loadRules).not.toHaveBeenCalled();
     expect(setEditingRule).not.toHaveBeenCalled();
   });
