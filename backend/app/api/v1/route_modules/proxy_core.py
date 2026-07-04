@@ -2,8 +2,8 @@ from typing import Callable
 import time
 import uuid
 
-from fastapi import Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.route_helpers import (
@@ -26,15 +26,6 @@ from app.api.v1.route_modules.proxy_failures import (
     parse_json_object_bytes,
     semantic_failure_reason as detect_semantic_failure_reason,
     should_retry_same_candidate,
-)
-from app.api.v1.route_modules.proxy_gemini import (
-    extract_gemini_model_alias,
-    rewrite_gemini_model_path,
-)
-from app.api.v1.route_modules.proxy_models import (
-    build_gemini_models_response,
-    list_accessible_model_aliases,
-    list_models,
 )
 from app.api.v1.route_modules.proxy_payloads import (
     extract_requested_rule_group,
@@ -61,7 +52,6 @@ from app.api.v1.route_proxy_helpers import (
 from app.core.http_client import get_http_client
 from app.core.providers import normalize_provider_name
 from app.core.redis import get_redis
-from app.db.session import get_session
 from app.services.agent_transport import (
     AgentRequest,
     AgentUnavailableError,
@@ -801,121 +791,3 @@ async def _proxy_openai_request(
 
     raise HTTPException(status_code=502, detail="All upstream requests failed")
 
-
-async def chat_completions(
-    request: Request, session: AsyncSession = Depends(get_session)
-) -> Response:
-    return await _proxy_openai_request(request, session)
-
-
-async def completions(
-    request: Request, session: AsyncSession = Depends(get_session)
-) -> Response:
-    return await _proxy_openai_request(request, session)
-
-
-async def embeddings(
-    request: Request, session: AsyncSession = Depends(get_session)
-) -> Response:
-    return await _proxy_openai_request(request, session)
-
-
-async def responses(
-    request: Request, session: AsyncSession = Depends(get_session)
-) -> Response:
-    return await _proxy_openai_request(
-        request,
-        session,
-        rewrite_model=False,
-        strip_rule_group_from_payload=False,
-    )
-
-
-async def openai_passthrough(
-    path: str,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    normalized_path = path.strip("/")
-    if request.method.upper() == "GET" and normalized_path == "models":
-        try:
-            payload = await list_models(
-                request,
-                session,
-                provider_filter=("openai", "custom"),
-                provider_filter_fallback_to_any=True,
-            )
-        except (AttributeError, AssertionError):
-            payload = None
-        if payload is not None:
-            return JSONResponse(content=payload)
-
-    return await _proxy_openai_request(
-        request,
-        session,
-        rewrite_model=True,
-        strip_rule_group_from_payload=False,
-        path_prefix="/openai",
-        provider_filter=("openai", "custom"),
-        provider_filter_fallback_to_any=True,
-        allow_missing_model=True,
-    )
-
-
-async def anthropic_passthrough(
-    path: str,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    _ = path
-    return await _proxy_openai_request(
-        request,
-        session,
-        rewrite_model=True,
-        strip_rule_group_from_payload=False,
-        path_prefix="/anthropic",
-        provider_filter=("anthropic", "custom"),
-        provider_filter_fallback_to_any=True,
-        allow_missing_model=True,
-    )
-
-
-async def gemini_passthrough(
-    path: str,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    normalized_path = path.strip("/")
-    if request.method.upper() == "GET" and normalized_path == "models":
-        try:
-            model_aliases = await list_accessible_model_aliases(
-                request,
-                session,
-                provider_filter=("gemini", "custom"),
-                provider_filter_fallback_to_any=True,
-            )
-        except (AttributeError, AssertionError):
-            model_aliases = None
-        if model_aliases is not None:
-            payload = build_gemini_models_response(model_aliases)
-            return JSONResponse(content=payload)
-
-    model_alias = extract_gemini_model_alias(request.url.path)
-    if model_alias is None:
-        model_alias = request.headers.get("X-Model-Alias")
-
-    return await _proxy_openai_request(
-        request,
-        session,
-        rewrite_model=False,
-        strip_rule_group_from_payload=False,
-        path_prefix="/gemini",
-        provider_filter=("gemini", "custom"),
-        provider_filter_fallback_to_any=True,
-        allow_missing_model=False,
-        model_alias_override=model_alias,
-        target_path_rewriter=lambda raw_path, candidate: rewrite_gemini_model_path(
-            raw_path,
-            candidate.real_model,
-        ),
-    )
