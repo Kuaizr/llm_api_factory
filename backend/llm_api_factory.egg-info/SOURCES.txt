@@ -104,6 +104,7 @@ tests/test_openai_proxy_templates.py
 tests/test_openai_proxy_trace_routes.py
 tests/proxy_test_utils.py
 tests/test_route_explain.py
+tests/test_route_proxy_helpers.py
 tests/test_secret_encryption.py
 tests/test_schema_metadata.py
 tests/test_stream_metrics.py
