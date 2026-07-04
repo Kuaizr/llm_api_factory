@@ -175,6 +175,7 @@ export LLM_DATABASE_URL="sqlite+aiosqlite:///./llm_api_factory.db"
 export LLM_SQLITE_BUSY_TIMEOUT_MS="5000"
 export LLM_SQLITE_JOURNAL_MODE="WAL"
 export LLM_REDIS_URL="redis://localhost:6379/0"
+export LLM_AGENT_STREAM_IDLE_TIMEOUT_SECONDS="300"
 ```
 
 默认数据库是 SQLite：

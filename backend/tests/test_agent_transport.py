@@ -144,3 +144,42 @@ async def test_agent_manager_stream_request_times_out_and_cleans_pending() -> No
 
     assert channel.sent
     assert connection.pending == {}
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_stream_idle_timeout_cleans_pending() -> None:
+    manager = AgentManager(stream_idle_timeout_seconds=0.001)
+    channel = FakeChannel()
+    connection = manager.register("edge-hk", channel)
+
+    task = asyncio.create_task(
+        manager.send_request(
+            "edge-hk",
+            AgentRequest(
+                method="POST",
+                url="https://api.example.com/v1/chat/completions",
+                headers={},
+                body=b"{}",
+                stream=True,
+            ),
+        )
+    )
+
+    await asyncio.sleep(0)
+    request_id = channel.sent[-1]["request_id"]
+    await manager.handle_message(
+        "edge-hk",
+        {
+            "type": "proxy_response",
+            "request_id": request_id,
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        },
+    )
+    stream = await task
+    assert request_id in connection.pending
+
+    with pytest.raises(AgentUnavailableError):
+        _ = [chunk async for chunk in stream.iter_bytes()]
+
+    assert connection.pending == {}

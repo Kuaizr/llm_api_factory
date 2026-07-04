@@ -4,7 +4,7 @@ import asyncio
 import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.core.config import get_settings
@@ -26,9 +26,15 @@ class AgentResponse:
     body: bytes
 
 
+class AgentUnavailableError(RuntimeError):
+    pass
+
+
 @dataclass
 class AgentStream:
     request_id: str
+    idle_timeout_seconds: float | None = None
+    on_idle_timeout: Callable[[], None] | None = None
     status_code: int | None = None
     headers: dict[str, str] = field(default_factory=dict)
     _queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
@@ -40,7 +46,20 @@ class AgentStream:
     async def iter_bytes(self):
         await self.wait_started()
         while True:
-            chunk = await self._queue.get()
+            try:
+                if self.idle_timeout_seconds and self.idle_timeout_seconds > 0:
+                    chunk = await asyncio.wait_for(
+                        self._queue.get(),
+                        timeout=float(self.idle_timeout_seconds),
+                    )
+                else:
+                    chunk = await self._queue.get()
+            except asyncio.TimeoutError as exc:
+                if self.on_idle_timeout:
+                    self.on_idle_timeout()
+                raise AgentUnavailableError(
+                    f"Agent stream {self.request_id} idle timed out"
+                ) from exc
             if chunk is None:
                 break
             yield chunk
@@ -66,14 +85,15 @@ class AgentConnection:
         self.last_seen_at = now or datetime.now(timezone.utc)
 
 
-class AgentUnavailableError(RuntimeError):
-    pass
-
-
 class AgentManager:
-    def __init__(self, request_timeout_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        request_timeout_seconds: float | None = None,
+        stream_idle_timeout_seconds: float | None = None,
+    ) -> None:
         self._connections: dict[str, AgentConnection] = {}
         self.request_timeout_seconds = request_timeout_seconds
+        self.stream_idle_timeout_seconds = stream_idle_timeout_seconds
 
     def register(self, name: str, channel: Any) -> AgentConnection:
         connection = AgentConnection(name=name, channel=channel, last_seen_at=datetime.now(timezone.utc))
@@ -90,6 +110,11 @@ class AgentManager:
         if self.request_timeout_seconds is not None:
             return max(0.001, float(self.request_timeout_seconds))
         return max(0.001, float(get_settings().agent_request_timeout_seconds))
+
+    def _stream_idle_timeout(self) -> float:
+        if self.stream_idle_timeout_seconds is not None:
+            return max(0.001, float(self.stream_idle_timeout_seconds))
+        return max(0.001, float(get_settings().agent_stream_idle_timeout_seconds))
 
     async def send_request(self, agent_name: str, request: AgentRequest) -> AgentResponse | AgentStream:
         connection = self._connections.get(agent_name)
@@ -108,7 +133,11 @@ class AgentManager:
         }
 
         if request.stream:
-            stream = AgentStream(request_id=request_id)
+            stream = AgentStream(
+                request_id=request_id,
+                idle_timeout_seconds=self._stream_idle_timeout(),
+                on_idle_timeout=lambda: connection.pending.pop(request_id, None),
+            )
             connection.pending[request_id] = stream
             try:
                 await connection.send(payload)

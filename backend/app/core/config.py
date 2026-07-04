@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     agent_allowed_targets: str = "localhost,127.0.0.1,::1"
     agent_heartbeat_timeout_seconds: int = 120
     agent_request_timeout_seconds: float = 60.0
+    agent_stream_idle_timeout_seconds: float = 300.0
     agent_ws_url: str | None = None
     agent_heartbeat_url: str | None = None
     agent_name: str | None = None
