@@ -18,6 +18,7 @@ dependencies = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
     "cryptography>=42",
+    "regex>=2025.7.29",
 ]
 
 [project.scripts]

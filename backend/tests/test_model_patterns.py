@@ -1,5 +1,6 @@
 import pytest
 
+from app.services import model_patterns
 from app.services.model_patterns import (
     MAX_MODEL_PATTERN_LENGTH,
     UnsafeModelPatternError,
@@ -36,3 +37,19 @@ def test_validate_model_pattern_rejects_unsafe_patterns(
 
 def test_model_pattern_matches_treats_unsafe_pattern_as_no_match() -> None:
     assert model_pattern_matches("^(a+)+$", "aaaaaaaaaaaaaaaa") is False
+
+
+def test_model_pattern_matches_treats_timeout_as_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TimeoutMatcher:
+        def match(self, *_args: object, **_kwargs: object) -> object:
+            raise TimeoutError
+
+    monkeypatch.setattr(
+        model_patterns,
+        "compile_model_pattern",
+        lambda _pattern: TimeoutMatcher(),
+    )
+
+    assert model_patterns.model_pattern_matches(".*", "gpt-5") is False

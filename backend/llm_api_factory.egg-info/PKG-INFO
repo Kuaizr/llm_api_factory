@@ -17,3 +17,4 @@ Requires-Dist: pytest>=8.0
 Requires-Dist: pytest-asyncio>=0.23
 Requires-Dist: respx>=0.21
 Requires-Dist: cryptography>=42
+Requires-Dist: regex>=2025.7.29
