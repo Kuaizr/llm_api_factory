@@ -4,7 +4,11 @@ import httpx
 import pytest
 import respx
 
-from app.services.agent_worker import _is_target_allowed, handle_proxy_request
+from app.services.agent_worker import (
+    _is_target_allowed,
+    _is_target_allowed_for_request,
+    handle_proxy_request,
+)
 from app.core.config import Settings
 
 
@@ -137,3 +141,52 @@ def test_target_allowlist_allows_restricted_targets_when_explicit() -> None:
     )
     assert _is_target_allowed("http://127.0.0.1:9000/v1/models", "127.0.0.0/8") is True
     assert _is_target_allowed("http://localhost:9000/v1/models", "localhost") is True
+
+
+@pytest.mark.asyncio
+async def test_target_allowlist_wildcard_rejects_hostname_resolving_private() -> None:
+    async def parsed_resolver(_host: str, _port: int | None):
+        from ipaddress import ip_address
+
+        return [ip_address("10.0.0.5")]
+
+    assert (
+        await _is_target_allowed_for_request(
+            "https://internal.example.com/v1/models",
+            "*",
+            resolve_host_ips=parsed_resolver,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_allowlist_wildcard_allows_hostname_resolving_public() -> None:
+    async def parsed_resolver(_host: str, _port: int | None):
+        from ipaddress import ip_address
+
+        return [ip_address("93.184.216.34")]
+
+    assert (
+        await _is_target_allowed_for_request(
+            "https://api.example.com/v1/models",
+            "*",
+            resolve_host_ips=parsed_resolver,
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_allowlist_explicit_hostname_does_not_resolve_dns() -> None:
+    async def failing_resolver(_host: str, _port: int | None):
+        raise AssertionError("explicit host should not resolve DNS")
+
+    assert (
+        await _is_target_allowed_for_request(
+            "https://api.example.com/v1/models",
+            "api.example.com",
+            resolve_host_ips=failing_resolver,
+        )
+        is True
+    )

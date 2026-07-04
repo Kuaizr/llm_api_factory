@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
+import socket
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -11,6 +13,8 @@ from app.core.config import get_settings
 
 
 SendFunc = Callable[[dict[str, Any]], Awaitable[None]]
+ResolvedAddress = IPv4Address | IPv6Address
+ResolveHostFunc = Callable[[str, int | None], Awaitable[list[ResolvedAddress]]]
 
 
 def _decode_body(encoded: str | None) -> bytes:
@@ -82,15 +86,25 @@ def _is_restricted_literal_target(host: str) -> bool:
     return not target_ip.is_global
 
 
-def _is_target_allowed(url: str, allowed_targets: str | None) -> bool:
+def _parse_target(url: str) -> tuple[str, int | None] | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
-        return False
+        return None
     if not parsed.hostname:
+        return None
+    return parsed.hostname.lower(), parsed.port
+
+
+def _has_wildcard_entry(entries: list[str]) -> bool:
+    return any(entry == "*" for entry in entries)
+
+
+def _is_target_allowed(url: str, allowed_targets: str | None) -> bool:
+    target = _parse_target(url)
+    if target is None:
         return False
 
-    host = parsed.hostname.lower()
-    port = parsed.port
+    host, port = target
     entries = _target_entries(allowed_targets)
     if _is_restricted_literal_target(host):
         return any(entry != "*" and _entry_matches(host, port, entry) for entry in entries)
@@ -99,6 +113,61 @@ def _is_target_allowed(url: str, allowed_targets: str | None) -> bool:
         if _entry_matches(host, port, entry):
             return True
     return False
+
+
+async def _resolve_host_ips(host: str, port: int | None) -> list[ResolvedAddress]:
+    try:
+        results = await asyncio.to_thread(
+            socket.getaddrinfo,
+            host,
+            port or 443,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        return []
+
+    addresses: list[ResolvedAddress] = []
+    seen: set[str] = set()
+    for result in results:
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        address = _parse_ip_literal(str(sockaddr[0]))
+        if address is None:
+            continue
+        key = str(address)
+        if key in seen:
+            continue
+        seen.add(key)
+        addresses.append(address)
+    return addresses
+
+
+async def _is_target_allowed_for_request(
+    url: str,
+    allowed_targets: str | None,
+    *,
+    resolve_host_ips: ResolveHostFunc = _resolve_host_ips,
+) -> bool:
+    target = _parse_target(url)
+    if target is None:
+        return False
+
+    host, port = target
+    entries = _target_entries(allowed_targets)
+    if _is_restricted_literal_target(host):
+        return any(entry != "*" and _entry_matches(host, port, entry) for entry in entries)
+
+    if any(entry != "*" and _entry_matches(host, port, entry) for entry in entries):
+        return True
+    if not _has_wildcard_entry(entries):
+        return False
+
+    if _parse_ip_literal(host) is not None:
+        return True
+
+    addresses = await resolve_host_ips(host, port)
+    return bool(addresses) and all(address.is_global for address in addresses)
 
 
 async def _send_error(
@@ -134,7 +203,7 @@ async def handle_proxy_request(
         return
     url = str(url)
     settings = get_settings()
-    if not _is_target_allowed(url, settings.agent_allowed_targets):
+    if not await _is_target_allowed_for_request(url, settings.agent_allowed_targets):
         await _send_error(send, request_id, 403, b"target_not_allowed")
         return
 
