@@ -88,6 +88,7 @@ tests/test_billing.py
 tests/test_circuit_breaker_status.py
 tests/test_cli.py
 tests/test_config_defaults.py
+tests/test_db_session.py
 tests/test_health_monitor.py
 tests/test_health_probe_timeseries.py
 tests/test_migrations.py
