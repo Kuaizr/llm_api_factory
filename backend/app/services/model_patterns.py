@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 
 MAX_MODEL_PATTERN_LENGTH = 128
@@ -16,6 +17,11 @@ _QUANTIFIED_GROUP_PATTERN = re.compile(r"\((?:\?:)?([^()]*)\)\s*(?:[+*?]|\{\d+(?
 
 class UnsafeModelPatternError(ValueError):
     pass
+
+
+@lru_cache(maxsize=1024)
+def _compile_valid_model_pattern(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
 
 
 def validate_model_pattern(pattern: str) -> None:
@@ -38,14 +44,14 @@ def validate_model_pattern(pattern: str) -> None:
         if re.search(r"(?:[+*?]|\{\d+(?:,\d*)?\})", group_body):
             raise UnsafeModelPatternError("Nested quantifiers are not allowed in model patterns")
     try:
-        re.compile(pattern)
+        _compile_valid_model_pattern(pattern)
     except re.error as exc:
         raise UnsafeModelPatternError("Invalid model pattern") from exc
 
 
 def compile_model_pattern(pattern: str) -> re.Pattern[str]:
     validate_model_pattern(pattern)
-    return re.compile(pattern)
+    return _compile_valid_model_pattern(pattern)
 
 
 def model_pattern_matches(pattern: str, model_alias: str) -> bool:
