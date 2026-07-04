@@ -7,15 +7,18 @@ from urllib.parse import quote, unquote
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.route_helpers import (
     _dump_proxy_record,
     _extract_factory_api_key,
     _find_dump_rule,
-    _resolve_allowed_rule_groups_from_token,
     _resolve_rule_group_from_token,
+)
+from app.api.v1.route_modules.proxy_models import (
+    build_gemini_models_response,
+    list_accessible_model_aliases,
+    list_models,
 )
 from app.api.v1.route_proxy_helpers import (
     _apply_oauth_access_token,
@@ -32,9 +35,9 @@ from app.api.v1.route_proxy_helpers import (
 )
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
-from app.core.providers import normalize_provider_filters, normalize_provider_name
+from app.core.providers import normalize_provider_name
 from app.core.redis import get_redis
-from app.db.models import Endpoint, ModelMap, RoutingRule
+from app.db.models import RoutingRule
 from app.db.session import get_session
 from app.services.admin_auth import verify_admin_session_token
 from app.services.agent_transport import (
@@ -52,7 +55,6 @@ from app.services.billing import (
     write_request_log,
 )
 from app.services.circuit_breaker import CircuitBreaker
-from app.services.model_patterns import model_pattern_matches
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
@@ -184,31 +186,6 @@ def _resolve_trace_id(
     if session_id:
         return _clamp_identifier(session_id)
     return uuid.uuid4().hex
-
-
-def _build_models_response(model_aliases: list[str]) -> dict[str, object]:
-    models = [
-        {"id": model_alias, "object": "model", "owned_by": "proxy"}
-        for model_alias in model_aliases
-    ]
-    return {"object": "list", "data": models}
-
-
-def _build_gemini_models_response(model_aliases: list[str]) -> dict[str, object]:
-    models = [
-        {
-            "name": f"models/{model_alias}",
-            "version": model_alias,
-            "displayName": model_alias,
-            "supportedGenerationMethods": [
-                "generateContent",
-                "streamGenerateContent",
-                "countTokens",
-            ],
-        }
-        for model_alias in model_aliases
-    ]
-    return {"models": models}
 
 
 def _extract_gemini_model_alias(path: str) -> str | None:
@@ -588,92 +565,6 @@ async def _agent_stream_generator(
             request_path=request_path,
         )
     )
-
-
-async def _list_accessible_model_aliases(
-    request: Request,
-    session: AsyncSession,
-    *,
-    provider_filter: str | tuple[str, ...] | None = None,
-    provider_filter_fallback_to_any: bool = False,
-) -> list[str]:
-    allowed_groups = await _resolve_allowed_rule_groups_from_token(session, request)
-    provider_filters = normalize_provider_filters(provider_filter)
-
-    result = await session.execute(
-        select(ModelMap.model_alias, Endpoint.provider)
-        .join(Endpoint, ModelMap.endpoint_id == Endpoint.id)
-        .where(Endpoint.is_active.is_(True))
-        .distinct()
-    )
-    rows = result.all()
-    normalized_rows = [
-        (str(model_alias), normalize_provider_name(provider))
-        for model_alias, provider in rows
-        if model_alias
-    ]
-
-    filtered_rows = (
-        [row for row in normalized_rows if row[1] in provider_filters]
-        if provider_filters
-        else normalized_rows
-    )
-    if provider_filters and not filtered_rows and provider_filter_fallback_to_any:
-        filtered_rows = normalized_rows
-
-    model_aliases = sorted({model_alias for model_alias, _ in filtered_rows})
-    if not model_aliases:
-        return []
-
-    # default 组拥有全量模型访问权限
-    if any(group.lower() == "default" for group in allowed_groups):
-        return model_aliases
-
-    non_default_groups = [group for group in allowed_groups if group.lower() != "default"]
-    if not non_default_groups:
-        return []
-
-    rule_result = await session.execute(
-        select(RoutingRule)
-        .where(
-            RoutingRule.is_active.is_(True),
-            RoutingRule.group_name.in_(non_default_groups),
-        )
-        .order_by(RoutingRule.priority.desc(), RoutingRule.id)
-    )
-    rules_by_group: dict[str, list[RoutingRule]] = {}
-    for rule in rule_result.scalars().all():
-        rules_by_group.setdefault(rule.group_name.lower(), []).append(rule)
-
-    allowed_aliases: set[str] = set()
-    for model_alias in model_aliases:
-        for group in non_default_groups:
-            matched = False
-            for rule in rules_by_group.get(group.lower(), []):
-                if model_pattern_matches(rule.model_pattern, model_alias):
-                    matched = True
-                    break
-            if matched:
-                allowed_aliases.add(model_alias)
-                break
-
-    return sorted(allowed_aliases)
-
-
-async def list_models(
-    request: Request,
-    session: AsyncSession,
-    *,
-    provider_filter: str | tuple[str, ...] | None = None,
-    provider_filter_fallback_to_any: bool = False,
-) -> dict[str, object]:
-    model_aliases = await _list_accessible_model_aliases(
-        request,
-        session,
-        provider_filter=provider_filter,
-        provider_filter_fallback_to_any=provider_filter_fallback_to_any,
-    )
-    return _build_models_response(model_aliases)
 
 
 async def _proxy_openai_request(
@@ -1486,7 +1377,7 @@ async def gemini_passthrough(
     normalized_path = path.strip("/")
     if request.method.upper() == "GET" and normalized_path == "models":
         try:
-            model_aliases = await _list_accessible_model_aliases(
+            model_aliases = await list_accessible_model_aliases(
                 request,
                 session,
                 provider_filter=("gemini", "custom"),
@@ -1495,7 +1386,7 @@ async def gemini_passthrough(
         except (AttributeError, AssertionError):
             model_aliases = None
         if model_aliases is not None:
-            payload = _build_gemini_models_response(model_aliases)
+            payload = build_gemini_models_response(model_aliases)
             return JSONResponse(content=payload)
 
     model_alias = _extract_gemini_model_alias(request.url.path)
