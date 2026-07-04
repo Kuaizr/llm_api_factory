@@ -15,6 +15,14 @@ from app.api.v1.route_helpers import (
     _find_dump_rule,
     _resolve_rule_group_from_token,
 )
+from app.api.v1.route_modules.proxy_failures import (
+    CANDIDATE_FALLBACK_STATUSES,
+    CIRCUIT_BREAKER_STATUSES,
+    UPSTREAM_CANDIDATE_MAX_ATTEMPTS,
+    parse_json_object_bytes,
+    semantic_failure_reason as detect_semantic_failure_reason,
+    should_retry_same_candidate,
+)
 from app.api.v1.route_modules.proxy_models import (
     build_gemini_models_response,
     list_accessible_model_aliases,
@@ -58,53 +66,6 @@ from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
-CANDIDATE_FALLBACK_STATUSES = {400, 401, 402, 403, 404, 429, 500, 502, 503, 504}
-CIRCUIT_BREAKER_STATUSES = {401, 402, 403, 429, 500, 502, 503, 504}
-LOCAL_RETRY_STATUSES = {429, 500, 502, 503, 504}
-UPSTREAM_CANDIDATE_MAX_ATTEMPTS = 3
-SEMANTIC_FAILURE_STATUSES = {"error", "failed", "failure", "cancelled", "canceled"}
-SEMANTIC_FAILURE_MARKERS = (
-    "error",
-    "failed",
-    "failure",
-    "invalid",
-    "unauthorized",
-    "forbidden",
-    "permission",
-    "insufficient",
-    "quota",
-    "rate limit",
-    "rate_limit",
-    "too many requests",
-    "unavailable",
-    "overloaded",
-    "busy",
-    "timeout",
-    "not supported",
-    "unsupported",
-    "model_not_supported",
-    "service unavailable",
-    "余额",
-    "不足",
-    "不可用",
-    "限流",
-    "风控",
-    "失败",
-    "错误",
-    "封禁",
-    "欠费",
-)
-SEMANTIC_SUCCESS_SIGNAL_KEYS = {
-    "choices",
-    "output",
-    "output_text",
-    "content",
-    "candidates",
-    "data",
-    "embedding",
-    "embeddings",
-    "id",
-}
 SESSION_HINT_KEYS = (
     "session_id",
     "conversation_id",
@@ -215,122 +176,6 @@ def _rewrite_gemini_model_path(path: str, real_model: str) -> str:
         f"{path[:match.start('model')]}"
         f"{encoded_model}"
         f"{path[match.end('model'):]}"
-    )
-
-
-def _parse_json_object_bytes(content: bytes | None) -> dict[str, object] | None:
-    if not content:
-        return None
-    try:
-        parsed = json.loads(content)
-    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _has_non_empty_value(value: object) -> bool:
-    if value is None or value is False:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, dict)):
-        return bool(value)
-    return True
-
-
-def _contains_semantic_failure_marker(value: object) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, (dict, list, tuple, set)):
-        try:
-            text = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            text = str(value)
-    else:
-        text = str(value)
-    normalized = text.strip().lower()
-    if not normalized:
-        return False
-    return any(marker in normalized for marker in SEMANTIC_FAILURE_MARKERS)
-
-
-def _has_success_signal(payload: dict[str, object]) -> bool:
-    if str(payload.get("object") or "").strip().lower() == "error":
-        return False
-    return any(
-        key in payload and _has_non_empty_value(payload.get(key))
-        for key in SEMANTIC_SUCCESS_SIGNAL_KEYS
-    )
-
-
-def _semantic_failure_reason(
-    content: bytes,
-    content_type: str | None,
-    payload: dict[str, object] | None,
-    provider: str,
-) -> str | None:
-    stripped = content.strip()
-    if not stripped:
-        return "empty_response_body"
-
-    normalized_content_type = str(content_type or "").lower()
-    if payload is None:
-        text_sample = stripped[:4096].decode("utf-8", errors="ignore").lower()
-        if "text/html" in normalized_content_type or text_sample.startswith(
-            ("<html", "<!doctype html")
-        ):
-            return "html_response_body"
-        if _contains_semantic_failure_marker(text_sample):
-            return "text_error_body"
-        return None
-
-    if _has_non_empty_value(payload.get("error")):
-        return "error_field"
-    if _has_non_empty_value(payload.get("errors")):
-        return "errors_field"
-
-    object_type = str(payload.get("object") or "").strip().lower()
-    if object_type == "error":
-        return "error_object"
-
-    response_type = str(payload.get("type") or "").strip().lower()
-    if response_type == "error":
-        return "error_type"
-
-    status = str(payload.get("status") or "").strip().lower()
-    if status in SEMANTIC_FAILURE_STATUSES:
-        return "failure_status"
-
-    for flag_key in ("success", "ok"):
-        if payload.get(flag_key) is False:
-            return f"{flag_key}_false"
-
-    for code_key in ("status_code", "code"):
-        code_value = payload.get(code_key)
-        if isinstance(code_value, int) and code_value >= 400:
-            return f"{code_key}_failure"
-        if isinstance(code_value, str) and _contains_semantic_failure_marker(code_value):
-            return f"{code_key}_failure"
-
-    if provider == "gemini" and not _has_non_empty_value(payload.get("candidates")):
-        prompt_feedback = payload.get("promptFeedback")
-        if isinstance(prompt_feedback, dict) and _has_non_empty_value(
-            prompt_feedback.get("blockReason")
-        ):
-            return "gemini_blocked"
-
-    if not _has_success_signal(payload):
-        for message_key in ("message", "msg", "detail"):
-            if _contains_semantic_failure_marker(payload.get(message_key)):
-                return f"{message_key}_failure"
-
-    return None
-
-
-def _should_retry_same_candidate(status_code: int, attempt_index: int) -> bool:
-    return (
-        status_code in LOCAL_RETRY_STATUSES
-        and attempt_index + 1 < UPSTREAM_CANDIDATE_MAX_ATTEMPTS
     )
 
 
@@ -772,7 +617,7 @@ async def _proxy_openai_request(
                         content = await agent_response.read_all()
                     else:
                         content = agent_response.body
-                    should_retry = _should_retry_same_candidate(status_code, attempt_index)
+                    should_retry = should_retry_same_candidate(status_code, attempt_index)
                     _record_attempt_log(
                         request_id=request_id,
                         trace_id=trace_id,
@@ -864,8 +709,8 @@ async def _proxy_openai_request(
                     )
 
                 latency_ms = int((time.perf_counter() - request_start) * 1000)
-                response_payload = _parse_json_object_bytes(agent_response.body)
-                semantic_failure_reason = _semantic_failure_reason(
+                response_payload = parse_json_object_bytes(agent_response.body)
+                semantic_failure_reason = detect_semantic_failure_reason(
                     agent_response.body,
                     agent_response.headers.get("content-type"),
                     response_payload,
@@ -1075,7 +920,7 @@ async def _proxy_openai_request(
                     await circuit_breaker.record_failure(candidate.api_key.id)
                 content = await response.aread()
                 await response.aclose()
-                should_retry = _should_retry_same_candidate(response.status_code, attempt_index)
+                should_retry = should_retry_same_candidate(response.status_code, attempt_index)
                 _record_attempt_log(
                     request_id=request_id,
                     trace_id=trace_id,
@@ -1172,8 +1017,8 @@ async def _proxy_openai_request(
                 )
 
             content = await response.aread()
-            response_payload = _parse_json_object_bytes(content)
-            semantic_failure_reason = _semantic_failure_reason(
+            response_payload = parse_json_object_bytes(content)
+            semantic_failure_reason = detect_semantic_failure_reason(
                 content,
                 response.headers.get("content-type"),
                 response_payload,
