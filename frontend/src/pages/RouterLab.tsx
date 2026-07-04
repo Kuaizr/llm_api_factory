@@ -137,6 +137,241 @@ const defaultLogFilters: LogFilters = {
   until: "",
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isString = (value: unknown): value is string => typeof value === "string";
+const isNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
+const isNullableString = (value: unknown): value is string | null =>
+  value === null || isString(value);
+const isNullableNumber = (value: unknown): value is number | null =>
+  value === null || isNumber(value);
+
+const parseStringList = (value: unknown): string[] | null => {
+  if (!Array.isArray(value) || value.some((item) => !isString(item))) {
+    return null;
+  }
+  return value;
+};
+
+const parseArray = <T,>(
+  value: unknown,
+  parser: (item: unknown) => T | null
+): T[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const parsed: T[] = [];
+  for (const item of value) {
+    const next = parser(item);
+    if (next === null) {
+      return null;
+    }
+    parsed.push(next);
+  }
+  return parsed;
+};
+
+const parseRouteCandidate = (value: unknown): RouteCandidate | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (
+    !isNumber(value.order) ||
+    !isNumber(value.endpoint_id) ||
+    !isString(value.endpoint_name) ||
+    !isNumber(value.api_key_id) ||
+    !isNumber(value.weight) ||
+    !isString(value.real_model) ||
+    !isString(value.execution_mode) ||
+    !isNullableString(value.agent_node)
+  ) {
+    return null;
+  }
+  return {
+    order: value.order,
+    endpoint_id: value.endpoint_id,
+    endpoint_name: value.endpoint_name,
+    api_key_id: value.api_key_id,
+    weight: value.weight,
+    real_model: value.real_model,
+    execution_mode: value.execution_mode,
+    agent_node: value.agent_node,
+    circuit_state: isString(value.circuit_state) ? value.circuit_state : undefined,
+    circuit_failures: isNumber(value.circuit_failures)
+      ? value.circuit_failures
+      : undefined,
+    circuit_ttl_seconds: isNullableNumber(value.circuit_ttl_seconds)
+      ? value.circuit_ttl_seconds
+      : undefined,
+    sticky_active: isBoolean(value.sticky_active) ? value.sticky_active : undefined,
+    selected: isBoolean(value.selected) ? value.selected : undefined,
+  };
+};
+
+const parseRouteExcluded = (value: unknown): RouteExcluded | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const reasons = parseStringList(value.reasons);
+  if (
+    !isNumber(value.endpoint_id) ||
+    !isString(value.endpoint_name) ||
+    !isNumber(value.api_key_id) ||
+    !isString(value.real_model) ||
+    !isString(value.execution_mode) ||
+    !isNullableString(value.agent_node) ||
+    reasons === null
+  ) {
+    return null;
+  }
+  return {
+    endpoint_id: value.endpoint_id,
+    endpoint_name: value.endpoint_name,
+    api_key_id: value.api_key_id,
+    real_model: value.real_model,
+    execution_mode: value.execution_mode,
+    agent_node: value.agent_node,
+    reasons,
+  };
+};
+
+const parseRouteExplainResponse = (
+  value: unknown
+): RouteExplainResponse | null => {
+  if (!isRecord(value) || !isString(value.model)) {
+    return null;
+  }
+  const candidates = parseArray(value.candidates, parseRouteCandidate);
+  const excluded =
+    value.excluded === undefined ? undefined : parseArray(value.excluded, parseRouteExcluded);
+  const notes = value.notes === undefined ? undefined : parseStringList(value.notes);
+  if (
+    candidates === null ||
+    excluded === null ||
+    notes === null ||
+    (value.requested_rule_group !== undefined && !isString(value.requested_rule_group)) ||
+    (value.effective_rule_group !== undefined && !isString(value.effective_rule_group)) ||
+    (value.rule_group !== undefined && !isString(value.rule_group)) ||
+    (value.fallback_used !== undefined && !isBoolean(value.fallback_used)) ||
+    (value.strategy !== undefined && !isString(value.strategy)) ||
+    (value.sticky_api_key_id !== undefined && !isNullableNumber(value.sticky_api_key_id))
+  ) {
+    return null;
+  }
+  return {
+    model: value.model,
+    requested_rule_group: isString(value.requested_rule_group)
+      ? value.requested_rule_group
+      : undefined,
+    effective_rule_group: isString(value.effective_rule_group)
+      ? value.effective_rule_group
+      : undefined,
+    rule_group: isString(value.rule_group) ? value.rule_group : undefined,
+    fallback_used: isBoolean(value.fallback_used) ? value.fallback_used : undefined,
+    strategy: isString(value.strategy) ? value.strategy : undefined,
+    sticky_api_key_id: isNullableNumber(value.sticky_api_key_id)
+      ? value.sticky_api_key_id
+      : undefined,
+    candidates,
+    excluded,
+    notes,
+  };
+};
+
+const parseRequestLog = (value: unknown): RequestLog | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (
+    !isNumber(value.id) ||
+    !isString(value.request_id) ||
+    !isNullableString(value.trace_id) ||
+    !isString(value.model_alias) ||
+    !isNumber(value.endpoint_id) ||
+    !isNumber(value.api_key_id) ||
+    !isNullableNumber(value.prompt_tokens) ||
+    !isNullableNumber(value.completion_tokens) ||
+    !isNullableNumber(value.total_tokens) ||
+    !isNumber(value.latency_ms) ||
+    !isNumber(value.status_code) ||
+    !isNullableString(value.execution_mode) ||
+    !isNullableString(value.agent_node) ||
+    !isNullableString(value.upstream_url) ||
+    !isString(value.created_at)
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    request_id: value.request_id,
+    trace_id: value.trace_id,
+    model_alias: value.model_alias,
+    endpoint_id: value.endpoint_id,
+    api_key_id: value.api_key_id,
+    prompt_tokens: value.prompt_tokens,
+    completion_tokens: value.completion_tokens,
+    total_tokens: value.total_tokens,
+    latency_ms: value.latency_ms,
+    status_code: value.status_code,
+    execution_mode: value.execution_mode,
+    agent_node: value.agent_node,
+    upstream_url: value.upstream_url,
+    created_at: value.created_at,
+  };
+};
+
+const parseRequestAttemptLog = (value: unknown): RequestAttemptLog | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (
+    !isNumber(value.id) ||
+    !isString(value.request_id) ||
+    !isNullableString(value.trace_id) ||
+    !isString(value.model_alias) ||
+    !isNumber(value.endpoint_id) ||
+    !isNumber(value.api_key_id) ||
+    !isNumber(value.attempt_order) ||
+    !isNullableNumber(value.status_code) ||
+    !isString(value.outcome) ||
+    !isNullableString(value.failure_reason) ||
+    !isNumber(value.latency_ms) ||
+    !isNullableString(value.execution_mode) ||
+    !isNullableString(value.agent_node) ||
+    !isNullableString(value.upstream_url) ||
+    !isString(value.created_at)
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    request_id: value.request_id,
+    trace_id: value.trace_id,
+    model_alias: value.model_alias,
+    endpoint_id: value.endpoint_id,
+    api_key_id: value.api_key_id,
+    attempt_order: value.attempt_order,
+    status_code: value.status_code,
+    outcome: value.outcome,
+    failure_reason: value.failure_reason,
+    latency_ms: value.latency_ms,
+    execution_mode: value.execution_mode,
+    agent_node: value.agent_node,
+    upstream_url: value.upstream_url,
+    created_at: value.created_at,
+  };
+};
+
+const parseRequestLogList = (value: unknown): RequestLog[] | null =>
+  parseArray(value, parseRequestLog);
+
+const parseRequestAttemptLogList = (
+  value: unknown
+): RequestAttemptLog[] | null => parseArray(value, parseRequestAttemptLog);
+
 export const RouterLab = () => {
   const [model, setModel] = useState("gpt-4o-mini");
   const [ruleGroup, setRuleGroup] = useState("default");
@@ -199,7 +434,10 @@ export const RouterLab = () => {
       if (!response.ok) {
         throw new Error("log fetch failed");
       }
-      const data = (await response.json()) as RequestLog[];
+      const data = parseRequestLogList(await response.json());
+      if (!data) {
+        throw new Error("invalid log response");
+      }
       setRequestLogs(data);
     } catch (err) {
       setLogsError("无法获取请求日志");
@@ -232,7 +470,10 @@ export const RouterLab = () => {
       if (!response.ok) {
         throw new Error("attempt log fetch failed");
       }
-      const data = (await response.json()) as RequestAttemptLog[];
+      const data = parseRequestAttemptLogList(await response.json());
+      if (!data) {
+        throw new Error("invalid attempt log response");
+      }
       setRequestAttempts(data);
     } catch (err) {
       setLogsError("无法获取候选尝试日志");
@@ -374,7 +615,10 @@ export const RouterLab = () => {
       if (!response.ok) {
         throw new Error("route-explain failed");
       }
-      const data = (await response.json()) as RouteExplainResponse;
+      const data = parseRouteExplainResponse(await response.json());
+      if (!data) {
+        throw new Error("invalid route-explain response");
+      }
       setRouteResult(data);
     } catch (err) {
       setError("无法获取路由候选列表");
