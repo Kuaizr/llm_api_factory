@@ -284,6 +284,12 @@ class RequestLog(Base):
 
 class RequestAttemptLog(Base):
     __tablename__ = "request_attempt_logs"
+    __table_args__ = (
+        Index("ix_request_attempt_logs_model_alias_created_at", "model_alias", "created_at"),
+        Index("ix_request_attempt_logs_endpoint_id_created_at", "endpoint_id", "created_at"),
+        Index("ix_request_attempt_logs_api_key_id_created_at", "api_key_id", "created_at"),
+        Index("ix_request_attempt_logs_outcome_created_at", "outcome", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     request_id: Mapped[str] = mapped_column(String(64), index=True)
