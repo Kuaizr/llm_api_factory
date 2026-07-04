@@ -7,8 +7,11 @@ import {
   type ApiKey,
   type Endpoint,
   type ApiKeyDirectTestResult,
-  type EndpointProbeResult,
 } from "./shared";
+import {
+  parseApiKeyDirectTestResult,
+  parseEndpointProbeResult,
+} from "./response-validators";
 
 const requestTemplates = [
   { value: "chat", label: "Chat" },
@@ -72,7 +75,10 @@ export const ApiKeyTestModal = ({
       if (!response.ok) {
         throw new Error("probe failed");
       }
-      const payload = (await response.json()) as EndpointProbeResult;
+      const payload = parseEndpointProbeResult(await response.json());
+      if (!payload) {
+        throw new Error("invalid probe response");
+      }
       const discovered = [
         ...payload.discovered_models,
         ...payload.manual_models.flatMap((item) => [item.model_alias, item.real_model]),
@@ -108,7 +114,11 @@ export const ApiKeyTestModal = ({
       if (!response.ok) {
         throw new Error("test failed");
       }
-      setResult((await response.json()) as ApiKeyDirectTestResult);
+      const payload = parseApiKeyDirectTestResult(await response.json());
+      if (!payload) {
+        throw new Error("invalid test response");
+      }
+      setResult(payload);
     } catch (err) {
       setError("测试请求失败");
     } finally {

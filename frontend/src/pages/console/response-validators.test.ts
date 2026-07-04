@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  parseAgentBootstrapResult,
+  parseApiKeyDirectTestResult,
   parseDashboardStatus,
   parseEndpointList,
+  parseEndpointProbeResult,
   parseHealthStatusList,
+  parseModelMap,
+  parseModelMapList,
+  parseRuleGroupEligibilityResult,
   parseRoutingRuleList,
+  parseStringList,
   parseUsageStats,
 } from "./response-validators";
 
@@ -115,5 +122,111 @@ describe("console response validators", () => {
       ])
     ).not.toBeNull();
     expect(parseHealthStatusList([{ api_key_id: "1" }])).toBeNull();
+  });
+
+  it("validates console action response payloads", () => {
+    const modelMap = {
+      id: 1,
+      endpoint_id: 2,
+      model_alias: "gpt-5",
+      real_model: "gpt-5-2026",
+      probe_managed: true,
+      created_at: "2026-07-05T00:00:00Z",
+    };
+
+    expect(parseStringList(["gpt-5", "claude"])).toEqual(["gpt-5", "claude"]);
+    expect(parseStringList(["gpt-5", 5])).toBeNull();
+    expect(parseModelMap(modelMap)?.real_model).toBe("gpt-5-2026");
+    expect(parseModelMapList([modelMap])?.[0].model_alias).toBe("gpt-5");
+    expect(parseModelMap({ ...modelMap, endpoint_id: "2" })).toBeNull();
+
+    expect(
+      parseEndpointProbeResult({
+        provider: "openai",
+        probe_status: "success",
+        probe_status_code: 200,
+        probe_message: null,
+        discovered_models: ["gpt-5"],
+        manual_models: [modelMap],
+      })?.manual_models[0].id
+    ).toBe(1);
+    expect(
+      parseEndpointProbeResult({
+        provider: "openai",
+        probe_status: "weird",
+        probe_status_code: 200,
+        probe_message: null,
+        discovered_models: [],
+        manual_models: [],
+      })
+    ).toBeNull();
+
+    expect(
+      parseAgentBootstrapResult({
+        agent_id: 1,
+        name: "edge",
+        token: "agent-token",
+        install_command: "curl ...",
+      })?.name
+    ).toBe("edge");
+    expect(parseAgentBootstrapResult({ agent_id: 1 })).toBeNull();
+
+    expect(
+      parseRuleGroupEligibilityResult({
+        group_name: "claude",
+        eligible: true,
+        reason: null,
+        probed: false,
+        required_patterns: ["claude-*"],
+        matched_models: ["claude-opus"],
+      })?.eligible
+    ).toBe(true);
+    expect(
+      parseRuleGroupEligibilityResult({
+        group_name: "claude",
+        eligible: "yes",
+        reason: null,
+        probed: false,
+        required_patterns: [],
+        matched_models: [],
+      })
+    ).toBeNull();
+
+    expect(
+      parseApiKeyDirectTestResult({
+        api_key_id: 1,
+        endpoint_id: 2,
+        endpoint_name: "anyrouter",
+        provider: "openai",
+        request_template: "chat",
+        model: "gpt-5",
+        prompt: "你是什么模型",
+        status_code: 200,
+        ok: true,
+        latency_ms: 123,
+        output_text: "GPT",
+        error_reason: null,
+        upstream_url: "https://example.test/v1/chat/completions",
+        raw_response: { ok: true },
+      })?.ok
+    ).toBe(true);
+    expect(
+      parseApiKeyDirectTestResult({
+        api_key_id: 1,
+        endpoint_id: 2,
+        endpoint_name: "anyrouter",
+        provider: "openai",
+        request_template: "chat",
+        model: "gpt-5",
+        prompt: "你是什么模型",
+        status_code: "200",
+        ok: true,
+        latency_ms: 123,
+        output_text: "GPT",
+        error_reason: null,
+        upstream_url: "https://example.test/v1/chat/completions",
+        raw_response: { ok: true },
+      })
+    ).toBeNull();
   });
 });

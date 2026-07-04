@@ -11,6 +11,7 @@ import {
 import { useMemo, useState } from "react";
 
 import { ApiKeyTestModal } from "./api-key-test-modal";
+import { parseRuleGroupEligibilityResult } from "./response-validators";
 import {
   apiBase,
   buildHeaders,
@@ -546,7 +547,11 @@ export const KeyConfigModal = ({
         setFormError(message);
         return null;
       }
-      const data = (await response.json()) as RuleGroupEligibilityResult;
+      const data = parseRuleGroupEligibilityResult(await response.json());
+      if (!data) {
+        setFormError("分组校验响应格式异常");
+        return null;
+      }
       if (data.eligible && options?.showNotice !== false) {
         if (data.probed) {
           setGroupNotice(`分组 ${groupName} 校验前已自动补充模型探测`);

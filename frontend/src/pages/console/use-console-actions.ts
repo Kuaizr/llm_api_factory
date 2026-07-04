@@ -9,11 +9,16 @@ import {
   type ApiKey,
   type Endpoint,
   type EndpointFormState,
-  type EndpointProbeResult,
   type ModelMap,
   type RoutingRule,
   type RoutingRuleSavePayload,
 } from "./shared";
+import {
+  parseAgentBootstrapResult,
+  parseEndpointProbeResult,
+  parseModelMap,
+  parseModelMapList,
+} from "./response-validators";
 
 type UseConsoleActionsOptions = {
   token: string | null;
@@ -145,7 +150,10 @@ export const useConsoleActions = ({
       }
       throw new Error(message);
     }
-    const data = (await response.json()) as AgentBootstrapResult;
+    const data = parseAgentBootstrapResult(await response.json());
+    if (!data) {
+      throw new Error("生成部署命令失败：响应格式异常");
+    }
     await loadAgents(token);
     return data;
   };
@@ -308,10 +316,15 @@ export const useConsoleActions = ({
         setProbeError(message);
         return;
       }
-      const payload = (await response.json()) as EndpointProbeResult | ModelMap[];
-      if (Array.isArray(payload)) {
+      const responsePayload = await response.json();
+      const payload = parseEndpointProbeResult(responsePayload);
+      if (payload === null) {
         // 兼容旧后端：旧版 probe 接口直接返回 ModelMap[]
-        const legacyModels = payload;
+        const legacyModels = parseModelMapList(responsePayload);
+        if (legacyModels === null) {
+          setProbeError("探测结果格式异常。");
+          return;
+        }
         setProbeModels(legacyModels);
         setProbeDiscoveredModels(
           Array.from(new Set(legacyModels.map((item) => item.real_model || item.model_alias)))
@@ -374,7 +387,11 @@ export const useConsoleActions = ({
       setProbeError("别名保存失败，请稍后再试。");
       return;
     }
-    const updated = (await response.json()) as ModelMap;
+    const updated = parseModelMap(await response.json());
+    if (!updated) {
+      setProbeError("别名保存失败：响应格式异常。");
+      return;
+    }
     setProbeModels((prev) =>
       prev.map((item) => (item.id === updated.id ? updated : item))
     );
@@ -416,7 +433,11 @@ export const useConsoleActions = ({
       setProbeError(message);
       return;
     }
-    const created = (await response.json()) as ModelMap;
+    const created = parseModelMap(await response.json());
+    if (!created) {
+      setProbeError("新增模型失败：响应格式异常。");
+      return;
+    }
     setProbeModels((prev) => [created, ...prev]);
     setProbeAliasEdits((prev) => ({ ...prev, [created.id]: created.model_alias }));
     setProbeError(null);
@@ -528,7 +549,10 @@ export const useConsoleActions = ({
         const data = (await response.json()) as { detail?: string };
         throw new Error(data.detail || "Failed to rotate token");
       }
-      const data = (await response.json()) as AgentBootstrapResult;
+      const data = parseAgentBootstrapResult(await response.json());
+      if (!data) {
+        throw new Error("重新生成Token失败：响应格式异常");
+      }
       await loadAgents(token);
       setAgentDeployResult(data);
       setAgentDeployTarget(agent);

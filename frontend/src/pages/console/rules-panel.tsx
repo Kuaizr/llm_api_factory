@@ -20,10 +20,10 @@ import {
   formatTimestamp,
   formatTokens,
   type Endpoint,
-  type ModelMap,
   type RoutingRule,
   type RoutingRuleSavePayload,
 } from "./shared";
+import { parseModelMapList, parseStringList } from "./response-validators";
 
 export const RuleEditorModal = ({
   endpoints,
@@ -257,7 +257,13 @@ export const RuleEditorModal = ({
         setHasScanned(true);
         return;
       }
-      const data = (await response.json()) as string[];
+      const data = parseStringList(await response.json());
+      if (data === null) {
+        setScanError("扫描结果格式异常。");
+        setScanResults([]);
+        setHasScanned(true);
+        return;
+      }
       setScanResults(data);
       if (data.length) {
         const mapsResponse = await fetch(`${apiBase}/admin/model-maps`, {
@@ -269,7 +275,13 @@ export const RuleEditorModal = ({
           setHasScanned(true);
           return;
         }
-        const maps = (await mapsResponse.json()) as ModelMap[];
+        const maps = parseModelMapList(await mapsResponse.json());
+        if (maps === null) {
+          setScanError("模型映射响应格式异常。");
+          setScanEndpointIds(null);
+          setHasScanned(true);
+          return;
+        }
         const matchedModels = new Set(data);
         const endpointIds = new Set<number>();
         maps.forEach((item) => {

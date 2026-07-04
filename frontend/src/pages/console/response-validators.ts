@@ -1,10 +1,15 @@
 import type {
+  AgentBootstrapResult,
   AgentNode,
+  ApiKeyDirectTestResult,
   ApiKey,
   Endpoint,
+  EndpointProbeResult,
   EndpointStatus,
   HealthStatus,
   MetricsBucket,
+  ModelMap,
+  RuleGroupEligibilityResult,
   RoutingRule,
   TelegramConfig,
   UsageGroup,
@@ -42,6 +47,8 @@ const parseStringArray = (value: unknown): string[] | null => {
   }
   return value;
 };
+
+export const parseStringList = parseStringArray;
 
 const parseNumberArray = (value: unknown): number[] | null => {
   if (!Array.isArray(value) || value.some((item) => !isNumber(item))) {
@@ -318,6 +325,147 @@ const parseUsageTopKey = (value: unknown): UsageTopKey | null => {
     endpoint_name: value.endpoint_name,
     key_preview: value.key_preview,
     total_tokens: value.total_tokens,
+  };
+};
+
+export const parseModelMap = (value: unknown): ModelMap | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.id) ||
+    !isNumber(value.endpoint_id) ||
+    !isString(value.model_alias) ||
+    !isString(value.real_model) ||
+    !isString(value.created_at)
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    endpoint_id: value.endpoint_id,
+    model_alias: value.model_alias,
+    real_model: value.real_model,
+    probe_managed: isBoolean(value.probe_managed) ? value.probe_managed : false,
+    created_at: value.created_at,
+  };
+};
+
+export const parseModelMapList = (value: unknown): ModelMap[] | null =>
+  parseArray(value, parseModelMap);
+
+export const parseEndpointProbeResult = (
+  value: unknown
+): EndpointProbeResult | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const discoveredModels = parseStringArray(value.discovered_models);
+  const manualModels = parseModelMapList(value.manual_models);
+  const probeStatus = value.probe_status;
+  if (
+    !isString(value.provider) ||
+    !isString(probeStatus) ||
+    !["success", "failure", "error"].includes(probeStatus) ||
+    !isNullableNumber(value.probe_status_code) ||
+    !isNullableString(value.probe_message) ||
+    discoveredModels === null ||
+    manualModels === null
+  ) {
+    return null;
+  }
+  return {
+    provider: value.provider,
+    probe_status: probeStatus as EndpointProbeResult["probe_status"],
+    probe_status_code: value.probe_status_code,
+    probe_message: value.probe_message,
+    discovered_models: discoveredModels,
+    manual_models: manualModels,
+  };
+};
+
+export const parseAgentBootstrapResult = (
+  value: unknown
+): AgentBootstrapResult | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.agent_id) ||
+    !isString(value.name) ||
+    !isString(value.token) ||
+    !isString(value.install_command)
+  ) {
+    return null;
+  }
+  return {
+    agent_id: value.agent_id,
+    name: value.name,
+    token: value.token,
+    install_command: value.install_command,
+  };
+};
+
+export const parseRuleGroupEligibilityResult = (
+  value: unknown
+): RuleGroupEligibilityResult | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const requiredPatterns = parseStringArray(value.required_patterns);
+  const matchedModels = parseStringArray(value.matched_models);
+  if (
+    !isString(value.group_name) ||
+    !isBoolean(value.eligible) ||
+    !isNullableString(value.reason) ||
+    !isBoolean(value.probed) ||
+    requiredPatterns === null ||
+    matchedModels === null
+  ) {
+    return null;
+  }
+  return {
+    group_name: value.group_name,
+    eligible: value.eligible,
+    reason: value.reason,
+    probed: value.probed,
+    required_patterns: requiredPatterns,
+    matched_models: matchedModels,
+  };
+};
+
+export const parseApiKeyDirectTestResult = (
+  value: unknown
+): ApiKeyDirectTestResult | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.api_key_id) ||
+    !isNumber(value.endpoint_id) ||
+    !isString(value.endpoint_name) ||
+    !isString(value.provider) ||
+    !isString(value.request_template) ||
+    !isString(value.model) ||
+    !isString(value.prompt) ||
+    !isNumber(value.status_code) ||
+    !isBoolean(value.ok) ||
+    !isNumber(value.latency_ms) ||
+    !isNullableString(value.output_text) ||
+    !isNullableString(value.error_reason) ||
+    !isString(value.upstream_url)
+  ) {
+    return null;
+  }
+  return {
+    api_key_id: value.api_key_id,
+    endpoint_id: value.endpoint_id,
+    endpoint_name: value.endpoint_name,
+    provider: value.provider,
+    request_template: value.request_template,
+    model: value.model,
+    prompt: value.prompt,
+    status_code: value.status_code,
+    ok: value.ok,
+    latency_ms: value.latency_ms,
+    output_text: value.output_text,
+    error_reason: value.error_reason,
+    upstream_url: value.upstream_url,
+    raw_response: value.raw_response,
   };
 };
 
