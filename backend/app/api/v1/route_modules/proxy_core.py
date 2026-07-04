@@ -68,6 +68,43 @@ from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
 
+def _raw_proxy_response_with_dump(
+    dump_rule,
+    *,
+    content: bytes,
+    request_id: str,
+    trace_id: str,
+    endpoint_name: str,
+    model_alias: str,
+    request_body: bytes,
+    status_code: int,
+    response_headers: dict,
+    debug_headers: dict,
+    session_id: str | None,
+    request_path: str,
+) -> Response:
+    safe_create_task(
+        _dump_proxy_record(
+            dump_rule,
+            request_id,
+            trace_id,
+            endpoint_name,
+            model_alias,
+            request_body,
+            content,
+            status_code,
+            session_id=session_id,
+            request_path=request_path,
+        )
+    )
+    return Response(
+        content=content,
+        status_code=status_code,
+        media_type=response_headers.get("content-type"),
+        headers=_merge_headers(_filter_response_headers(response_headers), debug_headers),
+    )
+
+
 async def _proxy_openai_request(
     request: Request,
     session: AsyncSession,
@@ -295,27 +332,19 @@ async def _proxy_openai_request(
                         continue
                     if candidate != candidates[-1]:
                         break
-                    safe_create_task(
-                        _dump_proxy_record(
-                            dump_rule,
-                            request_id,
-                            trace_id,
-                            candidate.endpoint.name,
-                            model_alias,
-                            upstream_body,
-                            content,
-                            status_code,
-                            session_id=session_id,
-                            request_path=request.url.path,
-                        )
-                    )
-                    return Response(
+                    return _raw_proxy_response_with_dump(
+                        dump_rule,
                         content=content,
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        endpoint_name=candidate.endpoint.name,
+                        model_alias=model_alias,
+                        request_body=upstream_body,
                         status_code=status_code,
-                        media_type=agent_response.headers.get("content-type"),
-                        headers=_merge_headers(
-                            _filter_response_headers(agent_response.headers), debug_headers
-                        ),
+                        response_headers=agent_response.headers,
+                        debug_headers=debug_headers,
+                        session_id=session_id,
+                        request_path=request.url.path,
                     )
 
                 if is_stream:
@@ -391,27 +420,19 @@ async def _proxy_openai_request(
                     )
                     if candidate != candidates[-1]:
                         break
-                    safe_create_task(
-                        _dump_proxy_record(
-                            dump_rule,
-                            request_id,
-                            trace_id,
-                            candidate.endpoint.name,
-                            model_alias,
-                            upstream_body,
-                            agent_response.body,
-                            status_code,
-                            session_id=session_id,
-                            request_path=request.url.path,
-                        )
-                    )
-                    return Response(
+                    return _raw_proxy_response_with_dump(
+                        dump_rule,
                         content=agent_response.body,
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        endpoint_name=candidate.endpoint.name,
+                        model_alias=model_alias,
+                        request_body=upstream_body,
                         status_code=status_code,
-                        media_type=agent_response.headers.get("content-type"),
-                        headers=_merge_headers(
-                            _filter_response_headers(agent_response.headers), debug_headers
-                        ),
+                        response_headers=agent_response.headers,
+                        debug_headers=debug_headers,
+                        session_id=session_id,
+                        request_path=request.url.path,
                     )
 
                 await circuit_breaker.record_success(candidate.api_key.id)
@@ -454,28 +475,19 @@ async def _proxy_openai_request(
                 )
                 safe_create_task(write_request_log(metrics))
 
-                safe_create_task(
-                    _dump_proxy_record(
-                        dump_rule,
-                        request_id,
-                        trace_id,
-                        candidate.endpoint.name,
-                        model_alias,
-                        upstream_body,
-                        agent_response.body,
-                        status_code,
-                        session_id=session_id,
-                        request_path=request.url.path,
-                    )
-                )
-
-                return Response(
+                return _raw_proxy_response_with_dump(
+                    dump_rule,
                     content=agent_response.body,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    endpoint_name=candidate.endpoint.name,
+                    model_alias=model_alias,
+                    request_body=upstream_body,
                     status_code=status_code,
-                    media_type=agent_response.headers.get("content-type"),
-                    headers=_merge_headers(
-                        _filter_response_headers(agent_response.headers), debug_headers
-                    ),
+                    response_headers=agent_response.headers,
+                    debug_headers=debug_headers,
+                    session_id=session_id,
+                    request_path=request.url.path,
                 )
 
             continue
@@ -598,27 +610,19 @@ async def _proxy_openai_request(
                     continue
                 if candidate != candidates[-1]:
                     break
-                safe_create_task(
-                    _dump_proxy_record(
-                        dump_rule,
-                        request_id,
-                        trace_id,
-                        candidate.endpoint.name,
-                        model_alias,
-                        upstream_body,
-                        content,
-                        response.status_code,
-                        session_id=session_id,
-                        request_path=request.url.path,
-                    )
-                )
-                return Response(
+                return _raw_proxy_response_with_dump(
+                    dump_rule,
                     content=content,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    endpoint_name=candidate.endpoint.name,
+                    model_alias=model_alias,
+                    request_body=upstream_body,
                     status_code=response.status_code,
-                    media_type=response.headers.get("content-type"),
-                    headers=_merge_headers(
-                        _filter_response_headers(response.headers), debug_headers
-                    ),
+                    response_headers=response.headers,
+                    debug_headers=debug_headers,
+                    session_id=session_id,
+                    request_path=request.url.path,
                 )
 
             latency_ms = int((time.perf_counter() - request_start) * 1000)
@@ -700,27 +704,19 @@ async def _proxy_openai_request(
                 )
                 if candidate != candidates[-1]:
                     break
-                safe_create_task(
-                    _dump_proxy_record(
-                        dump_rule,
-                        request_id,
-                        trace_id,
-                        candidate.endpoint.name,
-                        model_alias,
-                        upstream_body,
-                        content,
-                        response.status_code,
-                        session_id=session_id,
-                        request_path=request.url.path,
-                    )
-                )
-                return Response(
+                return _raw_proxy_response_with_dump(
+                    dump_rule,
                     content=content,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    endpoint_name=candidate.endpoint.name,
+                    model_alias=model_alias,
+                    request_body=upstream_body,
                     status_code=response.status_code,
-                    media_type=response.headers.get("content-type"),
-                    headers=_merge_headers(
-                        _filter_response_headers(response.headers), debug_headers
-                    ),
+                    response_headers=response.headers,
+                    debug_headers=debug_headers,
+                    session_id=session_id,
+                    request_path=request.url.path,
                 )
 
             await circuit_breaker.record_success(candidate.api_key.id)
@@ -763,31 +759,21 @@ async def _proxy_openai_request(
             )
             safe_create_task(write_request_log(metrics))
 
-            safe_create_task(
-                _dump_proxy_record(
-                    dump_rule,
-                    request_id,
-                    trace_id,
-                    candidate.endpoint.name,
-                    model_alias,
-                    upstream_body,
-                    content,
-                    response.status_code,
-                    session_id=session_id,
-                    request_path=request.url.path,
-                )
-            )
-
-            return Response(
+            return _raw_proxy_response_with_dump(
+                dump_rule,
                 content=content,
+                request_id=request_id,
+                trace_id=trace_id,
+                endpoint_name=candidate.endpoint.name,
+                model_alias=model_alias,
+                request_body=upstream_body,
                 status_code=response.status_code,
-                media_type=response.headers.get("content-type"),
-                headers=_merge_headers(
-                    _filter_response_headers(response.headers), debug_headers
-                ),
+                response_headers=response.headers,
+                debug_headers=debug_headers,
+                session_id=session_id,
+                request_path=request.url.path,
             )
 
         continue
 
     raise HTTPException(status_code=502, detail="All upstream requests failed")
-
