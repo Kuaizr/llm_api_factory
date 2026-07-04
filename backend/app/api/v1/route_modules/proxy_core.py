@@ -392,6 +392,121 @@ def _record_attempt_log(
     safe_create_task(write_request_attempt_log(metrics))
 
 
+def _parse_request_payload(raw_body: bytes) -> dict[str, object]:
+    if not raw_body:
+        return {}
+    try:
+        parsed = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    return parsed
+
+
+def _resolve_model_alias(
+    request: Request,
+    payload: dict[str, object],
+    *,
+    rewrite_model: bool,
+    allow_missing_model: bool,
+    model_alias_override: str | None,
+) -> str:
+    model_alias_raw = payload.get("model")
+    model_alias = model_alias_override
+    if model_alias is None:
+        model_alias = str(model_alias_raw) if model_alias_raw is not None else None
+    header_model_alias = request.headers.get("X-Model-Alias")
+    if not model_alias and header_model_alias:
+        model_alias = str(header_model_alias)
+
+    if rewrite_model and not model_alias and not allow_missing_model:
+        raise HTTPException(status_code=400, detail="Missing model field")
+    return model_alias or request.url.path
+
+
+def _extract_requested_rule_group(
+    request: Request,
+    payload: dict[str, object],
+) -> str:
+    payload_rule_group = payload.get("rule_group")
+    if payload_rule_group is None:
+        payload_rule_group = payload.get("rules")
+    if not isinstance(payload_rule_group, str) or not payload_rule_group:
+        payload_rule_group = request.headers.get("X-Rule-Group", "default")
+    return str(payload_rule_group or "default").strip() or "default"
+
+
+def _prepare_upstream_payload_and_body(
+    payload: dict[str, object],
+    raw_body: bytes,
+    candidate: RouteCandidate,
+    *,
+    rewrite_model: bool,
+) -> tuple[dict[str, object], bytes]:
+    upstream_payload = payload
+    should_rewrite_body_model = (
+        rewrite_model
+        and "model" in payload
+        and payload.get("model") != candidate.real_model
+    )
+    if should_rewrite_body_model:
+        upstream_payload = dict(payload)
+        upstream_payload["model"] = candidate.real_model
+
+    templated_payload = _apply_request_body_template(
+        candidate.endpoint, upstream_payload, candidate.real_model
+    )
+    if templated_payload is not None:
+        upstream_payload = templated_payload
+
+    if templated_payload is not None or should_rewrite_body_model:
+        return upstream_payload, json.dumps(upstream_payload).encode("utf-8")
+    return upstream_payload, raw_body
+
+
+def _is_stream_request(request: Request, upstream_payload: dict[str, object]) -> bool:
+    accept_header = request.headers.get("accept", "").lower()
+    return bool(upstream_payload.get("stream")) or "text/event-stream" in accept_header
+
+
+async def _reserve_candidate_attempt_or_raise(
+    *,
+    router_service: ModelRouter,
+    candidate: RouteCandidate,
+    last_candidate: RouteCandidate,
+    request_id: str,
+    trace_id: str,
+    model_alias: str,
+    requested_rule_group: str | None,
+    effective_group: str,
+    attempt_order: int,
+    attempt_start: float,
+    agent_node: str | None,
+    upstream_url: str,
+) -> bool:
+    if await router_service.reserve_candidate_attempt(candidate):
+        return True
+    _record_attempt_log(
+        request_id=request_id,
+        trace_id=trace_id,
+        model_alias=model_alias,
+        candidate=candidate,
+        requested_rule_group=requested_rule_group,
+        rule_group=effective_group,
+        attempt_order=attempt_order,
+        status_code=None,
+        outcome="fallback" if candidate != last_candidate else "error",
+        failure_reason="rpm_limit",
+        latency_ms=_elapsed_ms(attempt_start),
+        agent_node=agent_node,
+        upstream_url=upstream_url,
+    )
+    if candidate != last_candidate:
+        return False
+    raise HTTPException(status_code=429, detail="API key rate limit exceeded")
+
+
 async def _list_accessible_model_aliases(
     request: Request,
     session: AsyncSession,
@@ -492,35 +607,15 @@ async def _proxy_openai_request(
     target_path_rewriter: Callable[[str, RouteCandidate], str] | None = None,
 ) -> Response:
     raw_body = await request.body()
-    payload: dict[str, object] = {}
-    if raw_body:
-        try:
-            parsed = json.loads(raw_body)
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
-        if not isinstance(parsed, dict):
-            raise HTTPException(status_code=400, detail="Invalid JSON body")
-        payload = parsed
-
-    model_alias_raw = payload.get("model")
-    model_alias = model_alias_override
-    if model_alias is None:
-        model_alias = str(model_alias_raw) if model_alias_raw is not None else None
-    header_model_alias = request.headers.get("X-Model-Alias")
-    if not model_alias and header_model_alias:
-        model_alias = str(header_model_alias)
-
-    if rewrite_model and not model_alias and not allow_missing_model:
-        raise HTTPException(status_code=400, detail="Missing model field")
-    if not model_alias:
-        model_alias = request.url.path
-
-    payload_rule_group = payload.get("rule_group")
-    if payload_rule_group is None:
-        payload_rule_group = payload.get("rules")
-    if not isinstance(payload_rule_group, str) or not payload_rule_group:
-        payload_rule_group = request.headers.get("X-Rule-Group", "default")
-    requested_rule_group = str(payload_rule_group or "default").strip() or "default"
+    payload = _parse_request_payload(raw_body)
+    model_alias = _resolve_model_alias(
+        request,
+        payload,
+        rewrite_model=rewrite_model,
+        allow_missing_model=allow_missing_model,
+        model_alias_override=model_alias_override,
+    )
+    requested_rule_group = _extract_requested_rule_group(request, payload)
     rule_group = await _resolve_rule_group_from_token(
         session, request, requested_rule_group
     )
@@ -555,55 +650,13 @@ async def _proxy_openai_request(
     client = await get_http_client()
     attempt_order = 0
 
-    async def reserve_candidate_or_raise(
-        candidate: RouteCandidate,
-        attempt_order: int,
-        attempt_start: float,
-        agent_node: str | None,
-        upstream_url: str,
-    ) -> bool:
-        if await router_service.reserve_candidate_attempt(candidate):
-            return True
-        _record_attempt_log(
-            request_id=request_id,
-            trace_id=trace_id,
-            model_alias=model_alias,
-            candidate=candidate,
-            requested_rule_group=requested_rule_group,
-            rule_group=effective_group,
-            attempt_order=attempt_order,
-            status_code=None,
-            outcome="fallback" if candidate != candidates[-1] else "error",
-            failure_reason="rpm_limit",
-            latency_ms=_elapsed_ms(attempt_start),
-            agent_node=agent_node,
-            upstream_url=upstream_url,
-        )
-        if candidate != candidates[-1]:
-            return False
-        raise HTTPException(status_code=429, detail="API key rate limit exceeded")
-
     for candidate in candidates:
-        upstream_payload = payload
-        should_rewrite_body_model = (
-            rewrite_model
-            and "model" in payload
-            and payload.get("model") != candidate.real_model
+        upstream_payload, upstream_body = _prepare_upstream_payload_and_body(
+            payload,
+            raw_body,
+            candidate,
+            rewrite_model=rewrite_model,
         )
-        if should_rewrite_body_model:
-            upstream_payload = dict(payload)
-            upstream_payload["model"] = candidate.real_model
-
-        templated_payload = _apply_request_body_template(
-            candidate.endpoint, upstream_payload, candidate.real_model
-        )
-        if templated_payload is not None:
-            upstream_payload = templated_payload
-
-        if templated_payload is not None or should_rewrite_body_model:
-            upstream_body = json.dumps(upstream_payload).encode("utf-8")
-        else:
-            upstream_body = raw_body
 
         headers = _build_upstream_headers(
             request.headers, candidate.endpoint, candidate.api_key.key
@@ -636,8 +689,7 @@ async def _proxy_openai_request(
             endpoint=candidate.endpoint,
             path_override=target_path,
         )
-        accept_header = request.headers.get("accept", "").lower()
-        is_stream = bool(upstream_payload.get("stream")) or "text/event-stream" in accept_header
+        is_stream = _is_stream_request(request, upstream_payload)
         debug_headers = _build_debug_headers(
             request_id,
             trace_id,
@@ -655,12 +707,19 @@ async def _proxy_openai_request(
             for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
                 attempt_order += 1
                 attempt_start = time.perf_counter()
-                if not await reserve_candidate_or_raise(
-                    candidate,
-                    attempt_order,
-                    attempt_start,
-                    agent_name,
-                    url,
+                if not await _reserve_candidate_attempt_or_raise(
+                    router_service=router_service,
+                    candidate=candidate,
+                    last_candidate=candidates[-1],
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    requested_rule_group=requested_rule_group,
+                    effective_group=effective_group,
+                    attempt_order=attempt_order,
+                    attempt_start=attempt_start,
+                    agent_node=agent_name,
+                    upstream_url=url,
                 ):
                     break
                 try:
@@ -996,12 +1055,19 @@ async def _proxy_openai_request(
         for attempt_index in range(UPSTREAM_CANDIDATE_MAX_ATTEMPTS):
             attempt_order += 1
             attempt_start = time.perf_counter()
-            if not await reserve_candidate_or_raise(
-                candidate,
-                attempt_order,
-                attempt_start,
-                agent_name,
-                url,
+            if not await _reserve_candidate_attempt_or_raise(
+                router_service=router_service,
+                candidate=candidate,
+                last_candidate=candidates[-1],
+                request_id=request_id,
+                trace_id=trace_id,
+                model_alias=model_alias,
+                requested_rule_group=requested_rule_group,
+                effective_group=effective_group,
+                attempt_order=attempt_order,
+                attempt_start=attempt_start,
+                agent_node=agent_name,
+                upstream_url=url,
             ):
                 break
             try:
