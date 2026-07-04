@@ -212,8 +212,8 @@ class AgentClient:
         while True:
             try:
                 await client.post(url, json=payload, headers=headers)
-            except httpx.HTTPError:
-                pass
+            except httpx.HTTPError as exc:
+                logger.warning("Agent status heartbeat failed: %s", exc)
             await asyncio.sleep(self.heartbeat_interval_seconds)
 
 

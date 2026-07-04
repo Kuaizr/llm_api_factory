@@ -1,5 +1,7 @@
 import asyncio
+import logging
 
+import httpx
 import pytest
 
 from app.core.config import Settings
@@ -87,3 +89,41 @@ async def test_run_agent_with_shutdown_cancels_task() -> None:
     await task
 
     assert agent.cancelled.is_set()
+
+
+class FailingStatusClient:
+    def __init__(self) -> None:
+        self.called = asyncio.Event()
+
+    async def post(self, *_args, **_kwargs) -> None:
+        self.called.set()
+        raise httpx.ConnectError("heartbeat unreachable")
+
+
+@pytest.mark.asyncio
+async def test_status_heartbeat_logs_http_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    agent = agent_client_module.AgentClient(
+        ws_url="ws://localhost:8000/api/v1/agent/ws",
+        name="edge-hk",
+        auth_token="token",
+        heartbeat_interval_seconds=60,
+    )
+    client = FailingStatusClient()
+
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(
+            agent._status_heartbeat(
+                client,
+                "http://localhost:8000/api/v1/agent/heartbeat",
+                {"Authorization": "Bearer token"},
+            )
+        )
+        await asyncio.wait_for(client.called.wait(), timeout=1)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert "Agent status heartbeat failed: heartbeat unreachable" in caplog.text
