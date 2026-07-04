@@ -156,32 +156,34 @@ class AgentClient:
                     await ws.send(json.dumps(register_payload))
                     heartbeat = asyncio.create_task(self._heartbeat(ws))
                     status_task: asyncio.Task | None = None
-                    async with httpx.AsyncClient() as client:
-                        if heartbeat_url:
-                            status_task = asyncio.create_task(
-                                self._status_heartbeat(client, heartbeat_url, auth_headers)
-                            )
-                        async for raw_message in ws:
-                            if not raw_message:
-                                continue
-                            try:
-                                payload = json.loads(raw_message)
-                            except json.JSONDecodeError:
-                                continue
-                            if payload.get("type") != "proxy_request":
-                                continue
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            if heartbeat_url:
+                                status_task = asyncio.create_task(
+                                    self._status_heartbeat(client, heartbeat_url, auth_headers)
+                                )
+                            async for raw_message in ws:
+                                if not raw_message:
+                                    continue
+                                try:
+                                    payload = json.loads(raw_message)
+                                except json.JSONDecodeError:
+                                    continue
+                                if payload.get("type") != "proxy_request":
+                                    continue
 
-                            async def send_json(message: dict[str, Any]) -> None:
-                                await ws.send(json.dumps(message))
+                                async def send_json(message: dict[str, Any]) -> None:
+                                    await ws.send(json.dumps(message))
 
-                            await handle_proxy_request(payload, client, send_json)
-                    heartbeat.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await heartbeat
-                    if status_task:
-                        status_task.cancel()
+                                await handle_proxy_request(payload, client, send_json)
+                    finally:
+                        heartbeat.cancel()
                         with suppress(asyncio.CancelledError):
-                            await status_task
+                            await heartbeat
+                        if status_task:
+                            status_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await status_task
             except Exception as exc:
                 logger.warning("Agent connection loop failed: %s", exc)
                 await asyncio.sleep(self.reconnect_delay_seconds)
