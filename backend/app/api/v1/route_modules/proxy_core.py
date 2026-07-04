@@ -1,5 +1,4 @@
 from typing import AsyncGenerator, Callable
-import json
 import re
 import time
 import uuid
@@ -27,6 +26,13 @@ from app.api.v1.route_modules.proxy_models import (
     list_accessible_model_aliases,
     list_models,
 )
+from app.api.v1.route_modules.proxy_payloads import (
+    extract_requested_rule_group,
+    is_stream_request,
+    parse_request_payload,
+    prepare_upstream_payload_and_body,
+    resolve_model_alias,
+)
 from app.api.v1.route_modules.proxy_trace import (
     include_debug_headers,
     resolve_session_id,
@@ -34,7 +40,6 @@ from app.api.v1.route_modules.proxy_trace import (
 )
 from app.api.v1.route_proxy_helpers import (
     _apply_oauth_access_token,
-    _apply_request_body_template,
     _build_debug_headers,
     _build_target_url,
     _build_upstream_headers,
@@ -143,84 +148,6 @@ def _record_attempt_log(
         upstream_url=upstream_url,
     )
     safe_create_task(write_request_attempt_log(metrics))
-
-
-def _parse_request_payload(raw_body: bytes) -> dict[str, object]:
-    if not raw_body:
-        return {}
-    try:
-        parsed = json.loads(raw_body)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
-    if not isinstance(parsed, dict):
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-    return parsed
-
-
-def _resolve_model_alias(
-    request: Request,
-    payload: dict[str, object],
-    *,
-    rewrite_model: bool,
-    allow_missing_model: bool,
-    model_alias_override: str | None,
-) -> str:
-    model_alias_raw = payload.get("model")
-    model_alias = model_alias_override
-    if model_alias is None:
-        model_alias = str(model_alias_raw) if model_alias_raw is not None else None
-    header_model_alias = request.headers.get("X-Model-Alias")
-    if not model_alias and header_model_alias:
-        model_alias = str(header_model_alias)
-
-    if rewrite_model and not model_alias and not allow_missing_model:
-        raise HTTPException(status_code=400, detail="Missing model field")
-    return model_alias or request.url.path
-
-
-def _extract_requested_rule_group(
-    request: Request,
-    payload: dict[str, object],
-) -> str:
-    payload_rule_group = payload.get("rule_group")
-    if payload_rule_group is None:
-        payload_rule_group = payload.get("rules")
-    if not isinstance(payload_rule_group, str) or not payload_rule_group:
-        payload_rule_group = request.headers.get("X-Rule-Group", "default")
-    return str(payload_rule_group or "default").strip() or "default"
-
-
-def _prepare_upstream_payload_and_body(
-    payload: dict[str, object],
-    raw_body: bytes,
-    candidate: RouteCandidate,
-    *,
-    rewrite_model: bool,
-) -> tuple[dict[str, object], bytes]:
-    upstream_payload = payload
-    should_rewrite_body_model = (
-        rewrite_model
-        and "model" in payload
-        and payload.get("model") != candidate.real_model
-    )
-    if should_rewrite_body_model:
-        upstream_payload = dict(payload)
-        upstream_payload["model"] = candidate.real_model
-
-    templated_payload = _apply_request_body_template(
-        candidate.endpoint, upstream_payload, candidate.real_model
-    )
-    if templated_payload is not None:
-        upstream_payload = templated_payload
-
-    if templated_payload is not None or should_rewrite_body_model:
-        return upstream_payload, json.dumps(upstream_payload).encode("utf-8")
-    return upstream_payload, raw_body
-
-
-def _is_stream_request(request: Request, upstream_payload: dict[str, object]) -> bool:
-    accept_header = request.headers.get("accept", "").lower()
-    return bool(upstream_payload.get("stream")) or "text/event-stream" in accept_header
 
 
 async def _reserve_candidate_attempt_or_raise(
@@ -352,15 +279,15 @@ async def _proxy_openai_request(
     target_path_rewriter: Callable[[str, RouteCandidate], str] | None = None,
 ) -> Response:
     raw_body = await request.body()
-    payload = _parse_request_payload(raw_body)
-    model_alias = _resolve_model_alias(
+    payload = parse_request_payload(raw_body)
+    model_alias = resolve_model_alias(
         request,
         payload,
         rewrite_model=rewrite_model,
         allow_missing_model=allow_missing_model,
         model_alias_override=model_alias_override,
     )
-    requested_rule_group = _extract_requested_rule_group(request, payload)
+    requested_rule_group = extract_requested_rule_group(request, payload)
     rule_group = await _resolve_rule_group_from_token(
         session, request, requested_rule_group
     )
@@ -396,7 +323,7 @@ async def _proxy_openai_request(
     attempt_order = 0
 
     for candidate in candidates:
-        upstream_payload, upstream_body = _prepare_upstream_payload_and_body(
+        upstream_payload, upstream_body = prepare_upstream_payload_and_body(
             payload,
             raw_body,
             candidate,
@@ -434,7 +361,7 @@ async def _proxy_openai_request(
             endpoint=candidate.endpoint,
             path_override=target_path,
         )
-        is_stream = _is_stream_request(request, upstream_payload)
+        is_stream = is_stream_request(request, upstream_payload)
         debug_headers = _build_debug_headers(
             request_id,
             trace_id,
