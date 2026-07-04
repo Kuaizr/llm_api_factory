@@ -84,6 +84,7 @@ tests/test_migrations.py
 tests/test_metrics_timeseries.py
 tests/test_model_router_wrr.py
 tests/test_openai_proxy_agent_routes.py
+tests/test_openai_proxy_oauth_routes.py
 tests/test_openai_proxy_routes.py
 tests/proxy_test_utils.py
 tests/test_route_explain.py
