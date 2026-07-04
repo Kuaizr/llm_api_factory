@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.route_helpers import (
     _dump_proxy_record,
-    _extract_factory_api_key,
     _find_dump_rule,
     _resolve_rule_group_from_token,
 )
@@ -28,6 +27,11 @@ from app.api.v1.route_modules.proxy_models import (
     list_accessible_model_aliases,
     list_models,
 )
+from app.api.v1.route_modules.proxy_trace import (
+    include_debug_headers,
+    resolve_session_id,
+    resolve_trace_id,
+)
 from app.api.v1.route_proxy_helpers import (
     _apply_oauth_access_token,
     _apply_request_body_template,
@@ -41,13 +45,11 @@ from app.api.v1.route_proxy_helpers import (
     _merge_headers,
     _stream_response,
 )
-from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.providers import normalize_provider_name
 from app.core.redis import get_redis
 from app.db.models import RoutingRule
 from app.db.session import get_session
-from app.services.admin_auth import verify_admin_session_token
 from app.services.agent_transport import (
     AgentRequest,
     AgentResponse,
@@ -66,87 +68,11 @@ from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
 
-SESSION_HINT_KEYS = (
-    "session_id",
-    "conversation_id",
-    "thread_id",
-    "chat_id",
-    "dialog_id",
-    "previous_response_id",
-)
-TRACE_HINT_KEYS = ("trace_id", "request_id")
 GEMINI_MODEL_PATH_PATTERN = re.compile(
     r"(?P<prefix>/(?:v1|v1beta|v1alpha)/(?P<collection>models|tunedModels)/)"
     r"(?P<model>[^:?#]+)"
     r"(?P<suffix>:[^/?#]+)?"
 )
-
-
-def _include_debug_headers(request: Request) -> bool:
-    debug_value = str(request.headers.get("X-Debug") or "").strip().lower()
-    if debug_value not in {"1", "true", "yes"}:
-        return False
-    token = _extract_factory_api_key(request.headers)
-    return verify_admin_session_token(token, get_settings())
-
-
-def _extract_text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    trimmed = value.strip()
-    return trimmed or None
-
-
-def _clamp_identifier(value: str) -> str:
-    return value[:128]
-
-
-def _extract_hint_from_payload(payload: dict[str, object], keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        value = _extract_text(payload.get(key))
-        if value:
-            return _clamp_identifier(value)
-
-    metadata = payload.get("metadata")
-    if isinstance(metadata, dict):
-        for key in keys:
-            value = _extract_text(metadata.get(key))
-            if value:
-                return _clamp_identifier(value)
-    return None
-
-
-def _resolve_session_id(request: Request, payload: dict[str, object]) -> str | None:
-    header_session = _extract_text(request.headers.get("X-Session-Id"))
-    if header_session:
-        return _clamp_identifier(header_session)
-
-    payload_session = _extract_hint_from_payload(payload, SESSION_HINT_KEYS)
-    if payload_session:
-        return payload_session
-
-    user_value = _extract_text(payload.get("user"))
-    if user_value:
-        return _clamp_identifier(f"user:{user_value}")
-    return None
-
-
-def _resolve_trace_id(
-    request: Request,
-    payload: dict[str, object],
-    session_id: str | None,
-) -> str:
-    header_trace = _extract_text(request.headers.get("X-Trace-Id"))
-    if header_trace:
-        return _clamp_identifier(header_trace)
-
-    payload_trace = _extract_hint_from_payload(payload, TRACE_HINT_KEYS)
-    if payload_trace:
-        return payload_trace
-
-    if session_id:
-        return _clamp_identifier(session_id)
-    return uuid.uuid4().hex
 
 
 def _extract_gemini_model_alias(path: str) -> str | None:
@@ -462,10 +388,10 @@ async def _proxy_openai_request(
     dump_rule = await _find_dump_rule(session, model_alias, effective_group)
 
     request_id = uuid.uuid4().hex
-    session_id = _resolve_session_id(request, payload)
-    trace_id = _resolve_trace_id(request, payload, session_id)
+    session_id = resolve_session_id(request, payload)
+    trace_id = resolve_trace_id(request, payload, session_id)
     request_start = time.perf_counter()
-    include_internal_debug = _include_debug_headers(request)
+    include_internal_debug = include_debug_headers(request)
     client = await get_http_client()
     attempt_order = 0
 
