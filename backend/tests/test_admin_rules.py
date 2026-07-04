@@ -306,6 +306,7 @@ async def test_admin_default_rule_access_keys_and_guards(
         assert issue_payload["rule_id"] == default_rule_id
         assert issue_payload["name"] == "default-client"
         assert issue_payload["key"].startswith("rk-")
+        assert issue_payload["key_preview"] != issue_payload["key"]
 
         list_response = await client.get(
             f"/admin/rules/{default_rule_id}/access-keys",
@@ -315,7 +316,8 @@ async def test_admin_default_rule_access_keys_and_guards(
         list_payload = list_response.json()
         assert len(list_payload) == 1
         assert list_payload[0]["name"] == "default-client"
-        assert list_payload[0]["key"].startswith("rk-")
+        assert list_payload[0]["key"] is None
+        assert list_payload[0]["key_preview"] == issue_payload["key_preview"]
 
         disable_response = await client.patch(
             f"/admin/rules/{default_rule_id}",
@@ -348,6 +350,71 @@ async def test_admin_default_rule_access_keys_and_guards(
             delete_response.json()["detail"]
             == "Default rule group cannot be deleted"
         )
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_factory_access_key_lists_do_not_expose_full_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post(
+            "/admin/factory-keys",
+            headers={"Authorization": "Bearer token"},
+            json={"name": "client", "rule_groups": ["codex"]},
+        )
+        assert create_response.status_code == 200
+        create_payload = create_response.json()
+        assert create_payload["key"].startswith("fk-")
+
+        list_response = await client.get(
+            "/admin/factory-keys",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert list_response.status_code == 200
+        list_payload = list_response.json()
+        assert len(list_payload) == 1
+        assert list_payload[0]["key"] is None
+        assert list_payload[0]["key_preview"] != create_payload["key"]
+
+        update_response = await client.patch(
+            f"/admin/factory-keys/{create_payload['id']}",
+            headers={"Authorization": "Bearer token"},
+            json={"name": "client-renamed"},
+        )
+        assert update_response.status_code == 200
+        update_payload = update_response.json()
+        assert update_payload["key"] is None
+        assert update_payload["key_preview"] == list_payload[0]["key_preview"]
+
+        rotate_response = await client.post(
+            f"/admin/factory-keys/{create_payload['id']}/rotate",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert rotate_response.status_code == 200
+        rotate_payload = rotate_response.json()
+        assert rotate_payload["key"].startswith("fk-")
+        assert rotate_payload["key"] != create_payload["key"]
 
     await session.close()
     await engine.dispose()

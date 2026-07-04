@@ -831,8 +831,9 @@ const RuleAccessKeysModal = ({
                 </div>
                 <button
                   onClick={() => copyKey(item.key)}
-                  title="复制完整 Key"
-                  className="px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-800"
+                  disabled={!item.key}
+                  title={item.key ? "复制完整 Key" : "完整 Key 只在创建时显示"}
+                  className="px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   复制
                 </button>

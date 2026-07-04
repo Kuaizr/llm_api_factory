@@ -388,7 +388,7 @@ export const FactoryKeysPanel = ({
                       onClick={() => handleCopy(item.key)}
                       disabled={!item.key}
                       className="p-1.5 hover:bg-gray-800 rounded text-green-300 transition disabled:opacity-40"
-                      title="复制完整 Key"
+                      title={item.key ? "复制完整 Key" : "完整 Key 只在创建或轮换后显示"}
                     >
                       <Copy size={14} />
                     </button>

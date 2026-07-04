@@ -637,6 +637,7 @@ class RuleAccessKeyIssueOut(BaseModel):
     id: int
     rule_id: int
     name: str | None
+    key_preview: str
     key: str
     is_active: bool
     created_at: datetime
