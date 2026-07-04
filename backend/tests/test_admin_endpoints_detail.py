@@ -197,6 +197,11 @@ async def test_admin_standard_endpoint_clears_custom_only_fields(
                 "extra_headers": {"X-Custom": "yes"},
                 "extra_cookies": "session=custom",
                 "extra_query_params": {"api-version": "custom"},
+                "oauth_config": {
+                    "token_url": "https://auth.example.com/oauth/token",
+                    "client_id": "client",
+                    "client_secret": "secret",
+                },
                 "request_body_template": json.dumps({"model": "{{model}}"}),
             },
         )
@@ -207,6 +212,7 @@ async def test_admin_standard_endpoint_clears_custom_only_fields(
     assert payload["extra_headers"] is None
     assert payload["extra_cookies"] is None
     assert payload["extra_query_params"] is None
+    assert payload["oauth_config"] is None
     assert payload["request_body_template"] is None
 
     endpoint = await session.get(Endpoint, payload["id"])
@@ -215,6 +221,7 @@ async def test_admin_standard_endpoint_clears_custom_only_fields(
     assert endpoint.extra_headers is None
     assert endpoint.extra_cookies is None
     assert endpoint.extra_query_params is None
+    assert endpoint.oauth_config is None
     assert endpoint.request_body_template is None
 
     await session.close()

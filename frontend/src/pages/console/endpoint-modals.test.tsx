@@ -41,6 +41,7 @@ describe("EditEndpointModal", () => {
 
     expect(screen.queryByText("额外请求头 (JSON)")).not.toBeInTheDocument();
     expect(screen.queryByText("额外查询参数 (JSON)")).not.toBeInTheDocument();
+    expect(screen.queryByText("OAuth 配置 (JSON)")).not.toBeInTheDocument();
     expect(screen.queryByText("请求体模板 (JSON)")).not.toBeInTheDocument();
   });
 
@@ -57,6 +58,7 @@ describe("EditEndpointModal", () => {
 
     expect(screen.getByText("额外请求头 (JSON)")).toBeInTheDocument();
     expect(screen.getByText("额外查询参数 (JSON)")).toBeInTheDocument();
+    expect(screen.getByText("OAuth 配置 (JSON)")).toBeInTheDocument();
     expect(screen.getByText("请求体模板 (JSON)")).toBeInTheDocument();
   });
 

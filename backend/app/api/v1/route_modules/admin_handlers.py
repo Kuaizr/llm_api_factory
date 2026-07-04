@@ -102,6 +102,7 @@ CUSTOM_ONLY_ENDPOINT_FIELDS = (
     "extra_headers",
     "extra_cookies",
     "extra_query_params",
+    "oauth_config",
     "request_body_template",
 )
 logger = logging.getLogger(__name__)
