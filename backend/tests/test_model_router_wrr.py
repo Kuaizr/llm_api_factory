@@ -7,7 +7,12 @@ from app.core.config import Settings
 from app.core.redis import MemoryRedis
 from app.services.circuit_breaker import CircuitBreaker
 from app.services import router as router_module
-from app.services.router import ModelRouter, RouteCandidate
+from app.services.router import (
+    ModelRouter,
+    RPM_STATE_TTL_SECONDS,
+    RouteCandidate,
+    SEQUENTIAL_STATE_TTL_SECONDS,
+)
 
 
 class CircuitBreakerStub:
@@ -140,6 +145,14 @@ async def test_sequential_strategy_persists_success_as_active_key() -> None:
     assert [candidate.api_key.id for candidate in first_order] == [1, 2, 3]
 
     await router.record_candidate_success(candidates[1])
+    state_key = router._sequential_state_key(
+        model_alias="gpt-5",
+        effective_group="codex",
+        provider_filters=None,
+        target_key_ids=target_key_ids,
+    )
+    state_ttl = await router.circuit_breaker.redis.ttl(state_key)
+    assert 0 < state_ttl <= SEQUENTIAL_STATE_TTL_SECONDS
 
     second_order = await router.order_candidates(
         candidates,
@@ -204,6 +217,8 @@ async def test_reserve_candidate_attempt_counts_rpm_window() -> None:
     candidate.api_key.rpm_limit = 2
 
     assert await router.reserve_candidate_attempt(candidate) is True
+    rpm_ttl = await redis.ttl(ModelRouter._rpm_state_key(candidate.api_key.id))
+    assert 0 < rpm_ttl <= RPM_STATE_TTL_SECONDS
     assert await router.reserve_candidate_attempt(candidate) is True
     assert await router.reserve_candidate_attempt(candidate) is False
 
