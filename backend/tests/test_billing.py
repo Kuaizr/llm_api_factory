@@ -3,9 +3,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.base import Base
-from app.db.models import APIKey, Endpoint, RequestLog
+from app.db.models import APIKey, Endpoint, RequestAttemptLog, RequestLog
 from app.services import billing
-from app.services.billing import RequestMetrics, extract_usage, write_request_log
+from app.services.billing import (
+    RequestAttemptMetrics,
+    RequestMetrics,
+    extract_usage,
+    write_request_attempt_log,
+    write_request_log,
+)
 
 
 def test_extract_usage_supports_standard_provider_shapes() -> None:
@@ -82,5 +88,71 @@ async def test_write_request_log_records_usage_atomically(
     assert api_key is not None
     assert api_key.used_today == 5
     assert api_key.total_usage == 15
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_write_request_attempt_log_records_fallback_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(billing, "SessionLocal", session_maker)
+
+    async with session_maker() as session:
+        endpoint = Endpoint(
+            name="Attempt",
+            base_url="https://api.example.com",
+            access_mode="via_agent",
+            agent_node="edge-hk",
+        )
+        session.add(endpoint)
+        await session.commit()
+        await session.refresh(endpoint)
+        api_key = APIKey(endpoint_id=endpoint.id, key="sk-attempt")
+        session.add(api_key)
+        await session.commit()
+        await session.refresh(api_key)
+        endpoint_id = endpoint.id
+        api_key_id = api_key.id
+
+    await write_request_attempt_log(
+        RequestAttemptMetrics(
+            request_id="req-attempt",
+            trace_id="trace-attempt",
+            model_alias="gpt-attempt",
+            endpoint_id=endpoint_id,
+            api_key_id=api_key_id,
+            requested_rule_group="requested",
+            rule_group="effective",
+            attempt_order=2,
+            status_code=503,
+            outcome="failure",
+            failure_reason="upstream_status",
+            latency_ms=456,
+            execution_mode="via_agent",
+            agent_node="edge-hk",
+            upstream_url="https://api.example.com/v1/chat/completions",
+        )
+    )
+
+    async with session_maker() as session:
+        log = (await session.execute(select(RequestAttemptLog))).scalar_one()
+
+    assert log.request_id == "req-attempt"
+    assert log.trace_id == "trace-attempt"
+    assert log.requested_rule_group == "requested"
+    assert log.rule_group == "effective"
+    assert log.attempt_order == 2
+    assert log.status_code == 503
+    assert log.outcome == "failure"
+    assert log.failure_reason == "upstream_status"
+    assert log.execution_mode == "via_agent"
+    assert log.agent_node == "edge-hk"
+    assert log.upstream_url == "https://api.example.com/v1/chat/completions"
 
     await engine.dispose()
