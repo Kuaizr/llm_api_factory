@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -26,21 +26,38 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class SchemaMigration:
     migration_id: str
-    statements: tuple[str, ...]
+    statements: tuple[str, ...] = ()
+    sqlite_only: tuple[str, ...] = ()
+    pg_only: tuple[str, ...] = ()
 
 
-SCHEMA_MIGRATIONS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    migration_id VARCHAR(128) PRIMARY KEY,
-    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
-)
-"""
+def _schema_migrations_table_sql(dialect_name: str) -> str:
+    applied_at_type = "TIMESTAMP" if dialect_name == "postgresql" else "DATETIME"
+    return f"""
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        migration_id VARCHAR(128) PRIMARY KEY,
+        applied_at {applied_at_type} DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )
+    """
+
+
+def _migration_statements(
+    migration: SchemaMigration,
+    dialect_name: str,
+) -> tuple[str, ...]:
+    if dialect_name == "postgresql":
+        dialect_specific = migration.pg_only
+    elif dialect_name == "sqlite":
+        dialect_specific = migration.sqlite_only
+    else:
+        dialect_specific = ()
+    return (*migration.statements, *dialect_specific)
 
 
 SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(
         migration_id="20260705_legacy_schema_updates",
-        statements=(
+        sqlite_only=(
             "ALTER TABLE endpoints ADD COLUMN url_path_suffix VARCHAR(256)",
             "ALTER TABLE endpoints ADD COLUMN extra_headers TEXT",
             "ALTER TABLE endpoints ADD COLUMN extra_cookies TEXT",
@@ -170,7 +187,7 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
     ),
     SchemaMigration(
         migration_id="20260705_audit_logs",
-        statements=(
+        sqlite_only=(
             """
             CREATE TABLE IF NOT EXISTS audit_logs (
                 id INTEGER PRIMARY KEY,
@@ -193,7 +210,7 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
     ),
     SchemaMigration(
         migration_id="20260705_request_attempt_log_composite_indexes",
-        statements=(
+        sqlite_only=(
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_model_alias_created_at ON request_attempt_logs(model_alias, created_at)",
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_endpoint_id_created_at ON request_attempt_logs(endpoint_id, created_at)",
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_api_key_id_created_at ON request_attempt_logs(api_key_id, created_at)",
@@ -202,7 +219,7 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
     ),
     SchemaMigration(
         migration_id="20260705_hash_factory_access_keys",
-        statements=(
+        sqlite_only=(
             "ALTER TABLE factory_access_keys ADD COLUMN key_preview VARCHAR(64)",
         ),
     ),
@@ -213,10 +230,10 @@ def _is_ignorable_error(exc: Exception) -> bool:
     message = str(exc).lower()
     ignored_tokens = (
         "duplicate column name",
+        "duplicate column",
         "already exists",
         "duplicate key",
         "already an index",
-        "relation",
         "no such table: factory_access_keys",
         "no such table: rule_access_keys",
     )
@@ -225,13 +242,15 @@ def _is_ignorable_error(exc: Exception) -> bool:
 
 async def apply_schema_updates(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
+        dialect_name = conn.dialect.name
         await _ensure_migration_table(conn)
         for migration in SCHEMA_MIGRATIONS:
             if await _migration_applied(conn, migration.migration_id):
                 continue
-            for statement in migration.statements:
+            for statement in _migration_statements(migration, dialect_name):
                 try:
-                    await conn.execute(text(statement))
+                    async with conn.begin_nested():
+                        await conn.execute(text(statement))
                 except (OperationalError, ProgrammingError) as exc:
                     if _is_ignorable_error(exc):
                         continue
@@ -242,7 +261,7 @@ async def apply_schema_updates(engine: AsyncEngine) -> None:
 
 
 async def _ensure_migration_table(conn) -> None:  # noqa: ANN001
-    await conn.execute(text(SCHEMA_MIGRATIONS_TABLE_SQL))
+    await conn.execute(text(_schema_migrations_table_sql(conn.dialect.name)))
 
 
 async def _migration_applied(conn, migration_id: str) -> bool:  # noqa: ANN001
@@ -271,7 +290,15 @@ async def _record_migration(conn, migration_id: str) -> None:  # noqa: ANN001
     )
 
 
+async def _table_exists(conn, table_name: str) -> bool:  # noqa: ANN001
+    return await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).has_table(table_name)
+    )
+
+
 async def _hash_existing_factory_access_key_rows(conn) -> None:  # noqa: ANN001
+    if not await _table_exists(conn, "factory_access_keys"):
+        return
     try:
         rows = (
             await conn.execute(
@@ -313,15 +340,17 @@ async def _encrypt_existing_secret_rows(conn) -> None:  # noqa: ANN001
         )
         return
 
-    try:
-        api_key_rows = (
-            await conn.execute(text("SELECT id, key FROM api_keys WHERE key IS NOT NULL"))
-        ).mappings().all()
-    except (OperationalError, ProgrammingError) as exc:
-        if _is_ignorable_error(exc):
-            api_key_rows = []
-        else:
-            raise
+    api_key_rows = []
+    if await _table_exists(conn, "api_keys"):
+        try:
+            api_key_rows = (
+                await conn.execute(text("SELECT id, key FROM api_keys WHERE key IS NOT NULL"))
+            ).mappings().all()
+        except (OperationalError, ProgrammingError) as exc:
+            if _is_ignorable_error(exc):
+                api_key_rows = []
+            else:
+                raise
 
     for row in api_key_rows:
         encrypted = encrypt_secret_value_if_possible(row["key"], settings=settings)
@@ -331,17 +360,19 @@ async def _encrypt_existing_secret_rows(conn) -> None:  # noqa: ANN001
                 {"id": row["id"], "key": encrypted},
             )
 
-    try:
-        endpoint_rows = (
-            await conn.execute(
-                text("SELECT id, oauth_config FROM endpoints WHERE oauth_config IS NOT NULL")
-            )
-        ).mappings().all()
-    except (OperationalError, ProgrammingError) as exc:
-        if _is_ignorable_error(exc):
-            endpoint_rows = []
-        else:
-            raise
+    endpoint_rows = []
+    if await _table_exists(conn, "endpoints"):
+        try:
+            endpoint_rows = (
+                await conn.execute(
+                    text("SELECT id, oauth_config FROM endpoints WHERE oauth_config IS NOT NULL")
+                )
+            ).mappings().all()
+        except (OperationalError, ProgrammingError) as exc:
+            if _is_ignorable_error(exc):
+                endpoint_rows = []
+            else:
+                raise
 
     for row in endpoint_rows:
         try:

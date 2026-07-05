@@ -40,6 +40,21 @@ async def test_sqlite_file_engine_uses_wal_and_busy_timeout(
 
 
 @pytest.mark.asyncio
+async def test_postgresql_engine_uses_configured_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db_session.settings, "pg_pool_size", 3)
+    monkeypatch.setattr(db_session.settings, "pg_max_overflow", 2)
+    engine = create_database_engine("postgresql+asyncpg://llm:password@localhost/test")
+    try:
+        pool = engine.sync_engine.pool
+        assert pool.size() == 3
+        assert pool._max_overflow == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_sqlite_endpoint_delete_cascades_child_rows() -> None:
     engine = create_database_engine("sqlite+aiosqlite:///:memory:")
     try:

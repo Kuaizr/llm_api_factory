@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import os
+from collections.abc import AsyncIterator
 from typing import Any
+
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from app.db.base import Base
+from app.db.migrations import apply_schema_updates
+from app.db.session import create_database_engine
 
 
 class TestMemoryRedis:
@@ -64,3 +73,23 @@ class TestMemoryRedis:
         if end < 0:
             end = len(items) + end
         return items[start : end + 1]
+
+
+@pytest_asyncio.fixture
+async def db_engine() -> AsyncIterator[AsyncEngine]:
+    database_url = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    engine = create_database_engine(database_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await apply_schema_updates(engine)
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    session_maker = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with session_maker() as session:
+        yield session

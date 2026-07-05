@@ -10,6 +10,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 SQLITE_JOURNAL_MODES = {"delete", "truncate", "persist", "memory", "wal", "off"}
+POSTGRESQL_SCHEMES = ("postgresql", "postgres")
 
 
 def _normalize_sqlite_journal_mode(value: str | None) -> str | None:
@@ -39,7 +40,15 @@ def _configure_sqlite_connection(
 
 
 def create_database_engine(database_url: str) -> AsyncEngine:
-    db_engine = create_async_engine(database_url, pool_pre_ping=True)
+    engine_kwargs: dict[str, object] = {"pool_pre_ping": True}
+    if database_url.startswith(POSTGRESQL_SCHEMES):
+        engine_kwargs.update(
+            {
+                "pool_size": max(1, int(settings.pg_pool_size)),
+                "max_overflow": max(0, int(settings.pg_max_overflow)),
+            }
+        )
+    db_engine = create_async_engine(database_url, **engine_kwargs)
     if database_url.startswith("sqlite"):
         event.listen(
             db_engine.sync_engine,

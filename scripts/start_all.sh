@@ -155,6 +155,19 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "${LLM_DATABASE_URL:-}" == postgresql* || "${LLM_DATABASE_URL:-}" == postgres* ]]; then
+  if command -v pg_isready >/dev/null 2>&1; then
+    PG_READY_URL="${LLM_DATABASE_URL/postgresql+asyncpg:/postgresql:}"
+    PG_READY_URL="${PG_READY_URL/postgres+asyncpg:/postgres:}"
+    if ! pg_isready -d "$PG_READY_URL" >/dev/null 2>&1; then
+      echo "PostgreSQL 不可用，请检查 LLM_DATABASE_URL 或 PostgreSQL 服务状态"
+      exit 1
+    fi
+  else
+    echo "提示: 未找到 pg_isready，跳过 PostgreSQL 服务状态检查。"
+  fi
+fi
+
 if [[ "$FOREGROUND" -eq 0 ]] && ! command -v setsid >/dev/null 2>&1; then
   echo "未找到 setsid，后台模式无法脱离当前终端；请改用 --foreground"
   exit 1

@@ -47,6 +47,82 @@ async def test_schema_migrations_are_recorded_and_not_reapplied(
     await engine.dispose()
 
 
+def test_schema_migration_table_uses_postgresql_timestamp() -> None:
+    sql = migrations._schema_migrations_table_sql("postgresql")
+
+    assert "applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL" in sql
+    assert "DATETIME" not in sql
+
+
+def test_migration_statements_are_dialect_specific() -> None:
+    migration = migrations.SchemaMigration(
+        migration_id="dialect_specific",
+        statements=("SELECT 1",),
+        sqlite_only=("SELECT 'sqlite'",),
+        pg_only=("SELECT 'pg'",),
+    )
+
+    assert migrations._migration_statements(migration, "sqlite") == (
+        "SELECT 1",
+        "SELECT 'sqlite'",
+    )
+    assert migrations._migration_statements(migration, "postgresql") == (
+        "SELECT 1",
+        "SELECT 'pg'",
+    )
+
+
+def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
+    pg_statements = {
+        migration.migration_id: migrations._migration_statements(migration, "postgresql")
+        for migration in migrations.SCHEMA_MIGRATIONS
+    }
+
+    assert pg_statements == {
+        "20260705_legacy_schema_updates": (),
+        "20260705_audit_logs": (),
+        "20260705_request_attempt_log_composite_indexes": (),
+        "20260705_hash_factory_access_keys": (),
+    }
+
+
+@pytest.mark.asyncio
+async def test_sqlite_only_migration_runs_on_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async def noop_encrypt_existing_secret_rows(_conn) -> None:  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(migrations, "_encrypt_existing_secret_rows", noop_encrypt_existing_secret_rows)
+    monkeypatch.setattr(
+        migrations,
+        "SCHEMA_MIGRATIONS",
+        (
+            migrations.SchemaMigration(
+                migration_id="sqlite_only",
+                sqlite_only=(
+                    "CREATE TABLE dialect_sqlite_probe (id INTEGER PRIMARY KEY, value INTEGER)",
+                    "INSERT INTO dialect_sqlite_probe (id, value) VALUES (1, 7)",
+                ),
+                pg_only=("CREATE TABLE pg_probe (id INTEGER PRIMARY KEY)",),
+            ),
+        ),
+    )
+
+    await migrations.apply_schema_updates(engine)
+
+    async with engine.connect() as conn:
+        probe_values = (
+            await conn.execute(text("SELECT value FROM dialect_sqlite_probe"))
+        ).scalars().all()
+
+    assert probe_values == [7]
+
+    await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_request_attempt_log_composite_index_migration(
     monkeypatch: pytest.MonkeyPatch,

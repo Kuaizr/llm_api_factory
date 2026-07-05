@@ -174,6 +174,8 @@ export LLM_DATA_ENCRYPTION_KEY="long-random-secret-for-db-secrets"
 export LLM_DATABASE_URL="sqlite+aiosqlite:///./llm_api_factory.db"
 export LLM_SQLITE_BUSY_TIMEOUT_MS="5000"
 export LLM_SQLITE_JOURNAL_MODE="WAL"
+export LLM_PG_POOL_SIZE="10"
+export LLM_PG_MAX_OVERFLOW="5"
 export LLM_REDIS_URL="redis://localhost:6379/0"
 export LLM_AGENT_STREAM_IDLE_TIMEOUT_SECONDS="300"
 ```
@@ -185,6 +187,8 @@ backend/llm_api_factory.db
 ```
 
 SQLite 连接默认启用外键约束、`busy_timeout=5000` 和 `journal_mode=WAL`，用于降低请求日志写入时的锁等待失败概率。高并发生产环境仍建议迁移到 PostgreSQL。
+
+PostgreSQL 可以使用 `postgresql+asyncpg://llm:password@localhost:5432/llm_factory` 形式的 `LLM_DATABASE_URL`。应用侧连接池默认 `LLM_PG_POOL_SIZE=10`、`LLM_PG_MAX_OVERFLOW=5`。`scripts/start_all.sh` 检测到 PostgreSQL URL 时会用 `pg_isready` 做启动前可达性检查。
 
 上游 provider API key 和 OAuth `client_secret` 会以 `enc:v1:` 前缀加密后写入数据库。加密密钥优先使用 `LLM_DATA_ENCRYPTION_KEY`，未配置时回退到 `LLM_MASTER_AUTH_TOKEN`。生产环境建议显式配置 `LLM_DATA_ENCRYPTION_KEY`，并保持重启前后一致。
 
