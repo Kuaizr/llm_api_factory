@@ -605,6 +605,53 @@ async def test_gemini_passthrough_rewrites_model_path(
 
 
 @pytest.mark.asyncio
+async def test_gemini_passthrough_accepts_query_key_and_strips_it_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=33,
+        name="Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        provider="gemini",
+        auth_header_name="x-goog-api-key",
+        auth_header_prefix="",
+    )
+    api_key = APIKeyStub(id=34, key="gemini-upstream-key")
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gemini-1.5-pro",
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"candidates": []})
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/gemini/v1beta/models/gemini-alias:generateContent?key=token&alt=sse",
+            json={"contents": [{"parts": [{"text": "ping"}]}]},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/v1beta/models/gemini-1.5-pro:generateContent"
+    assert sent_request.headers.get("x-goog-api-key") == "gemini-upstream-key"
+    assert sent_request.url.params.get("alt") == "sse"
+    assert "key" not in sent_request.url.params
+
+
+@pytest.mark.asyncio
 async def test_openai_chat_preserves_tools_and_response_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -785,5 +832,4 @@ async def test_embeddings_missing_model(monkeypatch: pytest.MonkeyPatch) -> None
     assert response.status_code == 200
     assert response.json() == upstream_payload
     assert response.headers["x-real-model"] == "text-embedding-fallback"
-
 

@@ -132,6 +132,20 @@ def _extract_factory_api_key(headers: Mapping[str, str]) -> str | None:
     return parsed or None
 
 
+def _extract_route_api_key(request: Request) -> str | None:
+    token = _extract_factory_api_key(request.headers)
+    if token:
+        return token
+
+    # Gemini clients commonly use the official `?key=...` auth style.
+    # Treat it as the downstream factory key, then strip it before upstream proxying.
+    query_key = request.query_params.get("key")
+    if query_key:
+        parsed = query_key.strip()
+        return parsed or None
+    return None
+
+
 def _require_master_auth(request: Request) -> None:
     settings = get_settings()
     if not settings.master_auth_token:
@@ -152,7 +166,7 @@ async def _resolve_allowed_rule_groups_from_token(
 ) -> list[str]:
     """解析对外访问 Key 并返回可访问的规则组列表。"""
     settings = get_settings()
-    token = _extract_factory_api_key(request.headers)
+    token = _extract_route_api_key(request)
     if token and verify_admin_session_token(token, settings):
         return ["default"]
 
@@ -193,7 +207,7 @@ async def _resolve_rule_group_from_token(
 ) -> str:
     """解析请求中的对外访问 Key，验证权限并返回可用的规则组。"""
     settings = get_settings()
-    token = _extract_factory_api_key(request.headers)
+    token = _extract_route_api_key(request)
     normalized_payload_group = (payload_rule_group or "default").strip() or "default"
     if token and verify_admin_session_token(token, settings):
         return normalized_payload_group

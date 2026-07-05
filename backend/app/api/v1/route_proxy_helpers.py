@@ -221,6 +221,16 @@ def _strip_duplicate_version_segment(base: str, path: str) -> str:
     return path
 
 
+def _upstream_query_string(request: Request, endpoint: object | None) -> str:
+    query_parts = list(parse_qsl(request.url.query, keep_blank_values=True))
+    if not query_parts:
+        return ""
+    provider = str(getattr(endpoint, "provider", "") or "").strip().lower()
+    if provider == "gemini":
+        query_parts = [(key, value) for key, value in query_parts if key != "key"]
+    return urlencode(query_parts)
+
+
 def _build_target_url(
     base_url: str,
     request: Request,
@@ -256,7 +266,12 @@ def _build_target_url(
             try:
                 extra_query_params = json.loads(extra_query_params_json)
                 if isinstance(extra_query_params, dict) and extra_query_params:
-                    query_parts = list(parse_qsl(request.url.query))
+                    query_parts = list(
+                        parse_qsl(
+                            _upstream_query_string(request, endpoint),
+                            keep_blank_values=True,
+                        )
+                    )
                     for key, value in extra_query_params.items():
                         query_parts.append((str(key), str(value)))
                     new_query = urlencode(query_parts)
@@ -264,8 +279,9 @@ def _build_target_url(
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    if request.url.query and "?" not in url:
-        url = f"{url}?{request.url.query}"
+    upstream_query = _upstream_query_string(request, endpoint)
+    if upstream_query and "?" not in url:
+        url = f"{url}?{upstream_query}"
     return url
 
 

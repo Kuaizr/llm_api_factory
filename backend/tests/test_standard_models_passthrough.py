@@ -262,8 +262,7 @@ async def test_gemini_models_passthrough_preserves_native_fields_and_filters_pag
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/gemini/v1beta/models",
-            headers={"x-goog-api-key": "fk-gemini-models"},
+            "/gemini/v1beta/models?key=fk-gemini-models",
         )
 
     await upstream_client.aclose()
@@ -278,7 +277,9 @@ async def test_gemini_models_passthrough_preserves_native_fields_and_filters_pag
     assert payload["models"][1]["thinking"] is True
     assert "nextPageToken" not in payload
     assert [request.url.path for request in requests] == ["/v1beta/models", "/v1beta/models"]
+    assert "key" not in requests[0].url.params
     assert requests[1].url.params["pageToken"] == "next"
+    assert "key" not in requests[1].url.params
 
 
 @pytest.mark.asyncio
