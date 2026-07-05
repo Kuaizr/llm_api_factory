@@ -242,6 +242,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/path/to/llm_api_factory/backend
 Environment=LLM_MASTER_AUTH_TOKEN=admin
+Environment=LLM_DATA_ENCRYPTION_KEY=replace-with-a-stable-random-secret
 Environment=LLM_CORS_ALLOW_ORIGINS=*
 ExecStart=/home/you/.local/bin/uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
@@ -284,9 +285,9 @@ systemctl --user restart llm-api-factory.service
 
 ## 控制面鉴权
 
-控制面有两类 key：
+控制面有两类凭据：
 
-- Admin token：登录后台和调用 `/admin/*`
+- 管理员密码 / admin session token：登录后台和调用 `/admin/*`
 - Factory access key：下游工具调用 `/openai/*`、`/anthropic/*`、`/gemini/*`
 
 下游请求示例：
@@ -303,6 +304,25 @@ curl http://127.0.0.1:8000/openai/v1/responses \
 
 通常不需要下游额外传规则组 header。规则组由 factory access key 绑定。
 
+普通下游响应只会返回 `x-request-id` 和 `x-trace-id`。排查路由时可以在请求里带 `X-Debug: true`，并使用管理员 session token 调用；只有这种情况下才会返回 `x-endpoint-id`、`x-api-key-id`、`x-real-model`、`x-agent-node` 等内部调试 header。
+
+## API Key 手动测试
+
+管理台的 API key 页面可以对单个上游 endpoint/key 做直接测试，不经过 factory 路由。测试 prompt 固定为：
+
+```text
+你是什么模型
+```
+
+测试时可以先探测模型列表，也可以手动输入模型名。请求模板支持：
+
+- `chat`：OpenAI `/v1/chat/completions`
+- `response`：OpenAI `/v1/responses`
+- `claude`：Anthropic `/v1/messages`
+- `gemini`：Gemini `generateContent`
+
+这个功能用于确认上游 endpoint/key 本身是否可用；正式下游调用仍通过 factory access key 和规则组路由。
+
 ## CLI 控制面
 
 CLI 默认读取：
@@ -318,6 +338,8 @@ export LLM_FACTORY_TOKEN="admin"
 cd backend
 uv run llm-factory --base-url http://127.0.0.1:8000 --token admin --help
 ```
+
+这里的 `--token` 可以是管理员密码，也可以是服务端签发的 admin session token。
 
 ### Upstream
 
@@ -387,9 +409,9 @@ Agent 不是 provider，也不是模型 runtime。它只是远程转发节点。
 bash scripts/start_all.sh \
   --port 8000 \
   --agent-public-base-url https://factory.example.com \
-  --agent-install-script-url https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts/agent_install.sh \
+  --agent-install-script-url https://raw.githubusercontent.com/Kuaizr/llm_api_factory/work/next/scripts/agent_install.sh \
   --agent-install-repo-url https://github.com/Kuaizr/llm_api_factory.git \
-  --agent-install-repo-ref main
+  --agent-install-repo-ref work/next
 ```
 
 然后：
@@ -405,15 +427,17 @@ bash scripts/start_all.sh \
 可以直接从 GitHub raw 拉取安装脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/main/scripts/agent_install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/work/next/scripts/agent_install.sh | bash -s -- \
   --ws-url wss://factory.example.com/agent/ws \
   --heartbeat-url https://factory.example.com/agent/heartbeat \
   --agent-name "edge-hk" \
   --agent-token "your-token" \
   --agent-region "HK" \
   --repo https://github.com/Kuaizr/llm_api_factory.git \
-  --repo-ref main
+  --repo-ref work/next
 ```
+
+如果部署稳定发布版本，可以把示例里的 `work/next` 换成对应 tag 或主分支。
 
 常用参数：
 
