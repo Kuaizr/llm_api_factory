@@ -659,7 +659,9 @@ async def _stream_response(
             if first_data_at is not None
             else None
         )
-        prompt_tokens, completion_tokens, total_tokens = extract_usage(usage_payload)
+        prompt_tokens, completion_tokens, total_tokens, cached_tokens = extract_usage(
+            usage_payload
+        )
         tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
         resolved_latency_ms = ttft_ms if ttft_ms is not None else latency_ms
         metrics = RequestMetrics(
@@ -698,6 +700,7 @@ async def _stream_response(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
                     latency_ms=resolved_latency_ms,
                     is_stream=True,
                     stream_complete=stream_complete,
@@ -744,7 +747,12 @@ def _inspect_stream_chunk(
             payload = json.loads(data)
         except json.JSONDecodeError:
             continue
-        if "usage" in payload or "usageMetadata" in payload:
+        metadata = payload.get("metadata")
+        if "usage" in payload or "usageMetadata" in payload or "total_usage" in payload:
+            usage_payload = payload
+        elif isinstance(metadata, dict) and (
+            "total_usage" in metadata or "usage" in metadata
+        ):
             usage_payload = payload
         elif payload.get("type") == "response.completed":
             response_payload = payload.get("response")

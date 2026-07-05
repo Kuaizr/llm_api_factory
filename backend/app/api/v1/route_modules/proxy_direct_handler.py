@@ -327,7 +327,9 @@ async def handle_direct_candidate(
             upstream_url=url,
         )
 
-        prompt_tokens, completion_tokens, total_tokens = extract_usage(response_payload)
+        prompt_tokens, completion_tokens, total_tokens, cached_tokens = extract_usage(
+            response_payload
+        )
         metrics = RequestMetrics(
             request_id=request_id,
             trace_id=trace_id,
@@ -368,6 +370,7 @@ async def handle_direct_candidate(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cached_tokens=cached_tokens,
                 latency_ms=latency_ms,
             ),
             attempt_order=attempt_order,

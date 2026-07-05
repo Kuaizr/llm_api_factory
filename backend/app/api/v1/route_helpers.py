@@ -276,6 +276,24 @@ def _normalize_dump_path(dump_path: str | None) -> str | None:
     return _resolve_dump_directory(trimmed).as_posix()
 
 
+def _extract_previous_interaction_id(request_body: bytes) -> str | None:
+    if not request_body:
+        return None
+    try:
+        payload = json.loads(request_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("previous_interaction_id")
+    if value is None:
+        value = payload.get("previousInteractionId")
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    return trimmed[:128] or None
+
+
 async def _dump_proxy_record(
     rule: RoutingRule | None,
     request_id: str,
@@ -291,6 +309,7 @@ async def _dump_proxy_record(
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     total_tokens: int | None = None,
+    cached_tokens: int | None = None,
     latency_ms: int | None = None,
     is_stream: bool = False,
     stream_complete: bool | None = None,
@@ -325,6 +344,8 @@ async def _dump_proxy_record(
         resolved_session_id = "session"
     safe_session_id = _sanitize_dump_filename(resolved_session_id)
     session_file = dump_dir / hostname / "sessions" / f"{safe_session_id}.jsonl"
+    previous_interaction_id = _extract_previous_interaction_id(request_body)
+    resolved_is_cache_hit = is_cache_hit or bool((cached_tokens or 0) > 0)
     payload = {
         "request_id": request_id,
         "trace_id": trace_id,
@@ -340,10 +361,12 @@ async def _dump_proxy_record(
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
         "latency_ms": latency_ms,
         "is_stream": is_stream,
-        "is_cache_hit": is_cache_hit,
+        "is_cache_hit": resolved_is_cache_hit,
         "stream_complete": stream_complete,
+        "previous_interaction_id": previous_interaction_id,
         "file_path": relative_file.as_posix(),
         "hostname": hostname,
         "created_at": now.isoformat(),
@@ -375,10 +398,12 @@ async def _dump_proxy_record(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
         latency_ms=latency_ms,
         is_stream=is_stream,
-        is_cache_hit=is_cache_hit,
+        is_cache_hit=resolved_is_cache_hit,
         stream_complete=stream_complete,
+        previous_interaction_id=previous_interaction_id,
         file_path=relative_file.as_posix(),
         hostname=hostname,
     )
@@ -395,10 +420,12 @@ async def _write_dump_index(
     prompt_tokens: int | None,
     completion_tokens: int | None,
     total_tokens: int | None,
+    cached_tokens: int | None,
     latency_ms: int | None,
     is_stream: bool,
     is_cache_hit: bool,
     stream_complete: bool | None,
+    previous_interaction_id: str | None,
     file_path: str,
     hostname: str,
 ) -> None:
@@ -417,10 +444,12 @@ async def _write_dump_index(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
                     latency_ms=latency_ms,
                     is_stream=is_stream,
                     is_cache_hit=is_cache_hit,
                     stream_complete=stream_complete,
+                    previous_interaction_id=previous_interaction_id,
                     file_path=file_path,
                     hostname=hostname,
                 )

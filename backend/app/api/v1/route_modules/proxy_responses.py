@@ -24,6 +24,7 @@ def raw_proxy_response_with_dump(
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     total_tokens: int | None = None,
+    cached_tokens: int | None = None,
     latency_ms: int | None = None,
 ) -> Response:
     safe_create_task(
@@ -41,6 +42,7 @@ def raw_proxy_response_with_dump(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
             latency_ms=latency_ms,
             is_stream=False,
             stream_complete=None,

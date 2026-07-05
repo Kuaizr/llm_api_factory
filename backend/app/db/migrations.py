@@ -223,6 +223,14 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             "ALTER TABLE factory_access_keys ADD COLUMN key_preview VARCHAR(64)",
         ),
     ),
+    SchemaMigration(
+        migration_id="20260705_dump_index_cache_and_interactions",
+        statements=(
+            "ALTER TABLE dump_index ADD COLUMN cached_tokens INTEGER",
+            "ALTER TABLE dump_index ADD COLUMN previous_interaction_id VARCHAR(128)",
+            "CREATE INDEX IF NOT EXISTS ix_dump_prev_interaction ON dump_index(previous_interaction_id)",
+        ),
+    ),
 )
 
 

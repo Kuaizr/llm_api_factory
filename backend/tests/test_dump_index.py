@@ -44,7 +44,7 @@ async def test_dump_proxy_record_writes_partitioned_file_and_index(
         "trace-1",
         "Endpoint",
         "gpt-alias",
-        b'{"model":"gpt-alias"}',
+        b'{"model":"gpt-alias","previous_interaction_id":"prev-123"}',
         b'data: {"text":"ok"}\n\n',
         200,
         endpoint_id=42,
@@ -52,6 +52,7 @@ async def test_dump_proxy_record_writes_partitioned_file_and_index(
         prompt_tokens=None,
         completion_tokens=3,
         total_tokens=None,
+        cached_tokens=2,
         latency_ms=123,
         is_stream=True,
         stream_complete=False,
@@ -71,9 +72,12 @@ async def test_dump_proxy_record_writes_partitioned_file_and_index(
     assert row.prompt_tokens is None
     assert row.completion_tokens == 3
     assert row.total_tokens is None
+    assert row.cached_tokens == 2
     assert row.latency_ms == 123
     assert row.is_stream is True
+    assert row.is_cache_hit is True
     assert row.stream_complete is False
+    assert row.previous_interaction_id == "prev-123"
     assert row.hostname == "test-host.local"
     assert row.file_path.startswith("test-host.local/")
     assert row.file_path.endswith("/gpt-5_chat/req-1.json")
@@ -83,6 +87,9 @@ async def test_dump_proxy_record_writes_partitioned_file_and_index(
     assert payload["file_path"] == row.file_path
     assert payload["stream_complete"] is False
     assert payload["prompt_tokens"] is None
+    assert payload["cached_tokens"] == 2
+    assert payload["is_cache_hit"] is True
+    assert payload["previous_interaction_id"] == "prev-123"
     assert payload["real_model"] == "gpt-5/chat"
 
     session_file = (

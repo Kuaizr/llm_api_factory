@@ -18,6 +18,15 @@ def test_inspect_stream_chunk_tracks_usage_and_data() -> None:
     assert usage_payload["usage"]["completion_tokens"] == 12
 
     buffer, usage_payload, data_seen = routes_module._inspect_stream_chunk(
+        buffer,
+        usage_payload,
+        b'data: {"metadata": {"total_usage": {"total_cached_tokens": 4}}}\n\n',
+    )
+    assert data_seen is True
+    assert usage_payload is not None
+    assert usage_payload["metadata"]["total_usage"]["total_cached_tokens"] == 4
+
+    buffer, usage_payload, data_seen = routes_module._inspect_stream_chunk(
         buffer, usage_payload, b"data: [DONE]\n\n"
     )
     assert data_seen is False

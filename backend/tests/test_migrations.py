@@ -83,6 +83,11 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
         "20260705_audit_logs": (),
         "20260705_request_attempt_log_composite_indexes": (),
         "20260705_hash_factory_access_keys": (),
+        "20260705_dump_index_cache_and_interactions": (
+            "ALTER TABLE dump_index ADD COLUMN cached_tokens INTEGER",
+            "ALTER TABLE dump_index ADD COLUMN previous_interaction_id VARCHAR(128)",
+            "CREATE INDEX IF NOT EXISTS ix_dump_prev_interaction ON dump_index(previous_interaction_id)",
+        ),
     }
 
 

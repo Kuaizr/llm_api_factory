@@ -652,6 +652,120 @@ async def test_gemini_passthrough_accepts_query_key_and_strips_it_upstream(
 
 
 @pytest.mark.asyncio
+async def test_gemini_interactions_rewrites_model_body_and_preserves_previous_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=35,
+        name="Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        provider="gemini",
+        auth_header_name="x-goog-api-key",
+        auth_header_prefix="",
+    )
+    api_key = APIKeyStub(id=36, key="gemini-upstream-key")
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gemini-3.5-flash",
+    )
+
+    upstream_payload = {
+        "id": "interaction-1",
+        "metadata": {
+            "total_usage": {
+                "total_input_tokens": 10,
+                "total_output_tokens": 4,
+                "total_cached_tokens": 6,
+            }
+        },
+    }
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=upstream_payload)
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    body = {
+        "model": "gemini-alias",
+        "previous_interaction_id": "interaction-prev",
+        "input": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/gemini/v1beta/interactions?key=token",
+            json=body,
+        )
+
+    await upstream_client.aclose()
+    await asyncio.sleep(0)
+
+    assert response.status_code == 200
+    assert response.json() == upstream_payload
+    assert recorded["model_alias"] == "gemini-alias"
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.url.path == "/v1beta/interactions"
+    assert "key" not in sent_request.url.params
+    assert sent_request.headers.get("x-goog-api-key") == "gemini-upstream-key"
+    sent_payload = json.loads(sent_request.content)
+    assert sent_payload["model"] == "gemini-3.5-flash"
+    assert sent_payload["previous_interaction_id"] == "interaction-prev"
+    metrics = recorded.get("metrics")
+    assert metrics is not None
+    assert metrics.prompt_tokens == 10
+    assert metrics.completion_tokens == 4
+    assert metrics.total_tokens == 14
+
+
+@pytest.mark.asyncio
+async def test_gemini_interactions_shorthand_targets_v1beta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=37,
+        name="Gemini",
+        base_url="https://generativelanguage.googleapis.com",
+        provider="gemini",
+        auth_header_name="x-goog-api-key",
+        auth_header_prefix="",
+    )
+    api_key = APIKeyStub(id=38, key="gemini-upstream-key")
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gemini-3.5-flash",
+    )
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "interaction-2"})
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/gemini/interactions?key=token",
+            json={"model": "gemini-alias", "input": []},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert requests[0].url.path == "/v1beta/interactions"
+
+
+@pytest.mark.asyncio
 async def test_openai_chat_preserves_tools_and_response_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -832,4 +946,3 @@ async def test_embeddings_missing_model(monkeypatch: pytest.MonkeyPatch) -> None
     assert response.status_code == 200
     assert response.json() == upstream_payload
     assert response.headers["x-real-model"] == "text-embedding-fallback"
-

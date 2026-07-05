@@ -43,6 +43,7 @@ async def prepare_candidate_request_context(
     include_internal_debug: bool,
     path_prefix: str | None,
     target_path_rewriter: Callable[[str, RouteCandidate], str] | None,
+    model_payload_keys: tuple[str, ...],
     redis,
     client,
 ) -> CandidateRequestContext:
@@ -57,6 +58,7 @@ async def prepare_candidate_request_context(
         rewrite_model=rewrite_model,
         is_stream=request_is_stream,
         provider=candidate_provider,
+        model_payload_keys=model_payload_keys,
     )
     headers = _build_upstream_headers(
         request.headers, candidate.endpoint, candidate.api_key.key

@@ -164,6 +164,19 @@ async def gemini_passthrough(
         if payload is not None:
             return JSONResponse(content=payload)
 
+    if request.method.upper() == "POST" and normalized_path == "interactions":
+        return await _proxy_openai_request(
+            request,
+            session,
+            rewrite_model=True,
+            strip_rule_group_from_payload=False,
+            path_prefix="/gemini",
+            provider_filter=("gemini", "custom"),
+            provider_filter_fallback_to_any=True,
+            allow_missing_model=False,
+            model_payload_keys=("model", "agent"),
+        )
+
     model_alias = extract_gemini_model_alias(request.url.path)
     if model_alias is None:
         model_alias = request.headers.get("X-Model-Alias")
@@ -182,4 +195,22 @@ async def gemini_passthrough(
             raw_path,
             candidate.real_model,
         ),
+    )
+
+
+async def gemini_interactions(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    return await _proxy_openai_request(
+        request,
+        session,
+        rewrite_model=True,
+        strip_rule_group_from_payload=False,
+        path_prefix="/gemini",
+        provider_filter=("gemini", "custom"),
+        provider_filter_fallback_to_any=True,
+        allow_missing_model=False,
+        model_payload_keys=("model", "agent"),
+        target_path_rewriter=lambda raw_path, candidate: "/v1beta/interactions",
     )

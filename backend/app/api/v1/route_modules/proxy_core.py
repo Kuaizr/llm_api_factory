@@ -45,6 +45,7 @@ async def _proxy_openai_request(
     provider_filter_fallback_to_any: bool = False,
     allow_missing_model: bool = False,
     model_alias_override: str | None = None,
+    model_payload_keys: tuple[str, ...] = ("model",),
     target_path_rewriter: Callable[[str, RouteCandidate], str] | None = None,
 ) -> Response:
     raw_body = await request.body()
@@ -55,6 +56,7 @@ async def _proxy_openai_request(
         rewrite_model=rewrite_model,
         allow_missing_model=allow_missing_model,
         model_alias_override=model_alias_override,
+        model_payload_keys=model_payload_keys,
     )
     requested_rule_group = extract_requested_rule_group(request, payload)
     rule_group = await _resolve_rule_group_from_token(
@@ -105,6 +107,7 @@ async def _proxy_openai_request(
                 include_internal_debug=include_internal_debug,
                 path_prefix=path_prefix,
                 target_path_rewriter=target_path_rewriter,
+                model_payload_keys=model_payload_keys,
                 redis=redis,
                 client=client,
             )

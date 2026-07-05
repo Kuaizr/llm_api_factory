@@ -16,12 +16,20 @@ from app.services.billing import (
 
 def test_extract_usage_supports_standard_provider_shapes() -> None:
     assert extract_usage(
-        {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}}
-    ) == (2, 3, 5)
+        {
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 1},
+            }
+        }
+    ) == (2, 3, 5, 1)
     assert extract_usage({"usage": {"input_tokens": 4, "output_tokens": 6}}) == (
         4,
         6,
         10,
+        None,
     )
     assert extract_usage(
         {
@@ -29,10 +37,31 @@ def test_extract_usage_supports_standard_provider_shapes() -> None:
                 "promptTokenCount": 7,
                 "candidatesTokenCount": 8,
                 "totalTokenCount": 15,
+                "cachedContentTokenCount": 6,
             }
         }
-    ) == (7, 8, 15)
-    assert extract_usage({"usage": "invalid"}) == (None, None, None)
+    ) == (7, 8, 15, 6)
+    assert extract_usage(
+        {
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 12,
+                "cache_read_input_tokens": 9,
+            }
+        }
+    ) == (11, 12, 23, 9)
+    assert extract_usage(
+        {
+            "metadata": {
+                "total_usage": {
+                    "total_input_tokens": 13,
+                    "total_output_tokens": 14,
+                    "total_cached_tokens": 10,
+                }
+            }
+        }
+    ) == (13, 14, 27, 10)
+    assert extract_usage({"usage": "invalid"}) == (None, None, None, None)
 
 
 @pytest.mark.asyncio

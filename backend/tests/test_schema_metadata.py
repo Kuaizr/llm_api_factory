@@ -31,6 +31,7 @@ def test_dump_index_indexes_are_declared() -> None:
     assert "ix_dump_model_time" in names
     assert "ix_dump_group_time" in names
     assert "ix_dump_trace" in names
+    assert "ix_dump_prev_interaction" in names
 
 
 def test_endpoint_child_foreign_keys_cascade_on_delete() -> None:

@@ -58,7 +58,9 @@ async def agent_stream_generator(
             if first_data_at is not None
             else None
         )
-        prompt_tokens, completion_tokens, total_tokens = extract_usage(usage_payload)
+        prompt_tokens, completion_tokens, total_tokens, cached_tokens = extract_usage(
+            usage_payload
+        )
         tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
         latency_ms = (
             ttft_ms if ttft_ms is not None else int((stream_end - request_start) * 1000)
@@ -98,6 +100,7 @@ async def agent_stream_generator(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cached_tokens=cached_tokens,
                 latency_ms=latency_ms,
                 is_stream=True,
                 stream_complete=stream_complete,

@@ -25,11 +25,15 @@ def resolve_model_alias(
     rewrite_model: bool,
     allow_missing_model: bool,
     model_alias_override: str | None,
+    model_payload_keys: tuple[str, ...] = ("model",),
 ) -> str:
-    model_alias_raw = payload.get("model")
     model_alias = model_alias_override
     if model_alias is None:
-        model_alias = str(model_alias_raw) if model_alias_raw is not None else None
+        for key in model_payload_keys:
+            model_alias_raw = payload.get(key)
+            if model_alias_raw is not None:
+                model_alias = str(model_alias_raw)
+                break
     header_model_alias = request.headers.get("X-Model-Alias")
     if not model_alias and header_model_alias:
         model_alias = str(header_model_alias)
@@ -59,16 +63,18 @@ def prepare_upstream_payload_and_body(
     rewrite_model: bool,
     is_stream: bool = False,
     provider: str = "openai",
+    model_payload_keys: tuple[str, ...] = ("model",),
 ) -> tuple[dict[str, object], bytes]:
     upstream_payload = payload
+    rewrite_key = next((key for key in model_payload_keys if key in payload), None)
     should_rewrite_body_model = (
         rewrite_model
-        and "model" in payload
-        and payload.get("model") != candidate.real_model
+        and rewrite_key is not None
+        and payload.get(rewrite_key) != candidate.real_model
     )
     if should_rewrite_body_model:
         upstream_payload = dict(payload)
-        upstream_payload["model"] = candidate.real_model
+        upstream_payload[rewrite_key] = candidate.real_model
 
     should_include_openai_stream_usage = is_stream and provider == "openai"
     if should_include_openai_stream_usage:

@@ -321,6 +321,7 @@ class DumpIndex(Base):
         Index("ix_dump_model_time", "model_alias", "created_at"),
         Index("ix_dump_group_time", "rule_group", "created_at"),
         Index("ix_dump_trace", "trace_id"),
+        Index("ix_dump_prev_interaction", "previous_interaction_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -333,10 +334,12 @@ class DumpIndex(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_stream: Mapped[bool] = mapped_column(Boolean, default=False)
     is_cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
     stream_complete: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    previous_interaction_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     file_path: Mapped[str] = mapped_column(String(1024))
     hostname: Mapped[str] = mapped_column(String(256))
     created_at: Mapped[datetime] = mapped_column(

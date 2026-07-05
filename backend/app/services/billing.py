@@ -48,26 +48,38 @@ class RequestAttemptMetrics:
     upstream_url: str | None = None
 
 
-def extract_usage(payload: dict[str, Any] | None) -> tuple[int | None, int | None, int | None]:
+def extract_usage(
+    payload: dict[str, Any] | None,
+) -> tuple[int | None, int | None, int | None, int | None]:
     if not payload:
-        return None, None, None
+        return None, None, None, None
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         usage = payload.get("usageMetadata")
     if not isinstance(usage, dict):
-        return None, None, None
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            usage = metadata.get("total_usage") or metadata.get("usage")
+    if not isinstance(usage, dict):
+        usage = payload.get("total_usage")
+    if not isinstance(usage, dict):
+        return None, None, None, None
 
     prompt_tokens = usage.get("prompt_tokens")
     if prompt_tokens is None:
         prompt_tokens = usage.get("input_tokens")
     if prompt_tokens is None:
         prompt_tokens = usage.get("promptTokenCount")
+    if prompt_tokens is None:
+        prompt_tokens = usage.get("total_input_tokens")
 
     completion_tokens = usage.get("completion_tokens")
     if completion_tokens is None:
         completion_tokens = usage.get("output_tokens")
     if completion_tokens is None:
         completion_tokens = usage.get("candidatesTokenCount")
+    if completion_tokens is None:
+        completion_tokens = usage.get("total_output_tokens")
 
     total_tokens = usage.get("total_tokens")
     if total_tokens is None:
@@ -77,7 +89,17 @@ def extract_usage(payload: dict[str, Any] | None) -> tuple[int | None, int | Non
     ):
         total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
 
-    return prompt_tokens, completion_tokens, total_tokens
+    cached_tokens = usage.get("cache_read_input_tokens")
+    if cached_tokens is None:
+        cached_tokens = usage.get("cachedContentTokenCount")
+    if cached_tokens is None:
+        cached_tokens = usage.get("total_cached_tokens")
+    if cached_tokens is None:
+        prompt_details = usage.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached_tokens = prompt_details.get("cached_tokens")
+
+    return prompt_tokens, completion_tokens, total_tokens, cached_tokens
 
 
 async def write_request_log(metrics: RequestMetrics) -> None:
