@@ -266,8 +266,8 @@ export type DumpSearchItem = {
   stream_complete: boolean | null;
   previous_interaction_id: string | null;
   status_code: number | null;
-  file_path: string;
-  hostname: string;
+  file_path: string | null;
+  hostname: string | null;
   created_at: string;
 };
 

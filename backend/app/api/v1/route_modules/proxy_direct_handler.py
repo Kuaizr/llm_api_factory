@@ -345,6 +345,7 @@ async def handle_direct_candidate(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
             execution_mode=candidate.execution_mode,
             agent_node=agent_name,
             upstream_url=url,

@@ -80,31 +80,33 @@ async def agent_stream_generator(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
             execution_mode=candidate.execution_mode,
             agent_node=agent_name,
             upstream_url=upstream_url,
         )
         safe_create_task(write_request_log(metrics))
-        safe_create_task(
-            _dump_proxy_record(
-                dump_rule,
-                request_id,
-                trace_id,
-                candidate.endpoint.name,
-                model_alias,
-                upstream_body,
-                b"".join(chunks),
-                status_code,
-                endpoint_id=candidate.endpoint.id,
-                real_model=candidate.real_model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                cached_tokens=cached_tokens,
-                latency_ms=latency_ms,
-                is_stream=True,
-                stream_complete=stream_complete,
-                session_id=session_id,
-                request_path=request_path,
+        if dump_rule is not None:
+            safe_create_task(
+                _dump_proxy_record(
+                    dump_rule,
+                    request_id,
+                    trace_id,
+                    candidate.endpoint.name,
+                    model_alias,
+                    upstream_body,
+                    b"".join(chunks),
+                    status_code,
+                    endpoint_id=candidate.endpoint.id,
+                    real_model=candidate.real_model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    latency_ms=latency_ms,
+                    is_stream=True,
+                    stream_complete=stream_complete,
+                    session_id=session_id,
+                    request_path=request_path,
+                )
             )
-        )

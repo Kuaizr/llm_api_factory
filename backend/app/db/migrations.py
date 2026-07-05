@@ -231,6 +231,18 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             "CREATE INDEX IF NOT EXISTS ix_dump_prev_interaction ON dump_index(previous_interaction_id)",
         ),
     ),
+    SchemaMigration(
+        migration_id="20260706_request_log_cache_metadata",
+        statements=(
+            "ALTER TABLE request_logs ADD COLUMN cached_tokens INTEGER",
+        ),
+        sqlite_only=(
+            "ALTER TABLE request_logs ADD COLUMN is_cache_hit BOOLEAN DEFAULT 0",
+        ),
+        pg_only=(
+            "ALTER TABLE request_logs ADD COLUMN is_cache_hit BOOLEAN DEFAULT FALSE",
+        ),
+    ),
 )
 
 

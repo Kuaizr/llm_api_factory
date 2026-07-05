@@ -103,6 +103,7 @@ async def test_write_request_log_records_usage_atomically(
             prompt_tokens=2,
             completion_tokens=3,
             total_tokens=None,
+            cached_tokens=1,
             execution_mode="direct",
             upstream_url="https://api.example.com/v1/chat/completions",
         )
@@ -114,6 +115,8 @@ async def test_write_request_log_records_usage_atomically(
 
     assert log.request_id == "req-billing"
     assert log.total_tokens is None
+    assert log.cached_tokens == 1
+    assert log.is_cache_hit is True
     assert api_key is not None
     assert api_key.used_today == 5
     assert api_key.total_usage == 15

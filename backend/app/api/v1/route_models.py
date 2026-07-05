@@ -373,8 +373,8 @@ class DumpSearchItemOut(BaseModel):
     stream_complete: bool | None = None
     previous_interaction_id: str | None = None
     status_code: int | None = None
-    file_path: str
-    hostname: str
+    file_path: str | None = None
+    hostname: str | None = None
     created_at: datetime
 
 

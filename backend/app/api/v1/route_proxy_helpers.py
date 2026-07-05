@@ -679,6 +679,7 @@ async def _stream_response(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
             execution_mode=execution_mode,
             agent_node=agent_node,
             upstream_url=upstream_url,

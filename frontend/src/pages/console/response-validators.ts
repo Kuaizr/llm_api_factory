@@ -744,8 +744,8 @@ const parseDumpSearchItem = (value: unknown): DumpSearchItem | null => {
     !isNullableBoolean(value.stream_complete) ||
     !isNullableString(value.previous_interaction_id) ||
     !isNullableNumber(value.status_code) ||
-    !isString(value.file_path) ||
-    !isString(value.hostname) ||
+    !isNullableString(value.file_path) ||
+    !isNullableString(value.hostname) ||
     !isString(value.created_at)
   ) {
     return null;

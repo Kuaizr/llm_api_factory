@@ -88,6 +88,10 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
             "ALTER TABLE dump_index ADD COLUMN previous_interaction_id VARCHAR(128)",
             "CREATE INDEX IF NOT EXISTS ix_dump_prev_interaction ON dump_index(previous_interaction_id)",
         ),
+        "20260706_request_log_cache_metadata": (
+            "ALTER TABLE request_logs ADD COLUMN cached_tokens INTEGER",
+            "ALTER TABLE request_logs ADD COLUMN is_cache_hit BOOLEAN DEFAULT FALSE",
+        ),
     }
 
 

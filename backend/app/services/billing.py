@@ -24,6 +24,7 @@ class RequestMetrics:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
+    cached_tokens: int | None = None
     execution_mode: str = "direct"
     agent_node: str | None = None
     upstream_url: str | None = None
@@ -115,6 +116,8 @@ async def write_request_log(metrics: RequestMetrics) -> None:
             prompt_tokens=metrics.prompt_tokens,
             completion_tokens=metrics.completion_tokens,
             total_tokens=metrics.total_tokens,
+            cached_tokens=metrics.cached_tokens,
+            is_cache_hit=bool((metrics.cached_tokens or 0) > 0),
             latency_ms=metrics.latency_ms,
             ttft_ms=metrics.ttft_ms,
             tps=metrics.tps,

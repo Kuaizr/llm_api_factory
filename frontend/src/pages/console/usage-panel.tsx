@@ -642,7 +642,11 @@ export const UsageStatsView = ({
             </thead>
             <tbody className="divide-y divide-gray-800/50">
               {filteredLogs.map((item) => (
-                <tr key={item.request_id} title={item.file_path} className="hover:bg-gray-900/40">
+                <tr
+                  key={item.request_id}
+                  title={item.file_path ?? "metadata only"}
+                  className="hover:bg-gray-900/40"
+                >
                   <td className="py-3 text-gray-500">{formatShortTime(item.created_at)}</td>
                   <td className="py-3 text-gray-300">{item.model_alias}</td>
                   <td className="py-3 text-right text-gray-200">

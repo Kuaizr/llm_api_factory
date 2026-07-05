@@ -271,6 +271,8 @@ class RequestLog(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
     latency_ms: Mapped[int] = mapped_column(Integer)
     ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tps: Mapped[float | None] = mapped_column(Float, nullable=True)

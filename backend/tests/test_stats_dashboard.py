@@ -44,6 +44,8 @@ async def test_admin_stats_dashboard_handlers(db_session: AsyncSession) -> None:
         prompt_tokens=100,
         completion_tokens=20,
         total_tokens=120,
+        cached_tokens=80,
+        is_cache_hit=True,
         latency_ms=250,
         ttft_ms=None,
         tps=None,
@@ -129,3 +131,70 @@ async def test_admin_stats_dashboard_handlers(db_session: AsyncSession) -> None:
     assert dumps.total == 1
     assert dumps.items[0].trace_id == "trace-1"
     assert dumps.items[0].status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_stats_recent_logs_do_not_require_dump(
+    db_session: AsyncSession,
+) -> None:
+    now = datetime.now(timezone.utc)
+    endpoint = Endpoint(
+        name="No Dump",
+        base_url="https://example.test/v1",
+        provider="openai",
+    )
+    db_session.add(endpoint)
+    await db_session.flush()
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-no-dump", rule_group="gpt")
+    db_session.add(api_key)
+    await db_session.flush()
+    db_session.add(
+        RequestLog(
+            request_id="req-no-dump",
+            trace_id="trace-no-dump",
+            model_alias="gpt-5.5",
+            endpoint_id=endpoint.id,
+            api_key_id=api_key.id,
+            requested_rule_group="gpt",
+            rule_group="gpt",
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            cached_tokens=40,
+            is_cache_hit=True,
+            latency_ms=250,
+            ttft_ms=None,
+            tps=None,
+            status_code=200,
+            execution_mode="direct",
+            agent_node=None,
+            upstream_url="https://example.test/v1/chat/completions",
+            created_at=now,
+        )
+    )
+    await db_session.commit()
+
+    since = (now - timedelta(minutes=5)).isoformat()
+    until = (now + timedelta(minutes=5)).isoformat()
+
+    overview = await admin_stats_overview(since=since, until=until, session=db_session)
+    assert overview.total_requests.value == 1
+    assert overview.cache_hit_rate.value == 100
+    assert overview.cached_tokens == 40
+
+    dumps = await admin_dump_search(
+        since=since,
+        until=until,
+        limit=50,
+        offset=0,
+        model=None,
+        rule_group=None,
+        status_code=None,
+        trace_id=None,
+        session=db_session,
+    )
+    assert dumps.total == 1
+    assert dumps.items[0].request_id == "req-no-dump"
+    assert dumps.items[0].is_cache_hit is True
+    assert dumps.items[0].file_path is None
+    assert dumps.items[0].hostname is None

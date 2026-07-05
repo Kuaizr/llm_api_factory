@@ -178,6 +178,24 @@ def _log_total_tokens(log: RequestLog) -> int:
     return (log.prompt_tokens or 0) + (log.completion_tokens or 0)
 
 
+def _row_cached_tokens(log: RequestLog, dump: DumpIndex | None) -> int:
+    if log.cached_tokens is not None:
+        return log.cached_tokens
+    if dump is not None and dump.cached_tokens is not None:
+        return dump.cached_tokens
+    return 0
+
+
+def _row_is_cache_hit(log: RequestLog, dump: DumpIndex | None) -> bool:
+    if bool(log.is_cache_hit):
+        return True
+    if log.cached_tokens is not None:
+        return log.cached_tokens > 0
+    if dump is not None:
+        return bool(dump.is_cache_hit)
+    return False
+
+
 def _percentile(values: list[int], percentile: float) -> int | None:
     if not values:
         return None
@@ -224,10 +242,8 @@ def _aggregate_rows(
     prompt_tokens = sum(log.prompt_tokens or 0 for log, *_ in rows)
     completion_tokens = sum(log.completion_tokens or 0 for log, *_ in rows)
     total_tokens = sum(_log_total_tokens(log) for log, *_ in rows)
-    cached_tokens = sum((dump.cached_tokens or 0) for *_, dump in rows if dump is not None)
-    cache_hits = sum(
-        1 for *_, dump in rows if dump is not None and bool(dump.is_cache_hit)
-    )
+    cached_tokens = sum(_row_cached_tokens(log, dump) for log, *_rest, dump in rows)
+    cache_hits = sum(1 for log, *_rest, dump in rows if _row_is_cache_hit(log, dump))
     latency_values = [log.latency_ms for log, *_ in rows if log.latency_ms is not None]
     avg_latency = (
         int(sum(latency_values) / len(latency_values)) if latency_values else None
@@ -328,10 +344,10 @@ async def admin_stats_timeseries(
             log.completion_tokens or 0
         )
         bucket["total_tokens"] = int(bucket["total_tokens"]) + _log_total_tokens(log)
-        bucket["cached_tokens"] = int(bucket["cached_tokens"]) + (
-            dump.cached_tokens or 0 if dump is not None else 0
+        bucket["cached_tokens"] = int(bucket["cached_tokens"]) + _row_cached_tokens(
+            log, dump
         )
-        if dump is not None and dump.is_cache_hit:
+        if _row_is_cache_hit(log, dump):
             bucket["cache_hits"] = int(bucket["cache_hits"]) + 1
         latencies = bucket["latencies"]
         if isinstance(latencies, list):
@@ -489,7 +505,7 @@ async def admin_stats_top_keys(
         )
         data["request_count"] = int(data["request_count"]) + 1
         data["total_tokens"] = int(data["total_tokens"]) + _log_total_tokens(log)
-        if dump is not None and dump.is_cache_hit:
+        if _row_is_cache_hit(log, dump):
             data["cache_hits"] = int(data["cache_hits"]) + 1
         latencies = data["latencies"]
         if isinstance(latencies, list):
@@ -536,54 +552,54 @@ async def admin_dump_search(
 ) -> DumpSearchOut:
     start_time, end_time = _stats_time_window(hours, since, until)
     filters = [
-        DumpIndex.created_at >= start_time,
-        DumpIndex.created_at <= end_time,
+        RequestLog.created_at >= start_time,
+        RequestLog.created_at <= end_time,
     ]
     if model:
-        filters.append(DumpIndex.model_alias == model)
+        filters.append(RequestLog.model_alias == model)
     if rule_group:
-        filters.append(DumpIndex.rule_group == rule_group)
+        filters.append(RequestLog.rule_group == rule_group)
     if trace_id:
-        filters.append(DumpIndex.trace_id.contains(trace_id))
+        filters.append(RequestLog.trace_id.contains(trace_id))
     if status_code is not None:
         filters.append(RequestLog.status_code == status_code)
 
     base_stmt = (
-        select(DumpIndex, RequestLog, Endpoint)
-        .outerjoin(RequestLog, RequestLog.request_id == DumpIndex.request_id)
-        .outerjoin(Endpoint, Endpoint.id == DumpIndex.endpoint_id)
+        select(RequestLog, DumpIndex, Endpoint)
+        .outerjoin(DumpIndex, DumpIndex.request_id == RequestLog.request_id)
+        .outerjoin(Endpoint, Endpoint.id == RequestLog.endpoint_id)
         .where(*filters)
     )
     total_stmt = select(func.count()).select_from(base_stmt.subquery())
     total = await session.scalar(total_stmt) or 0
     result = await session.execute(
-        base_stmt.order_by(DumpIndex.created_at.desc()).offset(offset).limit(limit)
+        base_stmt.order_by(RequestLog.created_at.desc()).offset(offset).limit(limit)
     )
     items: list[DumpSearchItemOut] = []
-    for dump, log, endpoint in result.all():
+    for log, dump, endpoint in result.all():
         items.append(
             DumpSearchItemOut(
-                request_id=dump.request_id,
-                trace_id=dump.trace_id,
-                model_alias=dump.model_alias,
-                real_model=dump.real_model,
-                endpoint_id=dump.endpoint_id,
+                request_id=log.request_id,
+                trace_id=log.trace_id,
+                model_alias=log.model_alias,
+                real_model=dump.real_model if dump else log.model_alias,
+                endpoint_id=log.endpoint_id,
                 endpoint_name=endpoint.name if endpoint else None,
-                api_key_id=log.api_key_id if log else None,
-                rule_group=dump.rule_group,
-                prompt_tokens=dump.prompt_tokens,
-                completion_tokens=dump.completion_tokens,
-                total_tokens=dump.total_tokens,
-                cached_tokens=dump.cached_tokens,
-                latency_ms=dump.latency_ms,
-                is_stream=dump.is_stream,
-                is_cache_hit=dump.is_cache_hit,
-                stream_complete=dump.stream_complete,
-                previous_interaction_id=dump.previous_interaction_id,
-                status_code=log.status_code if log else None,
-                file_path=dump.file_path,
-                hostname=dump.hostname,
-                created_at=dump.created_at,
+                api_key_id=log.api_key_id,
+                rule_group=log.rule_group or "default",
+                prompt_tokens=log.prompt_tokens,
+                completion_tokens=log.completion_tokens,
+                total_tokens=log.total_tokens,
+                cached_tokens=_row_cached_tokens(log, dump),
+                latency_ms=log.latency_ms,
+                is_stream=dump.is_stream if dump else False,
+                is_cache_hit=_row_is_cache_hit(log, dump),
+                stream_complete=dump.stream_complete if dump else None,
+                previous_interaction_id=dump.previous_interaction_id if dump else None,
+                status_code=log.status_code,
+                file_path=dump.file_path if dump else None,
+                hostname=dump.hostname if dump else None,
+                created_at=log.created_at,
             )
         )
     return DumpSearchOut(
