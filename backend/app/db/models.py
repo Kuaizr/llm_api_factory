@@ -315,6 +315,35 @@ class RequestAttemptLog(Base):
     )
 
 
+class DumpIndex(Base):
+    __tablename__ = "dump_index"
+    __table_args__ = (
+        Index("ix_dump_model_time", "model_alias", "created_at"),
+        Index("ix_dump_group_time", "rule_group", "created_at"),
+        Index("ix_dump_trace", "trace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    trace_id: Mapped[str] = mapped_column(String(64), index=True)
+    model_alias: Mapped[str] = mapped_column(String(128))
+    real_model: Mapped[str] = mapped_column(String(128))
+    endpoint_id: Mapped[int] = mapped_column(Integer)
+    rule_group: Mapped[str] = mapped_column(String(64))
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_stream: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    stream_complete: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    file_path: Mapped[str] = mapped_column(String(1024))
+    hostname: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     __table_args__ = (

@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import AsyncGenerator
 
@@ -32,6 +33,7 @@ async def agent_stream_generator(
     usage_payload = None
     first_data_at: float | None = None
     chunks: list[bytes] = []
+    stream_complete = False
     try:
         async for chunk in agent_response.iter_bytes():
             if chunk:
@@ -42,6 +44,13 @@ async def agent_stream_generator(
                 if data_seen and first_data_at is None:
                     first_data_at = time.perf_counter()
             yield chunk
+        stream_complete = True
+    except (asyncio.CancelledError, GeneratorExit):
+        stream_complete = False
+        raise
+    except Exception:
+        stream_complete = False
+        raise
     finally:
         stream_end = time.perf_counter()
         ttft_ms = (
@@ -84,6 +93,14 @@ async def agent_stream_generator(
                 upstream_body,
                 b"".join(chunks),
                 status_code,
+                endpoint_id=candidate.endpoint.id,
+                real_model=candidate.real_model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                latency_ms=latency_ms,
+                is_stream=True,
+                stream_complete=stream_complete,
                 session_id=session_id,
                 request_path=request_path,
             )

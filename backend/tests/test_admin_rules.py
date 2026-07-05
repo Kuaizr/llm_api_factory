@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -72,7 +74,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
         assert payload["model_pattern"] == "gpt-4.*"
         assert payload["target_key_ids"] == [api_key.id]
         assert payload["dump_enabled"] is True
-        assert payload["dump_path"] == "/tmp/alpha-dump"
+        assert Path(payload["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
         assert payload["request_count"] == 0
 
         session.add_all(
@@ -121,7 +123,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
     assert alpha_rule["avg_ttft_ms"] == 200
     assert alpha_rule["avg_tps"] == 15.0
     assert alpha_rule["dump_enabled"] is True
-    assert alpha_rule["dump_path"] == "/tmp/alpha-dump"
+    assert Path(alpha_rule["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
     default_rules = [item for item in data if item["group_name"] == "default"]
     assert len(default_rules) == 1
     assert default_rules[0]["model_pattern"] == ".*"

@@ -69,13 +69,19 @@ def _raw_proxy_response_with_dump(
     request_id: str,
     trace_id: str,
     endpoint_name: str,
+    endpoint_id: int,
     model_alias: str,
+    real_model: str,
     request_body: bytes,
     status_code: int,
     response_headers: dict,
     debug_headers: dict,
     session_id: str | None,
     request_path: str,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    latency_ms: int | None = None,
 ) -> Response:
     safe_create_task(
         _dump_proxy_record(
@@ -87,6 +93,14 @@ def _raw_proxy_response_with_dump(
             request_body,
             content,
             status_code,
+            endpoint_id=endpoint_id,
+            real_model=real_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            latency_ms=latency_ms,
+            is_stream=False,
+            stream_complete=None,
             session_id=session_id,
             request_path=request_path,
         )
@@ -312,13 +326,16 @@ async def _proxy_openai_request(
                         request_id=request_id,
                         trace_id=trace_id,
                         endpoint_name=candidate.endpoint.name,
+                        endpoint_id=candidate.endpoint.id,
                         model_alias=model_alias,
+                        real_model=candidate.real_model,
                         request_body=upstream_body,
                         status_code=status_code,
                         response_headers=agent_response.headers,
                         debug_headers=debug_headers,
                         session_id=session_id,
                         request_path=request.url.path,
+                        latency_ms=_elapsed_ms(attempt_start),
                     )
 
                 if is_stream:
@@ -400,13 +417,16 @@ async def _proxy_openai_request(
                         request_id=request_id,
                         trace_id=trace_id,
                         endpoint_name=candidate.endpoint.name,
+                        endpoint_id=candidate.endpoint.id,
                         model_alias=model_alias,
+                        real_model=candidate.real_model,
                         request_body=upstream_body,
                         status_code=status_code,
                         response_headers=agent_response.headers,
                         debug_headers=debug_headers,
                         session_id=session_id,
                         request_path=request.url.path,
+                        latency_ms=_elapsed_ms(attempt_start),
                     )
 
                 await circuit_breaker.record_success(candidate.api_key.id)
@@ -455,13 +475,19 @@ async def _proxy_openai_request(
                     request_id=request_id,
                     trace_id=trace_id,
                     endpoint_name=candidate.endpoint.name,
+                    endpoint_id=candidate.endpoint.id,
                     model_alias=model_alias,
+                    real_model=candidate.real_model,
                     request_body=upstream_body,
                     status_code=status_code,
                     response_headers=agent_response.headers,
                     debug_headers=debug_headers,
                     session_id=session_id,
                     request_path=request.url.path,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    latency_ms=latency_ms,
                 )
 
             continue
@@ -590,13 +616,16 @@ async def _proxy_openai_request(
                     request_id=request_id,
                     trace_id=trace_id,
                     endpoint_name=candidate.endpoint.name,
+                    endpoint_id=candidate.endpoint.id,
                     model_alias=model_alias,
+                    real_model=candidate.real_model,
                     request_body=upstream_body,
                     status_code=response.status_code,
                     response_headers=response.headers,
                     debug_headers=debug_headers,
                     session_id=session_id,
                     request_path=request.url.path,
+                    latency_ms=_elapsed_ms(attempt_start),
                 )
 
             latency_ms = int((time.perf_counter() - request_start) * 1000)
@@ -627,6 +656,7 @@ async def _proxy_openai_request(
                     request_id=request_id,
                     trace_id=trace_id,
                     model_alias=model_alias,
+                    real_model=candidate.real_model,
                     endpoint_id=candidate.endpoint.id,
                     api_key_id=candidate.api_key.id,
                     requested_rule_group=requested_rule_group,
@@ -684,13 +714,16 @@ async def _proxy_openai_request(
                     request_id=request_id,
                     trace_id=trace_id,
                     endpoint_name=candidate.endpoint.name,
+                    endpoint_id=candidate.endpoint.id,
                     model_alias=model_alias,
+                    real_model=candidate.real_model,
                     request_body=upstream_body,
                     status_code=response.status_code,
                     response_headers=response.headers,
                     debug_headers=debug_headers,
                     session_id=session_id,
                     request_path=request.url.path,
+                    latency_ms=_elapsed_ms(attempt_start),
                 )
 
             await circuit_breaker.record_success(candidate.api_key.id)
@@ -739,13 +772,19 @@ async def _proxy_openai_request(
                 request_id=request_id,
                 trace_id=trace_id,
                 endpoint_name=candidate.endpoint.name,
+                endpoint_id=candidate.endpoint.id,
                 model_alias=model_alias,
+                real_model=candidate.real_model,
                 request_body=upstream_body,
                 status_code=response.status_code,
                 response_headers=response.headers,
                 debug_headers=debug_headers,
                 session_id=session_id,
                 request_path=request.url.path,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                latency_ms=latency_ms,
             )
 
         continue

@@ -46,11 +46,17 @@ async def prepare_candidate_request_context(
     redis,
     client,
 ) -> CandidateRequestContext:
+    candidate_provider = normalize_provider_name(
+        getattr(candidate.endpoint, "provider", None)
+    )
+    request_is_stream = is_stream_request(request, payload)
     upstream_payload, upstream_body = prepare_upstream_payload_and_body(
         payload,
         raw_body,
         candidate,
         rewrite_model=rewrite_model,
+        is_stream=request_is_stream,
+        provider=candidate_provider,
     )
     headers = _build_upstream_headers(
         request.headers, candidate.endpoint, candidate.api_key.key
@@ -90,7 +96,5 @@ async def prepare_candidate_request_context(
             include_internal=include_internal_debug,
         ),
         agent_name=_get_agent_name(candidate.endpoint),
-        candidate_provider=normalize_provider_name(
-            getattr(candidate.endpoint, "provider", None)
-        ),
+        candidate_provider=candidate_provider,
     )

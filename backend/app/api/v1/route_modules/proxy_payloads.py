@@ -57,6 +57,8 @@ def prepare_upstream_payload_and_body(
     candidate: RouteCandidate,
     *,
     rewrite_model: bool,
+    is_stream: bool = False,
+    provider: str = "openai",
 ) -> tuple[dict[str, object], bytes]:
     upstream_payload = payload
     should_rewrite_body_model = (
@@ -68,13 +70,29 @@ def prepare_upstream_payload_and_body(
         upstream_payload = dict(payload)
         upstream_payload["model"] = candidate.real_model
 
+    should_include_openai_stream_usage = is_stream and provider == "openai"
+    if should_include_openai_stream_usage:
+        if upstream_payload is payload:
+            upstream_payload = dict(payload)
+        stream_options = upstream_payload.get("stream_options")
+        if not isinstance(stream_options, dict):
+            stream_options = {}
+        else:
+            stream_options = dict(stream_options)
+        stream_options["include_usage"] = True
+        upstream_payload["stream_options"] = stream_options
+
     templated_payload = _apply_request_body_template(
         candidate.endpoint, upstream_payload, candidate.real_model
     )
     if templated_payload is not None:
         upstream_payload = templated_payload
 
-    if templated_payload is not None or should_rewrite_body_model:
+    if (
+        templated_payload is not None
+        or should_rewrite_body_model
+        or should_include_openai_stream_usage
+    ):
         return upstream_payload, json.dumps(upstream_payload).encode("utf-8")
     return upstream_payload, raw_body
 

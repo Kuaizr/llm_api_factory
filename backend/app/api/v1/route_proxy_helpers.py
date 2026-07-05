@@ -596,6 +596,7 @@ async def _stream_response(
     request_id: str,
     trace_id: str,
     model_alias: str,
+    real_model: str,
     endpoint_id: int,
     api_key_id: int,
     requested_rule_group: str | None,
@@ -616,6 +617,7 @@ async def _stream_response(
     usage_payload = None
     first_data_at: float | None = None
     chunks: list[bytes] = []
+    stream_complete = False
     try:
         async for chunk in response.aiter_bytes():
             if chunk:
@@ -626,6 +628,13 @@ async def _stream_response(
                 if data_seen and first_data_at is None:
                     first_data_at = time.perf_counter()
             yield chunk
+        stream_complete = True
+    except (asyncio.CancelledError, GeneratorExit):
+        stream_complete = False
+        raise
+    except Exception:
+        stream_complete = False
+        raise
     finally:
         stream_end = time.perf_counter()
         await response.aclose()
@@ -668,6 +677,14 @@ async def _stream_response(
                     dump_request_body or b"",
                     b"".join(chunks),
                     status_code,
+                    endpoint_id=endpoint_id,
+                    real_model=real_model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    latency_ms=resolved_latency_ms,
+                    is_stream=True,
+                    stream_complete=stream_complete,
                     session_id=dump_session_id,
                     request_path=dump_request_path,
                 )
@@ -711,6 +728,10 @@ def _inspect_stream_chunk(
             payload = json.loads(data)
         except json.JSONDecodeError:
             continue
-        if "usage" in payload:
+        if "usage" in payload or "usageMetadata" in payload:
             usage_payload = payload
+        elif payload.get("type") == "response.completed":
+            response_payload = payload.get("response")
+            if isinstance(response_payload, dict) and "usage" in response_payload:
+                usage_payload = response_payload
     return buffer, usage_payload, data_seen

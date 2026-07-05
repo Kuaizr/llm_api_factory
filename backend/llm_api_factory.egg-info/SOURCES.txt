@@ -91,6 +91,7 @@ tests/test_cli.py
 tests/test_config_defaults.py
 tests/test_database_backend.py
 tests/test_db_session.py
+tests/test_dump_index.py
 tests/test_health_monitor.py
 tests/test_health_probe_timeseries.py
 tests/test_migrations.py

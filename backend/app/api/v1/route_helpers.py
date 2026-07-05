@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import shlex
+import socket
 from typing import Iterable, Mapping
 
 from fastapi import HTTPException, Request
@@ -23,7 +24,16 @@ from app.api.v1.route_models import (
     RoutingRuleOut,
 )
 from app.core.config import get_settings
-from app.db.models import APIKey, Agent, Endpoint, FactoryAccessKey, RequestLog, RoutingRule
+from app.db.models import (
+    APIKey,
+    Agent,
+    DumpIndex,
+    Endpoint,
+    FactoryAccessKey,
+    RequestLog,
+    RoutingRule,
+)
+from app.db.session import SessionLocal
 from app.services.admin_auth import verify_admin_session_token
 from app.services.access_keys import hash_access_key
 from app.services.agents import get_agent_by_name, verify_agent_token
@@ -37,6 +47,7 @@ from app.services.secrets import (
 
 
 VALID_ENDPOINT_ACCESS_MODES = {"direct", "via_agent"}
+DUMP_HOSTNAME = socket.gethostname()
 
 
 def _normalize_endpoint_access_mode(raw: object, agent_node: object = None) -> str:
@@ -261,6 +272,15 @@ async def _dump_proxy_record(
     response_body: bytes,
     status_code: int,
     *,
+    endpoint_id: int | None = None,
+    real_model: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    latency_ms: int | None = None,
+    is_stream: bool = False,
+    stream_complete: bool | None = None,
+    is_cache_hit: bool = False,
     session_id: str | None = None,
     request_path: str | None = None,
 ) -> None:
@@ -274,30 +294,52 @@ async def _dump_proxy_record(
         dump_dir = _resolve_dump_directory(dump_dir_raw)
     except HTTPException:
         return
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    target_file = dump_dir / f"{timestamp}-{request_id}.json"
+    now = datetime.now(timezone.utc)
+    hostname = _sanitize_dump_filename(DUMP_HOSTNAME)
+    resolved_real_model = real_model or model_alias
+    safe_real_model = _sanitize_dump_filename(resolved_real_model)
+    safe_request_id = _sanitize_dump_filename(request_id)
+    relative_file = (
+        Path(hostname)
+        / now.strftime("%Y-%m-%d")
+        / safe_real_model
+        / f"{safe_request_id}.json"
+    )
+    target_file = dump_dir / relative_file
     resolved_session_id = (session_id or trace_id).strip() if (session_id or trace_id) else trace_id
     if not resolved_session_id:
         resolved_session_id = "session"
     safe_session_id = _sanitize_dump_filename(resolved_session_id)
-    session_file = dump_dir / f"session-{safe_session_id}.jsonl"
+    session_file = dump_dir / hostname / "sessions" / f"{safe_session_id}.jsonl"
     payload = {
         "request_id": request_id,
         "trace_id": trace_id,
         "session_id": resolved_session_id,
         "rule_id": rule.id,
         "rule_group": rule.group_name,
+        "endpoint_id": endpoint_id,
         "endpoint_name": endpoint_name,
         "model_alias": model_alias,
+        "real_model": resolved_real_model,
         "request_path": request_path,
         "status_code": status_code,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "latency_ms": latency_ms,
+        "is_stream": is_stream,
+        "is_cache_hit": is_cache_hit,
+        "stream_complete": stream_complete,
+        "file_path": relative_file.as_posix(),
+        "hostname": hostname,
+        "created_at": now.isoformat(),
         "request_body": request_body.decode("utf-8", errors="replace"),
         "response_body": response_body.decode("utf-8", errors="replace"),
     }
 
     def _write() -> None:
-        dump_dir.mkdir(parents=True, exist_ok=True)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
         serialized = json.dumps(payload, ensure_ascii=False, indent=2)
         target_file.write_text(serialized, encoding="utf-8")
         with session_file.open("a", encoding="utf-8") as stream:
@@ -309,6 +351,70 @@ async def _dump_proxy_record(
     except Exception:
         # Dump is best-effort and must never break proxy traffic.
         return
+    await _write_dump_index(
+        request_id=request_id,
+        trace_id=trace_id,
+        model_alias=model_alias,
+        real_model=resolved_real_model,
+        endpoint_id=endpoint_id,
+        rule_group=rule.group_name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        latency_ms=latency_ms,
+        is_stream=is_stream,
+        is_cache_hit=is_cache_hit,
+        stream_complete=stream_complete,
+        file_path=relative_file.as_posix(),
+        hostname=hostname,
+    )
+
+
+async def _write_dump_index(
+    *,
+    request_id: str,
+    trace_id: str,
+    model_alias: str,
+    real_model: str,
+    endpoint_id: int | None,
+    rule_group: str,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    total_tokens: int | None,
+    latency_ms: int | None,
+    is_stream: bool,
+    is_cache_hit: bool,
+    stream_complete: bool | None,
+    file_path: str,
+    hostname: str,
+) -> None:
+    if endpoint_id is None:
+        return
+    async with SessionLocal() as session:
+        try:
+            session.add(
+                DumpIndex(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    real_model=real_model,
+                    endpoint_id=endpoint_id,
+                    rule_group=rule_group,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    latency_ms=latency_ms,
+                    is_stream=is_stream,
+                    is_cache_hit=is_cache_hit,
+                    stream_complete=stream_complete,
+                    file_path=file_path,
+                    hostname=hostname,
+                )
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            return
 
 
 def _build_agent_install_command(
