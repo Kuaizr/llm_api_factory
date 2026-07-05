@@ -12,7 +12,7 @@ import {
   Shield,
   Zap,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { LatencyBar, StatusBadge } from "./common-widgets";
 import {
@@ -24,6 +24,8 @@ import {
   type HealthStatus,
   type UsageStats,
 } from "./shared";
+
+const providerFilters = ["openai", "anthropic", "gemini", "custom"] as const;
 
 type EndpointsPanelProps = {
   endpoints: Endpoint[];
@@ -177,6 +179,8 @@ export const EndpointsPanel = ({
   onManageKeys,
   onProbeEndpoint,
 }: EndpointsPanelProps) => {
+  const [providerFilter, setProviderFilter] = useState<string>("all");
+
   const summaryStats = useMemo(() => {
     const activeCount = endpoints.filter((endpoint) => endpoint.status === "online").length;
     const avgLatency = endpoints.length
@@ -216,6 +220,37 @@ export const EndpointsPanel = ({
     ];
   }, [endpoints, agents, usageStats]);
 
+  const providerCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      openai: 0,
+      anthropic: 0,
+      gemini: 0,
+      custom: 0,
+    };
+    endpoints.forEach((endpoint) => {
+      const provider = (endpoint.provider || "custom").toLowerCase();
+      if (provider in counts) {
+        counts[provider] += 1;
+      } else {
+        counts.custom += 1;
+      }
+    });
+    return counts;
+  }, [endpoints]);
+
+  const filteredEndpoints = useMemo(() => {
+    if (providerFilter === "all") {
+      return endpoints;
+    }
+    return endpoints.filter((endpoint) => {
+      const provider = (endpoint.provider || "custom").toLowerCase();
+      return providerFilter === "custom"
+        ? !providerFilters.includes(provider as (typeof providerFilters)[number]) ||
+            provider === "custom"
+        : provider === providerFilter;
+    });
+  }, [endpoints, providerFilter]);
+
   return (
     <>
       <div className="grid grid-cols-4 gap-4 mb-8">
@@ -235,11 +270,33 @@ export const EndpointsPanel = ({
         ))}
       </div>
 
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-bold text-white flex items-center gap-2">
-          <Database size={20} className="text-blue-500" />
-          API 端点列表
-        </h2>
+      <div className="flex items-center justify-between mb-6 gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            <Database size={20} className="text-blue-500" />
+            API 端点列表
+          </h2>
+          <div className="flex flex-wrap gap-1.5">
+            {providerFilters.map((provider) => {
+              const active = providerFilter === provider;
+              return (
+                <button
+                  key={provider}
+                  type="button"
+                  onClick={() => setProviderFilter(active ? "all" : provider)}
+                  className={`rounded border px-2 py-1 font-mono text-[11px] transition ${
+                    active
+                      ? "border-blue-500/60 bg-blue-600/20 text-blue-200"
+                      : "border-gray-800 bg-gray-900/50 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                  }`}
+                  title={`筛选 ${provider} 端点`}
+                >
+                  {provider}:{providerCounts[provider]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
         <button
           onClick={onCreateEndpoint}
           disabled={!isAdmin}
@@ -251,7 +308,7 @@ export const EndpointsPanel = ({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {endpoints.map((endpoint) => (
+        {filteredEndpoints.map((endpoint) => (
           <EndpointCard
             key={endpoint.id}
             data={endpoint}
@@ -262,6 +319,12 @@ export const EndpointsPanel = ({
             onProbe={onProbeEndpoint}
           />
         ))}
+
+        {filteredEndpoints.length === 0 && (
+          <div className="rounded-xl border border-gray-800 bg-[#0f1117] p-6 text-sm text-gray-500">
+            当前筛选下暂无 API 端点。
+          </div>
+        )}
 
         <button
           type="button"

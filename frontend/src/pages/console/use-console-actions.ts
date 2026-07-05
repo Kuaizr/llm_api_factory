@@ -588,6 +588,30 @@ export const useConsoleActions = ({
     }
   };
 
+  const handleSetAgentState = async (
+    agent: AgentNode,
+    action: "enable" | "drain" | "disable"
+  ) => {
+    if (!isAdmin) return;
+    try {
+      const response = await fetch(`${apiBase}/admin/agents/${agent.id}/${action}`, {
+        method: "POST",
+        headers: buildHeaders(token),
+      });
+      if (!response.ok) {
+        const label =
+          action === "enable" ? "启用" : action === "drain" ? "Drain" : "禁用";
+        await notifyApiError(response, `${label} Agent 节点失败`);
+        return;
+      }
+      await loadAgents(token);
+    } catch {
+      const label =
+        action === "enable" ? "启用" : action === "drain" ? "Drain" : "禁用";
+      alert(`${label} Agent 节点失败`);
+    }
+  };
+
   return {
     refreshKeys,
     resetProbeState,
@@ -606,5 +630,6 @@ export const useConsoleActions = ({
     handleDeleteRule,
     handleDeleteAgent,
     handleRotateAgentToken,
+    handleSetAgentState,
   };
 };

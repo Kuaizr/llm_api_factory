@@ -886,7 +886,7 @@ export const ManageKeysModal = ({
           <div>
             <h3 className="text-xl font-bold text-white flex items-center gap-2">
               <Key size={20} className="text-blue-500" />
-              管理 API Keys (纤维束)
+              管理 API Keys
             </h3>
             <p className="text-sm text-gray-500 mt-1">
               Endpoint: {endpoint.name} - 按分组管理上游 Key 配置

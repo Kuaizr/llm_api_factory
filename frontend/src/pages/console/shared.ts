@@ -150,6 +150,7 @@ export type AgentNode = {
   probe_latency_ms?: number | null;
   probe_checked_at?: string | null;
   is_draining?: boolean;
+  is_active?: boolean;
 };
 
 export type AgentBootstrapResult = {
@@ -170,6 +171,9 @@ export type UsageTopKey = {
   endpoint_name: string;
   key_preview: string;
   total_tokens: number;
+  request_count?: number;
+  cache_hit_rate?: number | null;
+  avg_latency_ms?: number | null;
 };
 
 export type UsageStats = {
@@ -189,7 +193,93 @@ export type MetricsBucket = {
   avg_latency_ms: number | null;
 };
 
-export type UsageTrendRange = "hour" | "day" | "week";
+export type StatsKpiValue = {
+  value: number;
+  previous_value: number;
+  change_percent: number | null;
+};
+
+export type StatsOverview = {
+  total_requests: StatsKpiValue;
+  total_tokens: StatsKpiValue;
+  cache_hit_rate: StatsKpiValue;
+  avg_latency_ms: StatsKpiValue;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  p95_latency_ms: number | null;
+  generated_at: string;
+};
+
+export type StatsTimeseriesBucket = {
+  bucket_start: string;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  cache_hits: number;
+  cache_hit_rate: number;
+  avg_latency_ms: number | null;
+};
+
+export type StatsLatencyBucket = {
+  bucket_start: string;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  p99_ms: number | null;
+};
+
+export type StatsDistributionItem = {
+  name: string;
+  request_count: number;
+  total_tokens: number;
+  percent: number;
+};
+
+export type StatsTopKey = {
+  api_key_id: number;
+  endpoint_name: string;
+  key_preview: string;
+  request_count: number;
+  total_tokens: number;
+  cache_hit_rate: number | null;
+  avg_latency_ms: number | null;
+};
+
+export type DumpSearchItem = {
+  request_id: string;
+  trace_id: string;
+  model_alias: string;
+  real_model: string;
+  endpoint_id: number;
+  endpoint_name: string | null;
+  api_key_id: number | null;
+  rule_group: string;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  cached_tokens: number | null;
+  latency_ms: number | null;
+  is_stream: boolean;
+  is_cache_hit: boolean;
+  stream_complete: boolean | null;
+  previous_interaction_id: string | null;
+  status_code: number | null;
+  file_path: string;
+  hostname: string;
+  created_at: string;
+};
+
+export type DumpSearchResult = {
+  items: DumpSearchItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  generated_at: string;
+};
+
+export type UsageTrendRange = "1h" | "6h" | "24h" | "7d" | "30d";
 
 export type EndpointFormState = {
   name: string;
@@ -300,9 +390,11 @@ export const usageTrendConfig: Record<
   UsageTrendRange,
   { label: string; hours: number; bucketMinutes: number }
 > = {
-  hour: { label: "按小时（近 24 小时）", hours: 24, bucketMinutes: 60 },
-  day: { label: "按天（近 30 天）", hours: 24 * 30, bucketMinutes: 1440 },
-  week: { label: "按周（近 12 周）", hours: 24 * 7 * 12, bucketMinutes: 10080 },
+  "1h": { label: "1h", hours: 1, bucketMinutes: 5 },
+  "6h": { label: "6h", hours: 6, bucketMinutes: 15 },
+  "24h": { label: "24h", hours: 24, bucketMinutes: 60 },
+  "7d": { label: "7d", hours: 24 * 7, bucketMinutes: 360 },
+  "30d": { label: "30d", hours: 24 * 30, bucketMinutes: 1440 },
 };
 
 export const formatTimestamp = (value: string | null) =>

@@ -332,9 +332,8 @@ def _normalize_direct_test_template(raw: object, endpoint: Endpoint) -> str:
 
 
 def _build_direct_test_request(
-    endpoint: Endpoint, model: str, request_template: str
+    endpoint: Endpoint, model: str, request_template: str, prompt: str
 ) -> tuple[str, dict[str, object]]:
-    prompt = "你是什么模型"
     if request_template == "response":
         return _build_provider_api_url(endpoint, "/v1/responses"), {
             "model": model,
@@ -1513,9 +1512,11 @@ async def test_api_key_direct(
 
     provider = _normalize_endpoint_provider(endpoint.provider)
     request_template = _normalize_direct_test_template(payload.request_template, endpoint)
-    url, request_payload = _build_direct_test_request(endpoint, model, request_template)
+    prompt = (payload.prompt or "").strip() or "你是什么模型"
+    url, request_payload = _build_direct_test_request(
+        endpoint, model, request_template, prompt
+    )
     headers = _build_upstream_headers({}, endpoint, api_key.key)
-    prompt = "你是什么模型"
     client = await get_http_client()
     start = time.perf_counter()
     status_code = 0

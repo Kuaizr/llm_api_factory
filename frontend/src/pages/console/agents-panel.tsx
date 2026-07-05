@@ -1,4 +1,4 @@
-import { Globe, Plus, Trash2, XCircle, Zap } from "lucide-react";
+import { Globe, PauseCircle, PlayCircle, Plus, Power, Trash2, XCircle, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { StatusBadge } from "./common-widgets";
@@ -6,7 +6,21 @@ import {
   type AgentBootstrapResult,
   type AgentDeployFormState,
   type AgentNode,
+  formatTimestamp,
 } from "./shared";
+
+const formatRelativeTime = (value: string | null) => {
+  if (!value) return "--";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "--";
+  const diffSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (diffSeconds < 60) return `${diffSeconds} 秒前`;
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} 小时前`;
+  return `${Math.round(diffHours / 24)} 天前`;
+};
 
 export const AgentsView = ({
   agents,
@@ -14,6 +28,7 @@ export const AgentsView = ({
   onDeploy,
   onDelete,
   onRotateToken,
+  onSetState = () => undefined,
   isAdmin,
 }: {
   agents: AgentNode[];
@@ -21,6 +36,7 @@ export const AgentsView = ({
   onDeploy: (agent: AgentNode) => void;
   onDelete: (agent: AgentNode) => void;
   onRotateToken: (agent: AgentNode) => void;
+  onSetState?: (agent: AgentNode, action: "enable" | "drain" | "disable") => void;
   isAdmin: boolean;
 }) => {
   const renderCapability = (label: string, enabled: boolean | null | undefined) => {
@@ -62,6 +78,7 @@ export const AgentsView = ({
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {agents.map((agent) => {
+          const isDisabled = agent.is_active === false;
           const isOnline = agent.status === "online";
           const isDraining = agent.status === "draining";
           const routeStatus = isDraining ? "draining" : isOnline ? "online" : "offline";
@@ -90,10 +107,19 @@ export const AgentsView = ({
                     </div>
                     <div>
                       <h3 className="text-sm font-bold text-white">{agent.name}</h3>
-                      <p className="text-xs text-gray-500">{agent.region ?? "--"}</p>
+                      <p className="text-xs text-gray-500">
+                        {agent.region || agent.network_group || "未设置区域"}
+                      </p>
                     </div>
                   </div>
-                  <StatusBadge status={routeStatus} />
+                  <div className="flex flex-col items-end gap-1">
+                    <StatusBadge status={routeStatus} />
+                    {isDisabled ? (
+                      <span className="rounded border border-gray-700 bg-gray-800 px-2 py-0.5 text-[10px] text-gray-500">
+                        Disabled
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="space-y-2 mb-4">
@@ -107,24 +133,29 @@ export const AgentsView = ({
                   </div>
                   <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
                     <span className="text-gray-500">心跳</span>
-                    <span className="font-mono text-gray-300">
-                      {agent.last_seen_at
-                        ? new Date(agent.last_seen_at).toLocaleString()
-                        : "--"}
+                    <span
+                      className="font-mono text-gray-300"
+                      title={formatTimestamp(agent.last_seen_at)}
+                    >
+                      {formatRelativeTime(agent.last_seen_at)}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
-                    <span className="text-gray-500">Endpoint</span>
-                    <span className="font-mono text-gray-500">
-                      {agent.endpoint_url ?? "--"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
-                    <span className="text-gray-500">Network</span>
-                    <span className="font-mono text-gray-300">
-                      {agent.network_group ?? "--"}
-                    </span>
-                  </div>
+                  {agent.endpoint_url ? (
+                    <div className="flex justify-between gap-3 text-xs border-b border-gray-800 pb-2">
+                      <span className="text-gray-500">出口地址</span>
+                      <span className="font-mono text-gray-500 truncate">
+                        {agent.endpoint_url}
+                      </span>
+                    </div>
+                  ) : null}
+                  {agent.network_group ? (
+                    <div className="flex justify-between text-xs border-b border-gray-800 pb-2">
+                      <span className="text-gray-500">网络分组</span>
+                      <span className="font-mono text-gray-300">
+                        {agent.network_group}
+                      </span>
+                    </div>
+                  ) : null}
                   {agent.labels && agent.labels.length > 0 ? (
                     <div className="flex flex-wrap gap-1.5">
                       {agent.labels.map((label) => (
@@ -145,6 +176,32 @@ export const AgentsView = ({
                 </div>
 
                 <div className="flex gap-2">
+                  <button
+                    onClick={() => onSetState(agent, isDisabled || isDraining ? "enable" : "drain")}
+                    disabled={!isAdmin}
+                    className="flex-1 py-2 text-xs rounded border border-amber-700/40 bg-amber-600/15 text-amber-200 transition hover:bg-amber-600/25 disabled:opacity-50"
+                    title={isDisabled || isDraining ? "启用节点" : "进入 drain，不再分配新请求"}
+                  >
+                    {isDisabled || isDraining ? (
+                      <span className="inline-flex items-center gap-1">
+                        <PlayCircle size={13} /> 启用
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1">
+                        <PauseCircle size={13} /> Drain
+                      </span>
+                    )}
+                  </button>
+                  {!isDisabled ? (
+                    <button
+                      onClick={() => onSetState(agent, "disable")}
+                      disabled={!isAdmin}
+                      className="py-2 px-2 rounded border border-gray-700 bg-gray-800/50 text-gray-300 transition hover:bg-gray-800 disabled:opacity-50"
+                      title="禁用节点，不参与路由"
+                    >
+                      <Power size={14} />
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => onRotateToken(agent)}
                     disabled={!isAdmin || agent.status !== "offline"}

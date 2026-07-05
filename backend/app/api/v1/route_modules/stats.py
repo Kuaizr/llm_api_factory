@@ -3,15 +3,28 @@ from fastapi import APIRouter, Depends
 from app.api.v1.route_helpers import _require_master_auth
 from app.api.v1.route_models import (
     DashboardStatusOut,
+    DumpSearchOut,
     MetricsBucketOut,
     RouteExplainResponse,
     OverviewOut,
     RouteTestResponse,
+    StatsDistributionItemOut,
+    StatsLatencyPercentileBucketOut,
+    StatsOverviewOut,
+    StatsTimeseriesBucketOut,
+    StatsTopKeyOut,
     UsageStatsOut,
 )
 from app.api.v1.route_modules.stats_handlers import (
+    admin_dump_search,
     admin_metrics_timeseries,
     admin_overview,
+    admin_stats_distribution_groups,
+    admin_stats_distribution_models,
+    admin_stats_latency_percentiles,
+    admin_stats_overview,
+    admin_stats_timeseries,
+    admin_stats_top_keys,
     admin_usage_stats,
     public_dashboard,
     route_explain,
@@ -39,6 +52,55 @@ router.add_api_route(
     admin_usage_stats,
     methods=["GET"],
     response_model=UsageStatsOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/stats/overview",
+    admin_stats_overview,
+    methods=["GET"],
+    response_model=StatsOverviewOut,
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/stats/timeseries",
+    admin_stats_timeseries,
+    methods=["GET"],
+    response_model=list[StatsTimeseriesBucketOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/stats/latency-percentiles",
+    admin_stats_latency_percentiles,
+    methods=["GET"],
+    response_model=list[StatsLatencyPercentileBucketOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/stats/distribution/models",
+    admin_stats_distribution_models,
+    methods=["GET"],
+    response_model=list[StatsDistributionItemOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/stats/distribution/groups",
+    admin_stats_distribution_groups,
+    methods=["GET"],
+    response_model=list[StatsDistributionItemOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/stats/top-keys",
+    admin_stats_top_keys,
+    methods=["GET"],
+    response_model=list[StatsTopKeyOut],
+    dependencies=_admin_dependencies,
+)
+router.add_api_route(
+    "/admin/dump/search",
+    admin_dump_search,
+    methods=["GET"],
+    response_model=DumpSearchOut,
     dependencies=_admin_dependencies,
 )
 router.add_api_route(

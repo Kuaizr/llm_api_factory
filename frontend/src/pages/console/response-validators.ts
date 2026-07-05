@@ -11,6 +11,14 @@ import type {
   ModelMap,
   RuleGroupEligibilityResult,
   RoutingRule,
+  DumpSearchItem,
+  DumpSearchResult,
+  StatsDistributionItem,
+  StatsKpiValue,
+  StatsLatencyBucket,
+  StatsOverview,
+  StatsTimeseriesBucket,
+  StatsTopKey,
   TelegramConfig,
   UsageGroup,
   UsageStats,
@@ -79,6 +87,8 @@ const isNullableString = (value: unknown): value is string | null =>
   value === null || isString(value);
 const isNullableNumber = (value: unknown): value is number | null =>
   value === null || isNumber(value);
+const isNullableBoolean = (value: unknown): value is boolean | null =>
+  value === null || isBoolean(value);
 
 const parseStringArray = (value: unknown): string[] | null => {
   if (!Array.isArray(value) || value.some((item) => !isString(item))) {
@@ -280,6 +290,7 @@ export const parseAgent = (value: unknown): AgentNode | null => {
     probe_latency_ms: isNullableNumber(value.probe_latency_ms) ? value.probe_latency_ms : null,
     probe_checked_at: isNullableString(value.probe_checked_at) ? value.probe_checked_at : null,
     is_draining: isBoolean(value.is_draining) ? value.is_draining : false,
+    is_active: isBoolean(value.is_active) ? value.is_active : true,
   };
 };
 
@@ -364,6 +375,9 @@ const parseUsageTopKey = (value: unknown): UsageTopKey | null => {
     endpoint_name: value.endpoint_name,
     key_preview: value.key_preview,
     total_tokens: value.total_tokens,
+    request_count: isNumber(value.request_count) ? value.request_count : 0,
+    cache_hit_rate: isNullableNumber(value.cache_hit_rate) ? value.cache_hit_rate : null,
+    avg_latency_ms: isNullableNumber(value.avg_latency_ms) ? value.avg_latency_ms : null,
   };
 };
 
@@ -551,6 +565,238 @@ const parseMetricsBucket = (value: unknown): MetricsBucket | null => {
 
 export const parseMetricsBucketList = (value: unknown): MetricsBucket[] | null =>
   parseArray(value, parseMetricsBucket);
+
+const parseStatsKpiValue = (value: unknown): StatsKpiValue | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.value) ||
+    !isNumber(value.previous_value) ||
+    !isNullableNumber(value.change_percent)
+  ) {
+    return null;
+  }
+  return {
+    value: value.value,
+    previous_value: value.previous_value,
+    change_percent: value.change_percent,
+  };
+};
+
+export const parseStatsOverview = (value: unknown): StatsOverview | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const totalRequests = parseStatsKpiValue(value.total_requests);
+  const totalTokens = parseStatsKpiValue(value.total_tokens);
+  const cacheHitRate = parseStatsKpiValue(value.cache_hit_rate);
+  const avgLatency = parseStatsKpiValue(value.avg_latency_ms);
+  if (
+    !totalRequests ||
+    !totalTokens ||
+    !cacheHitRate ||
+    !avgLatency ||
+    !isNumber(value.prompt_tokens) ||
+    !isNumber(value.completion_tokens) ||
+    !isNumber(value.cached_tokens) ||
+    !isNullableNumber(value.p95_latency_ms) ||
+    !isString(value.generated_at)
+  ) {
+    return null;
+  }
+  return {
+    total_requests: totalRequests,
+    total_tokens: totalTokens,
+    cache_hit_rate: cacheHitRate,
+    avg_latency_ms: avgLatency,
+    prompt_tokens: value.prompt_tokens,
+    completion_tokens: value.completion_tokens,
+    cached_tokens: value.cached_tokens,
+    p95_latency_ms: value.p95_latency_ms,
+    generated_at: value.generated_at,
+  };
+};
+
+const parseStatsTimeseriesBucket = (
+  value: unknown
+): StatsTimeseriesBucket | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.bucket_start) ||
+    !isNumber(value.request_count) ||
+    !isNumber(value.prompt_tokens) ||
+    !isNumber(value.completion_tokens) ||
+    !isNumber(value.total_tokens) ||
+    !isNumber(value.cached_tokens) ||
+    !isNumber(value.cache_hits) ||
+    !isNumber(value.cache_hit_rate) ||
+    !isNullableNumber(value.avg_latency_ms)
+  ) {
+    return null;
+  }
+  return {
+    bucket_start: value.bucket_start,
+    request_count: value.request_count,
+    prompt_tokens: value.prompt_tokens,
+    completion_tokens: value.completion_tokens,
+    total_tokens: value.total_tokens,
+    cached_tokens: value.cached_tokens,
+    cache_hits: value.cache_hits,
+    cache_hit_rate: value.cache_hit_rate,
+    avg_latency_ms: value.avg_latency_ms,
+  };
+};
+
+export const parseStatsTimeseriesBucketList = (
+  value: unknown
+): StatsTimeseriesBucket[] | null => parseArray(value, parseStatsTimeseriesBucket);
+
+const parseStatsLatencyBucket = (value: unknown): StatsLatencyBucket | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.bucket_start) ||
+    !isNullableNumber(value.p50_ms) ||
+    !isNullableNumber(value.p95_ms) ||
+    !isNullableNumber(value.p99_ms)
+  ) {
+    return null;
+  }
+  return {
+    bucket_start: value.bucket_start,
+    p50_ms: value.p50_ms,
+    p95_ms: value.p95_ms,
+    p99_ms: value.p99_ms,
+  };
+};
+
+export const parseStatsLatencyBucketList = (
+  value: unknown
+): StatsLatencyBucket[] | null => parseArray(value, parseStatsLatencyBucket);
+
+const parseStatsDistributionItem = (
+  value: unknown
+): StatsDistributionItem | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.name) ||
+    !isNumber(value.request_count) ||
+    !isNumber(value.total_tokens) ||
+    !isNumber(value.percent)
+  ) {
+    return null;
+  }
+  return {
+    name: value.name,
+    request_count: value.request_count,
+    total_tokens: value.total_tokens,
+    percent: value.percent,
+  };
+};
+
+export const parseStatsDistributionList = (
+  value: unknown
+): StatsDistributionItem[] | null => parseArray(value, parseStatsDistributionItem);
+
+const parseStatsTopKey = (value: unknown): StatsTopKey | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.api_key_id) ||
+    !isString(value.endpoint_name) ||
+    !isString(value.key_preview) ||
+    !isNumber(value.request_count) ||
+    !isNumber(value.total_tokens) ||
+    !isNullableNumber(value.cache_hit_rate) ||
+    !isNullableNumber(value.avg_latency_ms)
+  ) {
+    return null;
+  }
+  return {
+    api_key_id: value.api_key_id,
+    endpoint_name: value.endpoint_name,
+    key_preview: value.key_preview,
+    request_count: value.request_count,
+    total_tokens: value.total_tokens,
+    cache_hit_rate: value.cache_hit_rate,
+    avg_latency_ms: value.avg_latency_ms,
+  };
+};
+
+export const parseStatsTopKeyList = (value: unknown): StatsTopKey[] | null =>
+  parseArray(value, parseStatsTopKey);
+
+const parseDumpSearchItem = (value: unknown): DumpSearchItem | null => {
+  if (
+    !isRecord(value) ||
+    !isString(value.request_id) ||
+    !isString(value.trace_id) ||
+    !isString(value.model_alias) ||
+    !isString(value.real_model) ||
+    !isNumber(value.endpoint_id) ||
+    !isNullableString(value.endpoint_name) ||
+    !isNullableNumber(value.api_key_id) ||
+    !isString(value.rule_group) ||
+    !isNullableNumber(value.prompt_tokens) ||
+    !isNullableNumber(value.completion_tokens) ||
+    !isNullableNumber(value.total_tokens) ||
+    !isNullableNumber(value.cached_tokens) ||
+    !isNullableNumber(value.latency_ms) ||
+    !isBoolean(value.is_stream) ||
+    !isBoolean(value.is_cache_hit) ||
+    !isNullableBoolean(value.stream_complete) ||
+    !isNullableString(value.previous_interaction_id) ||
+    !isNullableNumber(value.status_code) ||
+    !isString(value.file_path) ||
+    !isString(value.hostname) ||
+    !isString(value.created_at)
+  ) {
+    return null;
+  }
+  return {
+    request_id: value.request_id,
+    trace_id: value.trace_id,
+    model_alias: value.model_alias,
+    real_model: value.real_model,
+    endpoint_id: value.endpoint_id,
+    endpoint_name: value.endpoint_name,
+    api_key_id: value.api_key_id,
+    rule_group: value.rule_group,
+    prompt_tokens: value.prompt_tokens,
+    completion_tokens: value.completion_tokens,
+    total_tokens: value.total_tokens,
+    cached_tokens: value.cached_tokens,
+    latency_ms: value.latency_ms,
+    is_stream: value.is_stream,
+    is_cache_hit: value.is_cache_hit,
+    stream_complete: value.stream_complete,
+    previous_interaction_id: value.previous_interaction_id,
+    status_code: value.status_code,
+    file_path: value.file_path,
+    hostname: value.hostname,
+    created_at: value.created_at,
+  };
+};
+
+export const parseDumpSearchResult = (value: unknown): DumpSearchResult | null => {
+  if (
+    !isRecord(value) ||
+    !isNumber(value.total) ||
+    !isNumber(value.limit) ||
+    !isNumber(value.offset) ||
+    !isString(value.generated_at)
+  ) {
+    return null;
+  }
+  const items = parseArray(value.items, parseDumpSearchItem);
+  if (!items) {
+    return null;
+  }
+  return {
+    items,
+    total: value.total,
+    limit: value.limit,
+    offset: value.offset,
+    generated_at: value.generated_at,
+  };
+};
 
 export const parseDashboardOverview = (value: unknown): DashboardOverview | null => {
   if (

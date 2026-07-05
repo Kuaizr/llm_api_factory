@@ -51,6 +51,7 @@ export const ApiKeyTestModal = ({
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [manualModel, setManualModel] = useState("");
+  const [prompt, setPrompt] = useState("");
   const [requestTemplate, setRequestTemplate] = useState(
     defaultTemplateForProvider(endpoint?.provider)
   );
@@ -109,7 +110,11 @@ export const ApiKeyTestModal = ({
       const response = await fetch(`${apiBase}/admin/api-keys/${apiKey.id}/test`, {
         method: "POST",
         headers: buildHeaders(authToken, true),
-        body: JSON.stringify({ model: effectiveModel, request_template: requestTemplate }),
+        body: JSON.stringify({
+          model: effectiveModel,
+          request_template: requestTemplate,
+          prompt: prompt.trim() || undefined,
+        }),
       });
       if (!response.ok) {
         throw new Error("test failed");
@@ -203,6 +208,17 @@ export const ApiKeyTestModal = ({
                 <Send size={14} /> {testing ? "测试中" : "测试"}
               </button>
             </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">测试 Prompt</label>
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              rows={3}
+              className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-500"
+              placeholder="默认：你是什么模型"
+            />
           </div>
 
           {error ? <p className="text-sm text-red-400">{error}</p> : null}

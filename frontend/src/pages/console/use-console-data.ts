@@ -9,7 +9,13 @@ import {
   type Endpoint,
   type HealthStatus,
   type MetricsBucket,
+  type DumpSearchResult,
   type RoutingRule,
+  type StatsDistributionItem,
+  type StatsLatencyBucket,
+  type StatsOverview,
+  type StatsTimeseriesBucket,
+  type StatsTopKey,
   type TelegramConfig,
   type UsageStats,
   type UsageTrendRange,
@@ -18,10 +24,15 @@ import {
 import {
   parseAgentList,
   parseDashboardStatus,
+  parseDumpSearchResult,
   parseEndpointList,
   parseHealthStatusList,
-  parseMetricsBucketList,
   parseRoutingRuleList,
+  parseStatsDistributionList,
+  parseStatsLatencyBucketList,
+  parseStatsOverview,
+  parseStatsTimeseriesBucketList,
+  parseStatsTopKeyList,
   parseTelegramConfig,
   parseUsageStats,
 } from "./response-validators";
@@ -31,8 +42,19 @@ export const useConsoleData = () => {
   const [agents, setAgents] = useState<AgentNode[]>([]);
   const [rules, setRules] = useState<RoutingRule[]>([]);
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
-  const [usageTrendRange, setUsageTrendRange] = useState<UsageTrendRange>("hour");
+  const [usageTrendRange, setUsageTrendRange] = useState<UsageTrendRange>("24h");
   const [usageTrendBuckets, setUsageTrendBuckets] = useState<MetricsBucket[]>([]);
+  const [statsOverview, setStatsOverview] = useState<StatsOverview | null>(null);
+  const [statsTimeseries, setStatsTimeseries] = useState<StatsTimeseriesBucket[]>([]);
+  const [statsLatency, setStatsLatency] = useState<StatsLatencyBucket[]>([]);
+  const [statsModelDistribution, setStatsModelDistribution] = useState<
+    StatsDistributionItem[]
+  >([]);
+  const [statsGroupDistribution, setStatsGroupDistribution] = useState<
+    StatsDistributionItem[]
+  >([]);
+  const [statsTopKeys, setStatsTopKeys] = useState<StatsTopKey[]>([]);
+  const [dumpSearch, setDumpSearch] = useState<DumpSearchResult | null>(null);
   const [usageTrendUpdatedAt, setUsageTrendUpdatedAt] = useState<string | null>(null);
   const [usageTrendLoading, setUsageTrendLoading] = useState(false);
   const [usageTrendError, setUsageTrendError] = useState<string | null>(null);
@@ -201,6 +223,13 @@ export const useConsoleData = () => {
   ) => {
     if (!authToken) {
       setUsageTrendBuckets([]);
+      setStatsOverview(null);
+      setStatsTimeseries([]);
+      setStatsLatency([]);
+      setStatsModelDistribution([]);
+      setStatsGroupDistribution([]);
+      setStatsTopKeys([]);
+      setDumpSearch(null);
       setUsageTrendUpdatedAt(null);
       setUsageTrendError(null);
       return;
@@ -211,28 +240,79 @@ export const useConsoleData = () => {
     }
     setUsageTrendLoading(true);
     try {
-      const response = await fetch(
-        `${apiBase}/admin/metrics/timeseries?hours=${config.hours}&bucket_minutes=${config.bucketMinutes}`,
-        {
-          headers: buildHeaders(authToken),
+      const query = `hours=${config.hours}&bucket_minutes=${config.bucketMinutes}`;
+      const headers = buildHeaders(authToken);
+      const fetchJson = async (path: string) => {
+        const response = await fetch(`${apiBase}${path}`, { headers });
+        if (!response.ok) {
+          throw new Error(path);
         }
+        return response.json();
+      };
+      const [
+        overviewPayload,
+        timeseriesPayload,
+        latencyPayload,
+        modelDistributionPayload,
+        groupDistributionPayload,
+        topKeysPayload,
+        dumpSearchPayload,
+      ] = await Promise.all([
+        fetchJson(`/admin/stats/overview?hours=${config.hours}`),
+        fetchJson(`/admin/stats/timeseries?${query}`),
+        fetchJson(`/admin/stats/latency-percentiles?${query}`),
+        fetchJson(`/admin/stats/distribution/models?hours=${config.hours}`),
+        fetchJson(`/admin/stats/distribution/groups?hours=${config.hours}`),
+        fetchJson(`/admin/stats/top-keys?hours=${config.hours}&limit=10`),
+        fetchJson(`/admin/dump/search?hours=${config.hours}&limit=25`),
+      ]);
+      const overview = parseStatsOverview(overviewPayload);
+      const timeseries = parseStatsTimeseriesBucketList(timeseriesPayload);
+      const latency = parseStatsLatencyBucketList(latencyPayload);
+      const modelDistribution = parseStatsDistributionList(modelDistributionPayload);
+      const groupDistribution = parseStatsDistributionList(groupDistributionPayload);
+      const topKeys = parseStatsTopKeyList(topKeysPayload);
+      const dumpResult = parseDumpSearchResult(dumpSearchPayload);
+      if (
+        !overview ||
+        !timeseries ||
+        !latency ||
+        !modelDistribution ||
+        !groupDistribution ||
+        !topKeys ||
+        !dumpResult
+      ) {
+        throw new Error("invalid stats response");
+      }
+      setStatsOverview(overview);
+      setStatsTimeseries(timeseries);
+      setStatsLatency(latency);
+      setStatsModelDistribution(modelDistribution);
+      setStatsGroupDistribution(groupDistribution);
+      setStatsTopKeys(topKeys);
+      setDumpSearch(dumpResult);
+      setUsageTrendBuckets(
+        timeseries.map((bucket) => ({
+          bucket_start: bucket.bucket_start,
+          request_count: bucket.request_count,
+          rps: 0,
+          prompt_tokens: bucket.prompt_tokens,
+          completion_tokens: bucket.completion_tokens,
+          total_tokens: bucket.total_tokens,
+          avg_latency_ms: bucket.avg_latency_ms,
+        }))
       );
-      if (!response.ok) {
-        setUsageTrendBuckets([]);
-        setUsageTrendError("无法获取趋势数据");
-        return;
-      }
-      const data = parseMetricsBucketList(await response.json());
-      if (!data) {
-        setUsageTrendBuckets([]);
-        setUsageTrendError("无法获取趋势数据");
-        return;
-      }
-      setUsageTrendBuckets(data);
       setUsageTrendUpdatedAt(new Date().toISOString());
       setUsageTrendError(null);
     } catch {
       setUsageTrendBuckets([]);
+      setStatsOverview(null);
+      setStatsTimeseries([]);
+      setStatsLatency([]);
+      setStatsModelDistribution([]);
+      setStatsGroupDistribution([]);
+      setStatsTopKeys([]);
+      setDumpSearch(null);
       setUsageTrendError("无法获取趋势数据");
     } finally {
       setUsageTrendLoading(false);
@@ -504,6 +584,13 @@ export const useConsoleData = () => {
     usageStats,
     usageTrendRange,
     usageTrendBuckets,
+    statsOverview,
+    statsTimeseries,
+    statsLatency,
+    statsModelDistribution,
+    statsGroupDistribution,
+    statsTopKeys,
+    dumpSearch,
     usageTrendUpdatedAt,
     usageTrendLoading,
     usageTrendError,

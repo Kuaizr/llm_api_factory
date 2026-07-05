@@ -288,12 +288,101 @@ class UsageTopKey(BaseModel):
     endpoint_name: str
     key_preview: str
     total_tokens: int
+    request_count: int = 0
+    cache_hit_rate: float | None = None
+    avg_latency_ms: int | None = None
 
 
 class UsageStatsOut(BaseModel):
     groups: list[UsageGroupStat]
     top_keys: list[UsageTopKey]
     total_tokens_today: int
+    generated_at: datetime
+
+
+class StatsKpiValue(BaseModel):
+    value: float
+    previous_value: float
+    change_percent: float | None = None
+
+
+class StatsOverviewOut(BaseModel):
+    total_requests: StatsKpiValue
+    total_tokens: StatsKpiValue
+    cache_hit_rate: StatsKpiValue
+    avg_latency_ms: StatsKpiValue
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    p95_latency_ms: int | None = None
+    generated_at: datetime
+
+
+class StatsTimeseriesBucketOut(BaseModel):
+    bucket_start: datetime
+    request_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cached_tokens: int
+    cache_hits: int
+    cache_hit_rate: float
+    avg_latency_ms: int | None = None
+
+
+class StatsLatencyPercentileBucketOut(BaseModel):
+    bucket_start: datetime
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    p99_ms: int | None = None
+
+
+class StatsDistributionItemOut(BaseModel):
+    name: str
+    request_count: int
+    total_tokens: int
+    percent: float
+
+
+class StatsTopKeyOut(BaseModel):
+    api_key_id: int
+    endpoint_name: str
+    key_preview: str
+    request_count: int
+    total_tokens: int
+    cache_hit_rate: float | None = None
+    avg_latency_ms: int | None = None
+
+
+class DumpSearchItemOut(BaseModel):
+    request_id: str
+    trace_id: str
+    model_alias: str
+    real_model: str
+    endpoint_id: int
+    endpoint_name: str | None = None
+    api_key_id: int | None = None
+    rule_group: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    latency_ms: int | None = None
+    is_stream: bool
+    is_cache_hit: bool
+    stream_complete: bool | None = None
+    previous_interaction_id: str | None = None
+    status_code: int | None = None
+    file_path: str
+    hostname: str
+    created_at: datetime
+
+
+class DumpSearchOut(BaseModel):
+    items: list[DumpSearchItemOut]
+    total: int
+    limit: int
+    offset: int
     generated_at: datetime
 
 
@@ -605,6 +694,7 @@ class RouteExplainResponse(BaseModel):
 class APIKeyDirectTestRequest(BaseModel):
     model: str = Field(..., min_length=1)
     request_template: str | None = Field(default=None)
+    prompt: str | None = Field(default=None, max_length=4000)
 
 
 class APIKeyDirectTestOut(BaseModel):

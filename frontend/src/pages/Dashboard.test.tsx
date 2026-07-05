@@ -197,8 +197,7 @@ describe("Console layout", () => {
     render(<Console />);
 
     await user.click(await screen.findByText("流量统计"));
-    const rangeSelect = await screen.findByRole("combobox");
-    await user.selectOptions(rangeSelect, "day");
+    await user.click(await screen.findByRole("button", { name: "30d" }));
 
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("bucket_minutes=1440"),

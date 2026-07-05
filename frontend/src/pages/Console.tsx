@@ -35,6 +35,13 @@ export const Console = () => {
     usageStats,
     usageTrendRange,
     usageTrendBuckets,
+    statsOverview,
+    statsTimeseries,
+    statsLatency,
+    statsModelDistribution,
+    statsGroupDistribution,
+    statsTopKeys,
+    dumpSearch,
     usageTrendUpdatedAt,
     usageTrendLoading,
     usageTrendError,
@@ -198,6 +205,7 @@ export const Console = () => {
     handleDeleteRule,
     handleDeleteAgent,
     handleRotateAgentToken,
+    handleSetAgentState,
   } = useConsoleActions({
     token,
     isAdmin,
@@ -371,6 +379,7 @@ export const Console = () => {
             onDeploy={(agent) => openAgentDeploy(agent)}
             onDelete={handleDeleteAgent}
             onRotateToken={handleRotateAgentToken}
+            onSetState={handleSetAgentState}
             isAdmin={isAdmin}
           />
         )}
@@ -394,6 +403,13 @@ export const Console = () => {
           <UsageStatsView
             stats={usageStats}
             buckets={usageTrendBuckets}
+            overview={statsOverview}
+            timeseries={statsTimeseries}
+            latency={statsLatency}
+            modelDistribution={statsModelDistribution}
+            groupDistribution={statsGroupDistribution}
+            topKeys={statsTopKeys}
+            dumpSearch={dumpSearch}
             range={usageTrendRange}
             updatedAt={usageTrendUpdatedAt}
             loading={usageTrendLoading}

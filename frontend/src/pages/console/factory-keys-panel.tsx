@@ -289,7 +289,7 @@ export const FactoryKeysPanel = ({
         <div className="p-3 rounded border border-green-700/40 bg-green-900/20">
           <div className="flex items-center gap-2 text-green-300 text-sm mb-2">
             <AlertTriangle size={14} />
-            新 Key 已生成，请立即保存（仅展示一次）
+            新 Key 已生成，请及时保存，后续列表仅显示预览值，无法再次查看完整 Key。
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -384,14 +384,6 @@ export const FactoryKeysPanel = ({
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="inline-flex items-center gap-2">
-                    <button
-                      onClick={() => handleCopy(item.key)}
-                      disabled={!item.key}
-                      className="p-1.5 hover:bg-gray-800 rounded text-green-300 transition disabled:opacity-40"
-                      title={item.key ? "复制完整 Key" : "完整 Key 只在创建或轮换后显示"}
-                    >
-                      <Copy size={14} />
-                    </button>
                     <button
                       onClick={() => {
                         setEditingKey(item);
