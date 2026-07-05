@@ -11,6 +11,7 @@ from app.api.v1.route_modules.proxy_models import (
     build_gemini_models_response,
     list_accessible_model_aliases,
     list_models,
+    list_upstream_models_filtered,
 )
 from app.db.session import get_session
 
@@ -52,14 +53,26 @@ async def openai_passthrough(
     normalized_path = path.strip("/")
     if request.method.upper() == "GET" and normalized_path == "models":
         try:
-            payload = await list_models(
+            payload = await list_upstream_models_filtered(
                 request,
                 session,
+                provider="openai",
+                path_prefix="/openai",
                 provider_filter=("openai", "custom"),
                 provider_filter_fallback_to_any=True,
             )
         except (AttributeError, AssertionError):
             payload = None
+        if payload is None:
+            try:
+                payload = await list_models(
+                    request,
+                    session,
+                    provider_filter=("openai", "custom"),
+                    provider_filter_fallback_to_any=True,
+                )
+            except (AttributeError, AssertionError):
+                payload = None
         if payload is not None:
             return JSONResponse(content=payload)
 
@@ -80,7 +93,32 @@ async def anthropic_passthrough(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    _ = path
+    normalized_path = path.strip("/")
+    if request.method.upper() == "GET" and normalized_path == "models":
+        try:
+            payload = await list_upstream_models_filtered(
+                request,
+                session,
+                provider="anthropic",
+                path_prefix="/anthropic",
+                provider_filter=("anthropic", "custom"),
+                provider_filter_fallback_to_any=True,
+            )
+        except (AttributeError, AssertionError):
+            payload = None
+        if payload is None:
+            try:
+                payload = await list_models(
+                    request,
+                    session,
+                    provider_filter=("anthropic", "custom"),
+                    provider_filter_fallback_to_any=True,
+                )
+            except (AttributeError, AssertionError):
+                payload = None
+        if payload is not None:
+            return JSONResponse(content=payload)
+
     return await _proxy_openai_request(
         request,
         session,
@@ -101,16 +139,29 @@ async def gemini_passthrough(
     normalized_path = path.strip("/")
     if request.method.upper() == "GET" and normalized_path == "models":
         try:
-            model_aliases = await list_accessible_model_aliases(
+            payload = await list_upstream_models_filtered(
                 request,
                 session,
+                provider="gemini",
+                path_prefix="/gemini",
                 provider_filter=("gemini", "custom"),
                 provider_filter_fallback_to_any=True,
             )
         except (AttributeError, AssertionError):
-            model_aliases = None
-        if model_aliases is not None:
-            payload = build_gemini_models_response(model_aliases)
+            payload = None
+        if payload is None:
+            try:
+                model_aliases = await list_accessible_model_aliases(
+                    request,
+                    session,
+                    provider_filter=("gemini", "custom"),
+                    provider_filter_fallback_to_any=True,
+                )
+            except (AttributeError, AssertionError):
+                model_aliases = None
+            if model_aliases is not None:
+                payload = build_gemini_models_response(model_aliases)
+        if payload is not None:
             return JSONResponse(content=payload)
 
     model_alias = extract_gemini_model_alias(request.url.path)
