@@ -13,6 +13,7 @@ from app.core.redis import MemoryRedis
 from app.db.base import Base
 from app.db.models import APIKey, Endpoint, ModelMap, RequestAttemptLog, RequestLog
 from app.db.session import get_session
+from app.services.agent_transport import AgentResponse
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 from app.services.secrets import ENCRYPTED_SECRET_PREFIX, decrypt_secret_value
@@ -223,6 +224,59 @@ async def test_admin_standard_endpoint_clears_custom_only_fields(
     assert endpoint.extra_query_params is None
     assert endpoint.oauth_config is None
     assert endpoint.request_body_template is None
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoint_update_clears_agent_when_agent_node_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+    endpoint = Endpoint(
+        name="ViaAgent",
+        base_url="https://api.example.com/v1",
+        provider="openai",
+        access_mode="via_agent",
+        agent_node="edge-vps",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    async def override_session():
+        yield session
+
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            f"/admin/endpoints/{endpoint.id}",
+            headers={"Authorization": "Bearer token"},
+            json={"agent_node": ""},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_mode"] == "direct"
+    assert payload["agent_node"] is None
+
+    await session.refresh(endpoint)
+    assert endpoint.access_mode == "direct"
+    assert endpoint.agent_node is None
 
     await session.close()
     await engine.dispose()
@@ -751,6 +805,103 @@ async def test_api_key_direct_test_uses_selected_key(
     assert payload["output_text"] == "我是 gpt-direct"
     assert payload["upstream_url"] == "https://api.example.com/v1/chat/completions"
     assert requests[0].headers["authorization"] == "Bearer sk-direct"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_key_test_uses_agent_for_agent_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="AgentOpenAI",
+        base_url="https://api.example.com/v1",
+        provider="openai",
+        access_mode="via_agent",
+        agent_node="edge-vps",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-agent", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    class FakeAgentManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        async def send_request(self, agent_name: str, request):  # noqa: ANN001
+            self.calls.append((agent_name, request))
+            body = json.loads(request.body.decode("utf-8"))
+            assert body["model"] == "gpt-agent"
+            assert body["messages"][0]["content"] == "你是什么模型"
+            return AgentResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "id": "chatcmpl-agent-test",
+                        "choices": [{"message": {"content": "我是 agent"}}],
+                    }
+                ).encode("utf-8"),
+            )
+
+    agent_manager = FakeAgentManager()
+
+    def direct_handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("via_agent API key test must not call direct upstream")
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(direct_handler))
+
+    async def override_session():
+        yield session
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(
+        routes_module,
+        "get_settings",
+        lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True),
+    )
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+    monkeypatch.setattr(routes_module, "get_agent_manager", lambda: agent_manager)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/api-keys/{api_key.id}/test",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-agent", "request_template": "chat"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["output_text"] == "我是 agent"
+    assert len(agent_manager.calls) == 1
+    agent_name, agent_request = agent_manager.calls[0]
+    assert agent_name == "edge-vps"
+    assert agent_request.url == "https://api.example.com/v1/chat/completions"
+    assert agent_request.headers["Authorization"] == "Bearer sk-agent"
 
     await session.close()
     await engine.dispose()

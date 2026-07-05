@@ -197,6 +197,7 @@ export type EndpointFormState = {
   auth_header_name: string;
   auth_header_prefix: string;
   provider: string;
+  access_mode?: "direct" | "via_agent";
   agent_node: string;
   probe_interval_seconds: string;
   is_active: boolean;

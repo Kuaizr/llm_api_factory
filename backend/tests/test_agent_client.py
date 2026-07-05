@@ -93,6 +93,23 @@ async def test_run_agent_with_shutdown_cancels_task() -> None:
     assert agent.cancelled.is_set()
 
 
+class ReturningAgent:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def run(self) -> None:
+        self.started.set()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_with_shutdown_returns_when_agent_stops() -> None:
+    agent = ReturningAgent()
+
+    await agent_client_module.run_agent_with_shutdown(agent, asyncio.Event())
+
+    assert agent.started.is_set()
+
+
 class FailingStatusClient:
     def __init__(self) -> None:
         self.called = asyncio.Event()

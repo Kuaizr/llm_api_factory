@@ -254,7 +254,7 @@ Type=simple
 WorkingDirectory=$INSTALL_DIR/backend
 EnvironmentFile=$env_file
 ExecStart=$uv_bin run llm-agent
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]

@@ -93,6 +93,12 @@ from app.services.secrets import (
     encrypt_secret_value,
 )
 from app.services.audit import audit_snapshot, record_audit_log
+from app.services.agent_transport import (
+    AgentRequest,
+    AgentResponse,
+    AgentUnavailableError,
+    get_agent_manager,
+)
 from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
 SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
@@ -242,6 +248,67 @@ def _build_provider_api_url(endpoint: Endpoint, default_suffix: str) -> str:
 
 
 DIRECT_TEST_TEMPLATES = {"chat", "response", "claude", "gemini"}
+
+
+def _endpoint_agent_name(endpoint: Endpoint) -> str | None:
+    access_mode = _normalize_endpoint_access_mode(
+        getattr(endpoint, "access_mode", None),
+        getattr(endpoint, "agent_node", None),
+    )
+    if access_mode != "via_agent":
+        return None
+    name = str(getattr(endpoint, "agent_node", "") or "").strip()
+    return name or None
+
+
+async def _send_endpoint_request(
+    *,
+    endpoint: Endpoint,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    json_payload: dict[str, object] | None,
+    client,
+    timeout: float | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    body = (
+        json.dumps(json_payload, ensure_ascii=False).encode("utf-8")
+        if json_payload is not None
+        else b""
+    )
+    request_headers = dict(headers)
+    if json_payload is not None:
+        request_headers.setdefault("Content-Type", "application/json")
+    agent_name = _endpoint_agent_name(endpoint)
+    if agent_name:
+        agent_response = await get_agent_manager().send_request(
+            agent_name,
+            AgentRequest(
+                method=method.upper(),
+                url=url,
+                headers=request_headers,
+                body=body,
+                stream=False,
+            ),
+        )
+        if not isinstance(agent_response, AgentResponse):
+            raise AgentUnavailableError(f"Agent {agent_name} returned stream response")
+        return agent_response.status_code, dict(agent_response.headers), agent_response.body
+
+    if method.upper() == "POST":
+        response = await client.post(
+            url,
+            headers=request_headers,
+            content=body,
+            timeout=timeout,
+        )
+    else:
+        response = await client.get(url, headers=headers, timeout=timeout)
+    try:
+        content = await response.aread()
+    finally:
+        await response.aclose()
+    return response.status_code, dict(response.headers), content
 
 
 def _default_direct_test_template(endpoint: Endpoint) -> str:
@@ -855,8 +922,8 @@ async def update_endpoint(
         raise HTTPException(status_code=400, detail="No fields to update")
     if data.get("agent_node") == "":
         data["agent_node"] = None
-    if "agent_node" in data and "access_mode" not in data and data["agent_node"]:
-        data["access_mode"] = "via_agent"
+    if "agent_node" in data and "access_mode" not in data:
+        data["access_mode"] = "via_agent" if data["agent_node"] else "direct"
     next_access_mode = _normalize_endpoint_access_mode(
         data.get("access_mode", getattr(endpoint, "access_mode", None)),
         data.get("agent_node", getattr(endpoint, "agent_node", None)),
@@ -959,7 +1026,7 @@ async def probe_endpoint(
     status_code: int | None = None
     latency_ms: int | None = None
     discovered_models: list[str] = []
-    response = None
+    response_body = b""
     started_at = time.perf_counter()
     probe_model = _pick_probe_model(existing_models)
     anthropic_probe_payload = {
@@ -970,26 +1037,32 @@ async def probe_endpoint(
 
     try:
         if provider == "anthropic":
-            response = await client.post(
-                url,
+            status_code, _response_headers, response_body = await _send_endpoint_request(
+                endpoint=endpoint,
+                method="POST",
+                url=url,
                 headers=headers,
-                json=anthropic_probe_payload,
+                json_payload=anthropic_probe_payload,
+                client=client,
                 timeout=settings.health_probe_timeout_seconds,
             )
         else:
-            response = await client.get(
-                url,
+            status_code, _response_headers, response_body = await _send_endpoint_request(
+                endpoint=endpoint,
+                method="GET",
+                url=url,
                 headers=headers,
+                json_payload=None,
+                client=client,
                 timeout=settings.health_probe_timeout_seconds,
             )
         latency_ms = int((time.perf_counter() - started_at) * 1000)
-        status_code = response.status_code
         if status_code >= 400:
             status = "failure"
         else:
             status = "success"
             if provider not in {"anthropic"}:
-                payload = response.json()
+                payload = json.loads(response_body.decode("utf-8"))
                 discovered_models = _extract_provider_models(provider, payload)
     except Exception:
         latency_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1000,9 +1073,6 @@ async def probe_endpoint(
             provider,
             url,
         )
-    finally:
-        if response is not None:
-            await response.aclose()
 
     if status == "success":
         await circuit_breaker.record_success(api_key.id)
@@ -1453,15 +1523,24 @@ async def test_api_key_direct(
     output_text: str | None = None
     error_reason: str | None = None
     try:
-        response = await client.post(url, headers=headers, json=request_payload)
-        status_code = response.status_code
-        text = response.text
+        status_code, _response_headers, content = await _send_endpoint_request(
+            endpoint=endpoint,
+            method="POST",
+            url=url,
+            headers=headers,
+            json_payload=request_payload,
+            client=client,
+        )
+        text = content.decode("utf-8", errors="replace")
         try:
-            raw_response = response.json()
+            raw_response = json.loads(text)
         except (json.JSONDecodeError, ValueError):
             raw_response = text[:4000]
         output_text = _extract_direct_test_text(raw_response)
         error_reason = _direct_test_error_reason(status_code, raw_response)
+    except AgentUnavailableError as exc:
+        error_reason = "agent_unavailable"
+        raw_response = {"error": str(exc)}
     except Exception as exc:
         error_reason = "request_error"
         raw_response = {"error": str(exc)}

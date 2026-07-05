@@ -106,6 +106,31 @@ class AgentManager:
     def get(self, name: str) -> AgentConnection | None:
         return self._connections.get(name)
 
+    async def shutdown(self, name: str) -> bool:
+        connection = self._connections.pop(name, None)
+        if not connection:
+            return False
+        for pending in list(connection.pending.values()):
+            if isinstance(pending, AgentStream):
+                await pending._queue.put(None)
+                continue
+            if not pending.done():
+                pending.cancel()
+        connection.pending.clear()
+        try:
+            await connection.send({"type": "shutdown", "reason": "deleted"})
+        except Exception:
+            pass
+        close = getattr(connection.channel, "close", None)
+        if callable(close):
+            try:
+                await close(code=1000)
+            except TypeError:
+                await close()
+            except Exception:
+                pass
+        return True
+
     def _request_timeout(self) -> float:
         if self.request_timeout_seconds is not None:
             return max(0.001, float(self.request_timeout_seconds))

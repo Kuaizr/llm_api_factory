@@ -112,6 +112,40 @@ describe("console actions", () => {
     expect(setEditingEndpoint).not.toHaveBeenCalled();
   });
 
+  it("sends direct access mode when endpoint agent is cleared", async () => {
+    const loadEndpoints = vi.fn();
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ id: 1 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const actions = buildActions({ loadEndpoints });
+
+    await expect(actions.handleSaveEndpoint(endpointForm)).resolves.toBe(true);
+
+    const [, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      access_mode: "direct",
+      agent_node: null,
+    });
+    expect(loadEndpoints).toHaveBeenCalledWith("adm.test");
+  });
+
+  it("sends via_agent access mode when endpoint agent is selected", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ id: 1 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const actions = buildActions();
+
+    await expect(
+      actions.handleSaveEndpoint({ ...endpointForm, agent_node: "edge-vps" })
+    ).resolves.toBe(true);
+
+    const [, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      access_mode: "via_agent",
+      agent_node: "edge-vps",
+    });
+  });
+
   it("keeps rule editor open and surfaces backend detail on save failure", async () => {
     const setEditingRule = vi.fn();
     const loadRules = vi.fn();

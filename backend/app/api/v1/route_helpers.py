@@ -469,6 +469,8 @@ async def _authorize_agent_token(
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     agent = await get_agent_by_name(session, name)
+    if agent is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     if agent and agent.auth_token_hash and token:
         if verify_agent_token(token, agent.auth_token_hash):

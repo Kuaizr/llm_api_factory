@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     admin_legacy_master_bearer_enabled: bool = False
     data_encryption_key: str | None = None
     agent_auth_token: str | None = None
-    agent_allowed_targets: str = "localhost,127.0.0.1,::1"
+    agent_allowed_targets: str = "*"
     agent_heartbeat_timeout_seconds: int = 120
     agent_request_timeout_seconds: float = 60.0
     agent_stream_idle_timeout_seconds: float = 300.0

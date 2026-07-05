@@ -331,6 +331,7 @@ async def admin_delete_agent(
     if agent is not None:
         before_snapshot = audit_snapshot(agent)
         resource_name = agent.name
+        await get_agent_manager().shutdown(resource_name)
         await session.delete(agent)
         await record_audit_log(
             session,

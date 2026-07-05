@@ -4,7 +4,10 @@ import asyncio
 from dataclasses import dataclass
 import json
 import logging
+import os
+import shutil
 import signal
+import subprocess
 import time
 from contextlib import suppress
 from typing import Any
@@ -16,6 +19,23 @@ from app.core.config import get_settings
 from app.services.agent_worker import handle_proxy_request
 
 logger = logging.getLogger(__name__)
+
+
+def _request_agent_service_stop() -> None:
+    if not os.environ.get("INVOCATION_ID"):
+        return
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return
+    try:
+        subprocess.Popen(
+            [systemctl, "disable", "--now", "llm-api-factory-agent.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        logger.warning("Failed to request agent systemd service stop", exc_info=True)
 
 
 def _build_heartbeat_url(ws_url: str, override: str | None) -> str | None:
@@ -169,7 +189,12 @@ class AgentClient:
                                     payload = json.loads(raw_message)
                                 except json.JSONDecodeError:
                                     continue
-                                if payload.get("type") != "proxy_request":
+                                message_type = payload.get("type")
+                                if message_type == "shutdown":
+                                    logger.info("Agent shutdown requested by control plane")
+                                    _request_agent_service_stop()
+                                    return
+                                if message_type != "proxy_request":
                                     continue
 
                                 async def send_json(message: dict[str, Any]) -> None:
@@ -247,12 +272,22 @@ async def run_agent_with_shutdown(
 ) -> None:
     event = stop_event or asyncio.Event()
     task = asyncio.create_task(agent.run())
+    stop_task = asyncio.create_task(event.wait())
     try:
-        await event.wait()
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
+        done, _pending = await asyncio.wait(
+            {task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
             await task
+    finally:
+        stop_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await stop_task
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def run_agent() -> None:

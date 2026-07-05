@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import routes as routes_module
@@ -11,6 +12,7 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import Agent
 from app.db.session import get_session
+from app.services.agents import hash_agent_token
 
 
 @dataclass
@@ -129,6 +131,72 @@ async def test_admin_agent_drain_survives_heartbeat(
         assert enable_response.status_code == 200
         assert enable_response.json()["is_active"] is True
         assert enable_response.json()["is_draining"] is False
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_agent_shutdowns_and_rejects_old_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+    agent = Agent(
+        name="edge-vps",
+        region="us",
+        is_active=True,
+        auth_token_hash=hash_agent_token("old-token"),
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+
+    class FakeAgentManager:
+        def __init__(self) -> None:
+            self.shutdown_calls: list[str] = []
+
+        async def shutdown(self, name: str) -> bool:
+            self.shutdown_calls.append(name)
+            return True
+
+    manager = FakeAgentManager()
+
+    async def override_session():
+        yield session
+
+    monkeypatch.setattr(
+        routes_module,
+        "get_settings",
+        lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True),
+    )
+    monkeypatch.setattr(routes_module, "get_agent_manager", lambda: manager)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        delete_response = await client.delete(
+            f"/admin/agents/{agent.id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert delete_response.status_code == 200
+
+        heartbeat_response = await client.post(
+            "/agent/heartbeat",
+            json={"name": "edge-vps", "token": "old-token"},
+        )
+        assert heartbeat_response.status_code == 401
+
+    assert manager.shutdown_calls == ["edge-vps"]
+    remaining = (await session.execute(select(Agent))).scalars().all()
+    assert remaining == []
 
     await session.close()
     await engine.dispose()
