@@ -162,6 +162,47 @@ def test_build_upstream_headers_does_not_pass_codex_headers_to_anthropic() -> No
     assert "session_id" not in headers
 
 
+def test_build_upstream_headers_passes_claude_code_headers_to_anthropic() -> None:
+    endpoint = SimpleNamespace(
+        provider="anthropic",
+        auth_header_name="x-api-key",
+        auth_header_prefix="",
+    )
+    incoming = {
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.167 (external, sdk-cli)",
+        "X-Claude-Code-Session-Id": "sess-123",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Retry-Count": "0",
+        "Anthropic-Beta": "claude-code-20250219,context-1m-2025-08-07",
+        "Anthropic-Dangerous-Direct-Browser-Access": "true",
+        "Anthropic-Version": "2023-06-01",
+        "X-App": "cli",
+        "Cookie": "session=browser",
+    }
+
+    headers = _lower_headers(
+        _build_upstream_headers(
+            incoming,
+            endpoint,
+            "sk-upstream",
+            request_path="/anthropic/v1/messages",
+            payload={"model": "claude-opus-4-8"},
+        )
+    )
+
+    assert headers["x-api-key"] == "sk-upstream"
+    assert headers["user-agent"] == "claude-cli/2.1.167 (external, sdk-cli)"
+    assert headers["x-claude-code-session-id"] == "sess-123"
+    assert headers["x-stainless-runtime"] == "node"
+    assert headers["x-stainless-retry-count"] == "0"
+    assert headers["anthropic-beta"] == "claude-code-20250219,context-1m-2025-08-07"
+    assert headers["anthropic-dangerous-direct-browser-access"] == "true"
+    assert headers["anthropic-version"] == "2023-06-01"
+    assert headers["x-app"] == "cli"
+    assert "cookie" not in headers
+
+
 def test_filter_response_headers_preserves_codex_turn_state() -> None:
     headers = _filter_response_headers(
         {

@@ -1188,6 +1188,12 @@ async def test_api_key_delete_removes_related_request_logs(
             {"id": "msg-test", "content": [{"type": "text", "text": "我是 claude"}]},
         ),
         (
+            "claude-code",
+            "/v1/messages",
+            "messages",
+            {"id": "msg-test", "content": [{"type": "text", "text": "我是 claude code"}]},
+        ),
+        (
             "gemini",
             "/v1beta/models/gemini-test:generateContent",
             "contents",
@@ -1236,6 +1242,32 @@ async def test_api_key_direct_test_supports_request_templates(
         assert request.url.path == expected_path
         if request_template == "gemini":
             assert "model" not in body
+        elif request_template == "claude-code":
+            assert request.url.query == b"beta=true"
+            assert body["model"] == "gemini-test"
+            assert body["stream"] is True
+            assert body["max_tokens"] == 1024
+            assert body["thinking"] == {"type": "adaptive"}
+            assert body["context_management"] == {
+                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+            }
+            assert body["output_config"] == {"effort": "high"}
+            assert body["tools"] == []
+            assert body["messages"][0]["content"][0]["cache_control"] == {
+                "type": "ephemeral"
+            }
+            assert body["system"][0]["text"].startswith("x-anthropic-billing-header:")
+            assert request.headers.get("user-agent").startswith("claude-cli/2.1.167")
+            assert request.headers.get("x-claude-code-session-id")
+            assert "claude-code-20250219" in str(request.headers.get("anthropic-beta"))
+            assert "context-1m-2025-08-07" in str(
+                request.headers.get("anthropic-beta")
+            )
+            assert (
+                request.headers.get("anthropic-dangerous-direct-browser-access")
+                == "true"
+            )
+            assert request.headers.get("x-app") == "cli"
         elif request_template == "codex":
             assert body["model"] == "gemini-test"
             assert body["store"] is False
@@ -1309,7 +1341,10 @@ async def test_api_key_direct_test_supports_request_templates(
     payload = response.json()
     assert payload["ok"] is True
     assert payload["request_template"] == request_template
-    assert payload["upstream_url"] == f"https://api.example.com{expected_path}"
+    expected_url = f"https://api.example.com{expected_path}"
+    if request_template == "claude-code":
+        expected_url = f"{expected_url}?beta=true"
+    assert payload["upstream_url"] == expected_url
     assert payload["output_text"]
 
     await session.close()

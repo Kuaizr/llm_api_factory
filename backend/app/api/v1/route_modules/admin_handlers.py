@@ -248,7 +248,23 @@ def _build_provider_api_url(endpoint: Endpoint, default_suffix: str) -> str:
     return f"{cleaned}{default_suffix}"
 
 
-DIRECT_TEST_TEMPLATES = {"chat", "response", "codex", "claude", "gemini"}
+DIRECT_TEST_TEMPLATES = {
+    "chat",
+    "response",
+    "codex",
+    "claude",
+    "claude-code",
+    "gemini",
+}
+CLAUDE_CODE_BETAS = (
+    "claude-code-20250219,"
+    "context-1m-2025-08-07,"
+    "interleaved-thinking-2025-05-14,"
+    "context-management-2025-06-27,"
+    "prompt-caching-scope-2026-01-05,"
+    "mid-conversation-system-2026-04-07,"
+    "effort-2025-11-24"
+)
 
 
 def _endpoint_agent_name(endpoint: Endpoint) -> str | None:
@@ -327,6 +343,8 @@ def _normalize_direct_test_template(raw: object, endpoint: Endpoint) -> str:
     normalized = raw.strip().lower()
     if normalized == "responses":
         normalized = "response"
+    if normalized in {"claude_code", "claudecode"}:
+        normalized = "claude-code"
     if normalized not in DIRECT_TEST_TEMPLATES:
         raise HTTPException(status_code=400, detail="unsupported request_template")
     return normalized
@@ -406,6 +424,77 @@ def _build_direct_test_request(
             "max_tokens": 64,
             "messages": [{"role": "user", "content": prompt}],
         }, headers
+    if request_template == "claude-code":
+        request_id = uuid.uuid4().hex
+        session_id = str(uuid.uuid4())
+        billing_hash = request_id[:5]
+        url = f"{_build_provider_api_url(endpoint, '/v1/messages')}?beta=true"
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "claude-cli/2.1.167 (external, sdk-cli)",
+            "X-Claude-Code-Session-Id": session_id,
+            "X-Stainless-Arch": "x64",
+            "X-Stainless-Lang": "js",
+            "X-Stainless-OS": "Linux",
+            "X-Stainless-Package-Version": "0.94.0",
+            "X-Stainless-Retry-Count": "0",
+            "X-Stainless-Runtime": "node",
+            "X-Stainless-Runtime-Version": "v24.3.0",
+            "X-Stainless-Timeout": "300",
+            "anthropic-beta": CLAUDE_CODE_BETAS,
+            "anthropic-dangerous-direct-browser-access": "true",
+            "anthropic-version": "2023-06-01",
+            "x-app": "cli",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            ],
+            "system": [
+                {
+                    "type": "text",
+                    "text": (
+                        "x-anthropic-billing-header: "
+                        f"cc_version=2.1.167.cb1; cc_entrypoint=sdk-cli; "
+                        f"cch={billing_hash};"
+                    ),
+                },
+                {
+                    "type": "text",
+                    "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            "tools": [],
+            "metadata": {
+                "user_id": json.dumps(
+                    {
+                        "device_id": "lmf-api-key-test",
+                        "account_uuid": "",
+                        "session_id": session_id,
+                    },
+                    separators=(",", ":"),
+                )
+            },
+            "max_tokens": 1024,
+            "thinking": {"type": "adaptive"},
+            "context_management": {
+                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+            },
+            "output_config": {"effort": "high"},
+            "stream": True,
+        }
+        return url, payload, headers
     if request_template == "gemini":
         encoded_model = quote(model, safe="/")
         return _build_provider_api_url(
@@ -508,6 +597,11 @@ def _extract_direct_test_sse_text(text: str) -> str | None:
         if isinstance(delta, str):
             parts.append(delta)
             continue
+        if isinstance(delta, dict):
+            text_delta = delta.get("text")
+            if isinstance(text_delta, str):
+                parts.append(text_delta)
+                continue
         output_text = payload.get("output_text")
         if isinstance(output_text, str):
             parts.append(output_text)

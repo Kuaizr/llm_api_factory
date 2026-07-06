@@ -30,6 +30,7 @@ TEMPLATE_VARIABLE_PATTERN = re.compile(r"\{\{(\w+)}}")
 PASSTHROUGH_HEADER_ALLOWLIST = {
     "accept",
     "anthropic-beta",
+    "anthropic-dangerous-direct-browser-access",
     "anthropic-version",
     "content-type",
     "idempotency-key",
@@ -41,6 +42,8 @@ PASSTHROUGH_HEADER_ALLOWLIST = {
     "x-goog-fieldmask",
     "x-goog-request-params",
     "x-goog-user-project",
+    "x-app",
+    "x-claude-code-session-id",
 }
 PASSTHROUGH_HEADER_PREFIXES = ("x-stainless-",)
 CODEX_PASSTHROUGH_HEADER_ALLOWLIST = {

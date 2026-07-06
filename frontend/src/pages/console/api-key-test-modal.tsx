@@ -18,6 +18,7 @@ const requestTemplates = [
   { value: "response", label: "Response" },
   { value: "codex", label: "Codex" },
   { value: "claude", label: "Claude" },
+  { value: "claude-code", label: "Claude Code" },
   { value: "gemini", label: "Gemini" },
 ];
 
