@@ -331,7 +331,7 @@ async def _send_endpoint_request(
 def _default_direct_test_template(endpoint: Endpoint) -> str:
     provider = _normalize_endpoint_provider(endpoint.provider)
     if provider == "anthropic":
-        return "claude"
+        return "claude-code"
     if provider == "gemini":
         return "gemini"
     return "chat"
@@ -428,6 +428,7 @@ def _build_direct_test_request(
         request_id = uuid.uuid4().hex
         session_id = str(uuid.uuid4())
         billing_hash = request_id[:5]
+        upstream_model = model.removesuffix("[1m]").strip() or model
         url = f"{_build_provider_api_url(endpoint, '/v1/messages')}?beta=true"
         headers = {
             "Accept": "application/json",
@@ -447,7 +448,7 @@ def _build_direct_test_request(
             "x-app": "cli",
         }
         payload = {
-            "model": model,
+            "model": upstream_model,
             "messages": [
                 {
                     "role": "user",

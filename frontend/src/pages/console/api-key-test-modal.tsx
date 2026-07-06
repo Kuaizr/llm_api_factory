@@ -17,15 +17,15 @@ const requestTemplates = [
   { value: "chat", label: "Chat" },
   { value: "response", label: "Response" },
   { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude" },
   { value: "claude-code", label: "Claude Code" },
+  { value: "claude", label: "Claude Messages" },
   { value: "gemini", label: "Gemini" },
 ];
 
 const defaultTemplateForProvider = (provider?: string | null) => {
   const normalized = (provider ?? "").trim().toLowerCase();
   if (normalized === "anthropic") {
-    return "claude";
+    return "claude-code";
   }
   if (normalized === "gemini") {
     return "gemini";

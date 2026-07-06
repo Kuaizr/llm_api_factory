@@ -1352,6 +1352,95 @@ async def test_api_key_direct_test_supports_request_templates(
 
 
 @pytest.mark.asyncio
+async def test_api_key_direct_test_defaults_anthropic_to_claude_code_and_strips_1m(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="AnthropicEndpoint",
+        base_url="https://api.example.com",
+        provider="anthropic",
+        auth_header_name="x-api-key",
+        auth_header_prefix="",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-template", is_active=True)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        assert request.url.path == "/v1/messages"
+        assert request.url.query == b"beta=true"
+        assert body["model"] == "claude-opus-4-8"
+        assert "context-1m-2025-08-07" in str(request.headers.get("anthropic-beta"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'event: content_block_delta\n'
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"我是 claude code"}}\n\n'
+            ),
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(
+        routes_module,
+        "get_settings",
+        lambda: Settings(
+            master_auth_token="token",
+            admin_legacy_master_bearer_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/api-keys/{api_key.id}/test",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "claude-opus-4-8[1m]"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["request_template"] == "claude-code"
+    assert payload["model"] == "claude-opus-4-8[1m]"
+    assert payload["output_text"] == "我是 claude code"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_request_attempt_logs_endpoint_filters_by_request_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
