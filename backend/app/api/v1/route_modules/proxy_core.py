@@ -62,6 +62,12 @@ async def _proxy_openai_request(
     rule_group = await _resolve_rule_group_from_token(
         session, request, requested_rule_group
     )
+    allowed_rule_groups = [
+        str(group).strip().lower()
+        for group in getattr(request.state, "route_allowed_rule_groups", [])
+        if str(group).strip()
+    ]
+    allow_default_rule_fallback = "default" in allowed_rule_groups
     if strip_rule_group_from_payload:
         payload.pop("rule_group", None)
         payload.pop("rules", None)
@@ -78,6 +84,7 @@ async def _proxy_openai_request(
         provider_filters=provider_filter,
         provider_filter_fallback_to_any=provider_filter_fallback_to_any,
         allow_unmapped_fallback=True,
+        allow_default_rule_fallback=allow_default_rule_fallback,
     )
 
     if not candidates:

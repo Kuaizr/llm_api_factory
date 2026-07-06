@@ -69,12 +69,17 @@ class ModelRouter:
         provider_filters: str | Sequence[str] | set[str] | None = None,
         provider_filter_fallback_to_any: bool = False,
         allow_unmapped_fallback: bool = False,
+        allow_default_rule_fallback: bool = True,
     ) -> tuple[list[RouteCandidate], str]:
         target_key_ids, strategy = await self._select_rule_targets(
             session, model_alias, rule_group
         )
         effective_group = rule_group
-        if not target_key_ids and rule_group != "default":
+        if (
+            not target_key_ids
+            and rule_group != "default"
+            and allow_default_rule_fallback
+        ):
             fallback_targets, fallback_strategy = await self._select_rule_targets(
                 session, model_alias, "default"
             )

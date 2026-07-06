@@ -168,6 +168,7 @@ async def _resolve_allowed_rule_groups_from_token(
     settings = get_settings()
     token = _extract_route_api_key(request)
     if token and verify_admin_session_token(token, settings):
+        request.state.route_allowed_rule_groups = ["default"]
         return ["default"]
 
     if not token:
@@ -197,7 +198,9 @@ async def _resolve_allowed_rule_groups_from_token(
         seen.add(tokenized)
         groups.append(canonical)
 
-    return groups or ["default"]
+    resolved_groups = groups or ["default"]
+    request.state.route_allowed_rule_groups = resolved_groups
+    return resolved_groups
 
 
 async def _resolve_rule_group_from_token(

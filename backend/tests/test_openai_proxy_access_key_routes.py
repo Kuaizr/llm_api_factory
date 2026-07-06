@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.models import FactoryAccessKey
+from app.db.models import APIKey, Endpoint, FactoryAccessKey, ModelMap, RoutingRule
 from app.db.session import get_session
 from app.services.access_keys import access_key_preview, hash_access_key
 from app.services.router import RouteCandidate
@@ -114,6 +114,111 @@ async def test_factory_access_key_cannot_escalate_rule_group(
     metrics = recorded["metrics"]
     assert metrics.requested_rule_group == "blocked"
     assert metrics.rule_group == "allowed"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_factory_access_key_does_not_fallback_to_default_when_not_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="DefaultOnly",
+        base_url="https://api.example.com",
+        provider="openai",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.commit()
+    await session.refresh(endpoint)
+
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-default", is_active=True)
+    api_key.assign_rule_groups(["default"])
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+
+    session.add(
+        ModelMap(
+            endpoint_id=endpoint.id,
+            model_alias="minimax/minimax-m3",
+            real_model="minimax/minimax-m3",
+        )
+    )
+    session.add(
+        RoutingRule(
+            model_pattern=".*",
+            group_name="default",
+            priority=0,
+            is_active=True,
+            target_key_ids_json=json.dumps(
+                {"target_key_ids": [api_key.id], "strategy": "weighted_round_robin"}
+            ),
+        )
+    )
+    session.add(
+        RoutingRule(
+            model_pattern="minimax-m3",
+            group_name="minimax",
+            priority=10,
+            is_active=True,
+            target_key_ids_json=json.dumps(
+                {"target_key_ids": [api_key.id], "strategy": "sequential"}
+            ),
+        )
+    )
+    factory_key = FactoryAccessKey(
+        name="minimax-only",
+        key=hash_access_key("fk-minimax-only"),
+        key_preview=access_key_preview("fk-minimax-only"),
+        is_active=True,
+    )
+    factory_key.rule_groups = ["minimax"]
+    session.add(factory_key)
+    await session.commit()
+
+    settings = Settings(master_auth_token="admin")
+    redis = MemoryRedis()
+
+    async def fake_get_redis():
+        return redis
+
+    async def override_session():
+        yield session
+
+    async def fake_get_http_client() -> httpx.AsyncClient:
+        raise AssertionError("default fallback must not call upstream")
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", fake_get_redis)
+    monkeypatch.setattr(routes_module, "get_notifier", lambda: None)
+    monkeypatch.setattr(routes_module, "get_http_client", fake_get_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer fk-minimax-only"},
+            json={
+                "model": "minimax/minimax-m3",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No available API keys"
 
     await session.close()
     await engine.dispose()
