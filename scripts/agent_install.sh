@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DEFAULT_REPO="https://github.com/Kuaizr/llm_api_factory.git"
-DEFAULT_REF="main"
+DEFAULT_REF="master"
 
 WS_URL=""
 HEARTBEAT_URL=""
