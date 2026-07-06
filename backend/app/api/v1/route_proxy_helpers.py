@@ -759,4 +759,11 @@ def _inspect_stream_chunk(
             response_payload = payload.get("response")
             if isinstance(response_payload, dict) and "usage" in response_payload:
                 usage_payload = response_payload
+        else:
+            choices = payload.get("choices")
+            if isinstance(choices, list) and any(
+                isinstance(choice, dict) and isinstance(choice.get("usage"), dict)
+                for choice in choices
+            ):
+                usage_payload = payload
     return buffer, usage_payload, data_seen

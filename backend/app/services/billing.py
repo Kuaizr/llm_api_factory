@@ -8,6 +8,20 @@ from app.db.models import APIKey, RequestAttemptLog, RequestLog
 from app.db.session import SessionLocal
 
 
+def _usage_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if value.isdigit():
+            return int(value)
+    return None
+
+
 @dataclass(frozen=True)
 class RequestMetrics:
     request_id: str
@@ -54,6 +68,7 @@ def extract_usage(
 ) -> tuple[int | None, int | None, int | None, int | None]:
     if not payload:
         return None, None, None, None
+
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         usage = payload.get("usageMetadata")
@@ -64,7 +79,15 @@ def extract_usage(
     if not isinstance(usage, dict):
         usage = payload.get("total_usage")
     if not isinstance(usage, dict):
-        return None, None, None, None
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if isinstance(choice, dict) and isinstance(choice.get("usage"), dict):
+                    usage = choice["usage"]
+                    break
+    if not isinstance(usage, dict):
+        cached_tokens = _extract_cached_tokens(payload, {})
+        return None, None, None, cached_tokens
 
     prompt_tokens = usage.get("prompt_tokens")
     if prompt_tokens is None:
@@ -90,17 +113,41 @@ def extract_usage(
     ):
         total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
 
+    prompt_tokens = _usage_int(prompt_tokens)
+    completion_tokens = _usage_int(completion_tokens)
+    total_tokens = _usage_int(total_tokens)
+    if total_tokens is None and (prompt_tokens is not None or completion_tokens is not None):
+        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+    cached_tokens = _extract_cached_tokens(payload, usage)
+
+    return prompt_tokens, completion_tokens, total_tokens, cached_tokens
+
+
+def _extract_cached_tokens(payload: dict[str, Any], usage: dict[str, Any]) -> int | None:
     cached_tokens = usage.get("cache_read_input_tokens")
     if cached_tokens is None:
         cached_tokens = usage.get("cachedContentTokenCount")
     if cached_tokens is None:
         cached_tokens = usage.get("total_cached_tokens")
     if cached_tokens is None:
+        cached_tokens = usage.get("cached_tokens")
+    if cached_tokens is None:
+        cached_tokens = usage.get("prompt_cache_hit_tokens")
+    if cached_tokens is None:
         prompt_details = usage.get("prompt_tokens_details")
         if isinstance(prompt_details, dict):
             cached_tokens = prompt_details.get("cached_tokens")
+    if cached_tokens is None:
+        input_details = usage.get("input_tokens_details")
+        if isinstance(input_details, dict):
+            cached_tokens = input_details.get("cached_tokens")
+    if cached_tokens is None:
+        timings = payload.get("timings")
+        if isinstance(timings, dict):
+            cached_tokens = timings.get("cache_n")
 
-    return prompt_tokens, completion_tokens, total_tokens, cached_tokens
+    return _usage_int(cached_tokens)
 
 
 async def write_request_log(metrics: RequestMetrics) -> None:

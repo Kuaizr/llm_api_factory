@@ -61,6 +61,61 @@ def test_extract_usage_supports_standard_provider_shapes() -> None:
             }
         }
     ) == (13, 14, 27, 10)
+    assert extract_usage(
+        {
+            "usage": {
+                "input_tokens": 21,
+                "output_tokens": 22,
+                "total_tokens": 43,
+                "input_tokens_details": {"cached_tokens": 11},
+            }
+        }
+    ) == (21, 22, 43, 11)
+    assert extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 31,
+                "completion_tokens": 32,
+                "total_tokens": 63,
+                "cached_tokens": 12,
+            }
+        }
+    ) == (31, 32, 63, 12)
+    assert extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 41,
+                "completion_tokens": 42,
+                "total_tokens": 83,
+                "prompt_cache_hit_tokens": 13,
+            }
+        }
+    ) == (41, 42, 83, 13)
+    assert extract_usage(
+        {
+            "choices": [
+                {
+                    "usage": {
+                        "prompt_tokens": 51,
+                        "completion_tokens": 52,
+                        "total_tokens": 103,
+                        "cached_tokens": 14,
+                    }
+                }
+            ]
+        }
+    ) == (51, 52, 103, 14)
+    assert extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": "61",
+                "completion_tokens": 62,
+                "total_tokens": 123,
+            },
+            "timings": {"cache_n": 15},
+        }
+    ) == (61, 62, 123, 15)
+    assert extract_usage({"timings": {"cache_n": "16"}}) == (None, None, None, 16)
     assert extract_usage({"usage": "invalid"}) == (None, None, None, None)
 
 

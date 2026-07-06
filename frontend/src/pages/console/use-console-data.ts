@@ -264,7 +264,7 @@ export const useConsoleData = () => {
         fetchJson(`/admin/stats/distribution/models?hours=${config.hours}`),
         fetchJson(`/admin/stats/distribution/groups?hours=${config.hours}`),
         fetchJson(`/admin/stats/top-keys?hours=${config.hours}&limit=10`),
-        fetchJson(`/admin/dump/search?hours=${config.hours}&limit=25`),
+        fetchJson(`/admin/dump/search?hours=${config.hours}&limit=20`),
       ]);
       const overview = parseStatsOverview(overviewPayload);
       const timeseries = parseStatsTimeseriesBucketList(timeseriesPayload);
