@@ -63,6 +63,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
                 "model_pattern": "gpt-4.*",
                 "group_name": "alpha",
                 "priority": 10,
+                "exposure_format": "response",
                 "is_active": True,
                 "target_key_ids": [api_key.id],
                 "dump_enabled": True,
@@ -72,6 +73,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
         assert response.status_code == 200
         payload = response.json()
         assert payload["model_pattern"] == "gpt-4.*"
+        assert payload["exposure_format"] == "response"
         assert payload["target_key_ids"] == [api_key.id]
         assert payload["dump_enabled"] is True
         assert Path(payload["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
@@ -119,6 +121,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
     data = list_response.json()
     alpha_rule = next(item for item in data if item["group_name"] == "alpha")
     assert alpha_rule["request_count"] == 2
+    assert alpha_rule["exposure_format"] == "response"
     assert alpha_rule["total_tokens"] == 50
     assert alpha_rule["avg_ttft_ms"] == 200
     assert alpha_rule["avg_tps"] == 15.0

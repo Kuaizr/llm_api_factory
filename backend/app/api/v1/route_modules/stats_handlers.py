@@ -6,15 +6,16 @@ from fastapi import Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.route_modules.admin_handlers import _deserialize_rule_config
 from app.api.v1.route_helpers import (
     _build_dashboard_endpoint,
+    _deserialize_rule_config_detail,
     _floor_bucket,
     _mask_key,
     _normalize_datetime,
     _parse_iso_datetime,
     build_metric_buckets,
 )
+from app.core.route_exposure import exposure_format_matches
 from app.api.v1.route_models import (
     DashboardAgentOut,
     DashboardStatusOut,
@@ -640,7 +641,10 @@ async def route_test(
     circuit_breaker = CircuitBreaker(redis, notifier=notifier)
     router_service = ModelRouter(circuit_breaker)
     candidates, effective_group = await router_service.get_candidates(
-        session, payload.model, payload.rule_group
+        session,
+        payload.model,
+        payload.rule_group,
+        exposure_format=payload.exposure_format,
     )
     ordered = [
         RouteCandidateOut(
@@ -666,6 +670,7 @@ async def _matching_route_rule(
     session: AsyncSession,
     model_alias: str,
     rule_group: str,
+    exposure_format: str = "any",
 ) -> tuple[RoutingRule | None, list[int], str]:
     result = await session.execute(
         select(RoutingRule)
@@ -674,7 +679,11 @@ async def _matching_route_rule(
     )
     for rule in result.scalars().all():
         if model_pattern_matches(rule.model_pattern, model_alias):
-            target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+            target_key_ids, strategy, rule_exposure = _deserialize_rule_config_detail(
+                rule.target_key_ids_json
+            )
+            if not exposure_format_matches(rule_exposure, exposure_format):
+                continue
             return rule, target_key_ids, strategy
     return None, [], "weighted_round_robin"
 
@@ -683,16 +692,17 @@ async def _resolve_route_explain_policy(
     session: AsyncSession,
     model_alias: str,
     requested_group: str,
+    exposure_format: str = "any",
 ) -> tuple[str, bool, RoutingRule | None, list[int], str]:
     group = (requested_group or "default").strip() or "default"
     rule, target_key_ids, strategy = await _matching_route_rule(
-        session, model_alias, group
+        session, model_alias, group, exposure_format=exposure_format
     )
     if target_key_ids or group == "default":
         return group, False, rule, target_key_ids, strategy
 
     fallback_rule, fallback_targets, fallback_strategy = await _matching_route_rule(
-        session, model_alias, "default"
+        session, model_alias, "default", exposure_format=exposure_format
     )
     return "default", True, fallback_rule, fallback_targets, fallback_strategy
 
@@ -719,7 +729,12 @@ async def route_explain(
     circuit_breaker = CircuitBreaker(redis, notifier=notifier)
     router_service = ModelRouter(circuit_breaker)
     effective_group, fallback_used, matched_rule, target_key_ids, strategy = (
-        await _resolve_route_explain_policy(session, payload.model, payload.rule_group)
+        await _resolve_route_explain_policy(
+            session,
+            payload.model,
+            payload.rule_group,
+            exposure_format=payload.exposure_format,
+        )
     )
 
     stmt = (

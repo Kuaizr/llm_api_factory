@@ -28,6 +28,7 @@ from app.api.v1.route_proxy_helpers import (
 from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.circuit_breaker import CircuitBreaker
+from app.services.codex_usage import record_codex_usage_from_headers
 from app.services.router import ModelRouter, RouteCandidate
 
 
@@ -210,6 +211,14 @@ async def handle_direct_candidate(
         if is_stream:
             await circuit_breaker.record_success(candidate.api_key.id)
             await router_service.record_candidate_success(candidate)
+            if candidate_provider == "codex":
+                safe_create_task(
+                    record_codex_usage_from_headers(
+                        redis,
+                        api_key_id=candidate.api_key.id,
+                        headers=response.headers,
+                    )
+                )
             _record_attempt_log(
                 request_id=request_id,
                 trace_id=trace_id,
@@ -311,6 +320,14 @@ async def handle_direct_candidate(
 
         await circuit_breaker.record_success(candidate.api_key.id)
         await router_service.record_candidate_success(candidate)
+        if candidate_provider == "codex":
+            safe_create_task(
+                record_codex_usage_from_headers(
+                    redis,
+                    api_key_id=candidate.api_key.id,
+                    headers=response.headers,
+                )
+            )
         _record_attempt_log(
             request_id=request_id,
             trace_id=trace_id,

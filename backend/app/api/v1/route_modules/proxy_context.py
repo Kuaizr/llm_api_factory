@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.route_modules.proxy_payloads import (
     is_stream_request,
@@ -15,6 +16,7 @@ from app.api.v1.route_proxy_helpers import (
     _get_agent_name,
 )
 from app.core.providers import normalize_provider_name
+from app.services.codex_oauth import resolve_codex_credential
 from app.services.router import RouteCandidate
 
 
@@ -32,6 +34,7 @@ class CandidateRequestContext:
 
 async def prepare_candidate_request_context(
     request: Request,
+    session: AsyncSession,
     payload: dict[str, object],
     raw_body: bytes,
     candidate: RouteCandidate,
@@ -60,12 +63,21 @@ async def prepare_candidate_request_context(
         provider=candidate_provider,
         model_payload_keys=model_payload_keys,
     )
+    codex_credential = None
+    if candidate_provider == "codex":
+        codex_credential = await resolve_codex_credential(
+            candidate.api_key,
+            client=client,
+            session=session,
+        )
     headers = _build_upstream_headers(
         request.headers,
         candidate.endpoint,
         candidate.api_key.key,
         request_path=request.url.path,
-        payload=payload,
+        payload=upstream_payload,
+        codex_credential=codex_credential,
+        is_stream=request_is_stream,
     )
     headers, oauth_enabled = await _apply_oauth_access_token(
         headers,

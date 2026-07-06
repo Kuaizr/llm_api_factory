@@ -13,25 +13,43 @@ from app.api.v1.route_modules.proxy_models import (
     list_models,
     list_upstream_models_filtered,
 )
+from app.core.route_exposure import (
+    EXPOSURE_FORMAT_CHAT,
+    EXPOSURE_FORMAT_GEMINI,
+    EXPOSURE_FORMAT_MESSAGE,
+    EXPOSURE_FORMAT_RESPONSE,
+)
 from app.db.session import get_session
 
 
 async def chat_completions(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> Response:
-    return await _proxy_openai_request(request, session)
+    return await _proxy_openai_request(
+        request,
+        session,
+        exposure_format=EXPOSURE_FORMAT_CHAT,
+    )
 
 
 async def completions(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> Response:
-    return await _proxy_openai_request(request, session)
+    return await _proxy_openai_request(
+        request,
+        session,
+        exposure_format=EXPOSURE_FORMAT_CHAT,
+    )
 
 
 async def embeddings(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> Response:
-    return await _proxy_openai_request(request, session)
+    return await _proxy_openai_request(
+        request,
+        session,
+        exposure_format=EXPOSURE_FORMAT_CHAT,
+    )
 
 
 async def responses(
@@ -42,6 +60,10 @@ async def responses(
         session,
         rewrite_model=False,
         strip_rule_group_from_payload=False,
+        provider_filter=("openai", "codex", "custom"),
+        provider_filter_fallback_to_any=True,
+        exposure_format=EXPOSURE_FORMAT_RESPONSE,
+        detect_codex_exposure=True,
     )
 
 
@@ -76,14 +98,21 @@ async def openai_passthrough(
         if payload is not None:
             return JSONResponse(content=payload)
 
+    is_responses_path = normalized_path in {"responses", "responses/compact"}
     return await _proxy_openai_request(
         request,
         session,
         rewrite_model=True,
         strip_rule_group_from_payload=False,
         path_prefix="/openai",
-        provider_filter=("openai", "custom"),
+        provider_filter=("openai", "codex", "custom")
+        if is_responses_path
+        else ("openai", "custom"),
         provider_filter_fallback_to_any=True,
+        exposure_format=EXPOSURE_FORMAT_RESPONSE
+        if is_responses_path
+        else EXPOSURE_FORMAT_CHAT,
+        detect_codex_exposure=is_responses_path,
         allow_missing_model=True,
     )
 
@@ -127,6 +156,7 @@ async def anthropic_passthrough(
         path_prefix="/anthropic",
         provider_filter=("anthropic", "custom"),
         provider_filter_fallback_to_any=True,
+        exposure_format=EXPOSURE_FORMAT_MESSAGE,
         allow_missing_model=True,
     )
 
@@ -173,6 +203,7 @@ async def gemini_passthrough(
             path_prefix="/gemini",
             provider_filter=("gemini", "custom"),
             provider_filter_fallback_to_any=True,
+            exposure_format=EXPOSURE_FORMAT_GEMINI,
             allow_missing_model=False,
             model_payload_keys=("model", "agent"),
         )
@@ -189,6 +220,7 @@ async def gemini_passthrough(
         path_prefix="/gemini",
         provider_filter=("gemini", "custom"),
         provider_filter_fallback_to_any=True,
+        exposure_format=EXPOSURE_FORMAT_GEMINI,
         allow_missing_model=False,
         model_alias_override=model_alias,
         target_path_rewriter=lambda raw_path, candidate: rewrite_gemini_model_path(
@@ -210,6 +242,7 @@ async def gemini_interactions(
         path_prefix="/gemini",
         provider_filter=("gemini", "custom"),
         provider_filter_fallback_to_any=True,
+        exposure_format=EXPOSURE_FORMAT_GEMINI,
         allow_missing_model=False,
         model_payload_keys=("model", "agent"),
         target_path_rewriter=lambda raw_path, candidate: "/v1beta/interactions",

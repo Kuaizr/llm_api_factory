@@ -27,8 +27,14 @@ from app.api.v1.route_modules.proxy_trace import (
     resolve_session_id,
     resolve_trace_id,
 )
+from app.api.v1.route_proxy_helpers import _looks_like_codex_request
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
+from app.core.route_exposure import (
+    DEFAULT_EXPOSURE_FORMAT,
+    EXPOSURE_FORMAT_CODEX,
+    normalize_exposure_format,
+)
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import get_notifier
 from app.services.router import ModelRouter, RouteCandidate
@@ -43,6 +49,8 @@ async def _proxy_openai_request(
     path_prefix: str | None = None,
     provider_filter: str | tuple[str, ...] | None = None,
     provider_filter_fallback_to_any: bool = False,
+    exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
+    detect_codex_exposure: bool = False,
     allow_missing_model: bool = False,
     model_alias_override: str | None = None,
     model_payload_keys: tuple[str, ...] = ("model",),
@@ -71,6 +79,9 @@ async def _proxy_openai_request(
     if strip_rule_group_from_payload:
         payload.pop("rule_group", None)
         payload.pop("rules", None)
+    requested_exposure_format = normalize_exposure_format(exposure_format)
+    if detect_codex_exposure and _looks_like_codex_request(request.headers, payload):
+        requested_exposure_format = EXPOSURE_FORMAT_CODEX
 
     redis = await get_redis()
     notifier = get_notifier()
@@ -85,12 +96,18 @@ async def _proxy_openai_request(
         provider_filter_fallback_to_any=provider_filter_fallback_to_any,
         allow_unmapped_fallback=True,
         allow_default_rule_fallback=allow_default_rule_fallback,
+        exposure_format=requested_exposure_format,
     )
 
     if not candidates:
         raise HTTPException(status_code=404, detail="No available API keys")
 
-    dump_rule = await _find_dump_rule(session, model_alias, effective_group)
+    dump_rule = await _find_dump_rule(
+        session,
+        model_alias,
+        effective_group,
+        exposure_format=requested_exposure_format,
+    )
 
     request_id = uuid.uuid4().hex
     session_id = resolve_session_id(request, payload)
@@ -104,6 +121,7 @@ async def _proxy_openai_request(
         try:
             candidate_context = await prepare_candidate_request_context(
                 request,
+                session,
                 payload,
                 raw_body,
                 candidate,

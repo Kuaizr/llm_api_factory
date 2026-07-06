@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     proxy_dump_root: str = str(Path(__file__).resolve().parents[2] / "proxy_dumps")
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    codex_oauth_token_url: str = "https://auth.openai.com/oauth/token"
+    codex_oauth_client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann"
+    codex_oauth_refresh_leeway_seconds: int = 300
 
     model_config = SettingsConfigDict(env_prefix="LLM_", case_sensitive=False)
 

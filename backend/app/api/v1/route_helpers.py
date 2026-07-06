@@ -24,6 +24,11 @@ from app.api.v1.route_models import (
     RoutingRuleOut,
 )
 from app.core.config import get_settings
+from app.core.route_exposure import (
+    DEFAULT_EXPOSURE_FORMAT,
+    exposure_format_matches,
+    normalize_exposure_format,
+)
 from app.core.timezone import app_today
 from app.db.models import (
     APIKey,
@@ -227,7 +232,10 @@ async def _resolve_rule_group_from_token(
 
 
 async def _find_dump_rule(
-    session: AsyncSession, model_alias: str, rule_group: str
+    session: AsyncSession,
+    model_alias: str,
+    rule_group: str,
+    exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
 ) -> RoutingRule | None:
     try:
         result = await session.execute(
@@ -244,7 +252,12 @@ async def _find_dump_rule(
 
     rules = result.scalars().all()
     for rule in rules:
-        if model_pattern_matches(rule.model_pattern, model_alias):
+        if not model_pattern_matches(rule.model_pattern, model_alias):
+            continue
+        _, _, rule_exposure_format = _deserialize_rule_config_detail(
+            rule.target_key_ids_json
+        )
+        if exposure_format_matches(rule_exposure_format, exposure_format):
             return rule
     return None
 
@@ -560,7 +573,9 @@ def _build_endpoint_detail(
     status: str,
     latency_ms: int,
     uptime: float,
+    codex_usage_by_key: dict[int, dict[str, object]] | None = None,
 ) -> EndpointDetailOut:
+    codex_usage_by_key = codex_usage_by_key or {}
     keys = [
         EndpointKeyOut(
             id=key.id,
@@ -576,6 +591,7 @@ def _build_endpoint_detail(
             daily_limit=key.daily_limit,
             used_today=key.used_today,
             is_active=key.is_active,
+            codex_usage=codex_usage_by_key.get(key.id),
         )
         for key in (endpoint.api_keys or [])
     ]
@@ -741,29 +757,40 @@ def _parse_target_key_ids(data: object) -> list[int]:
     return parsed
 
 
-def _serialize_rule_config(target_key_ids: list[int], strategy: str) -> str:
+def _serialize_rule_config(
+    target_key_ids: list[int],
+    strategy: str,
+    exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
+) -> str:
     return json.dumps({
         "target_key_ids": target_key_ids,
         "strategy": strategy,
+        "exposure_format": normalize_exposure_format(exposure_format),
     })
 
 
-def _deserialize_rule_config(raw: str) -> tuple[list[int], str]:
+def _deserialize_rule_config_detail(raw: str) -> tuple[list[int], str, str]:
     if not raw:
-        return [], DEFAULT_RULE_STRATEGY
+        return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return [], DEFAULT_RULE_STRATEGY
+        return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
     if isinstance(data, list):
-        return _parse_target_key_ids(data), DEFAULT_RULE_STRATEGY
+        return _parse_target_key_ids(data), DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
     if isinstance(data, dict):
         target_key_ids = _parse_target_key_ids(data.get("target_key_ids", []))
         strategy = data.get("strategy") or DEFAULT_RULE_STRATEGY
         if not isinstance(strategy, str):
             strategy = str(strategy)
-        return target_key_ids, strategy
-    return [], DEFAULT_RULE_STRATEGY
+        exposure_format = normalize_exposure_format(data.get("exposure_format"))
+        return target_key_ids, strategy, exposure_format
+    return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+
+
+def _deserialize_rule_config(raw: str) -> tuple[list[int], str]:
+    target_key_ids, strategy, _ = _deserialize_rule_config_detail(raw)
+    return target_key_ids, strategy
 
 
 async def _ensure_default_rule_group(session: AsyncSession) -> RoutingRule:
@@ -794,6 +821,7 @@ def _build_routing_rule_out(
     rule: RoutingRule,
     target_key_ids: list[int],
     strategy: str,
+    exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
     request_count: int = 0,
     total_tokens: int = 0,
     avg_ttft_ms: int | None = None,
@@ -803,6 +831,7 @@ def _build_routing_rule_out(
         id=rule.id,
         model_pattern=rule.model_pattern,
         group_name=rule.group_name,
+        exposure_format=normalize_exposure_format(exposure_format),
         priority=rule.priority,
         strategy=strategy,
         is_active=rule.is_active,

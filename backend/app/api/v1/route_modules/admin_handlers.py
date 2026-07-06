@@ -17,6 +17,7 @@ from app.api.v1.route_helpers import (
     _build_endpoint_out,
     _build_routing_rule_out,
     _deserialize_rule_config,
+    _deserialize_rule_config_detail,
     _ensure_default_rule_group,
     _ensure_rule_group_available,
     _is_default_rule_group,
@@ -65,6 +66,11 @@ from app.api.v1.route_models import (
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
+from app.core.route_exposure import (
+    DEFAULT_EXPOSURE_FORMAT,
+    SUPPORTED_EXPOSURE_FORMATS,
+    normalize_exposure_format,
+)
 from app.db.models import (
     APIKey,
     AuditLog,
@@ -82,6 +88,8 @@ from app.services.access_keys import (
     is_hashed_access_key,
 )
 from app.services.circuit_breaker import CircuitBreaker
+from app.services.codex_oauth import resolve_codex_credential
+from app.services.codex_usage import read_codex_usage_many
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 from app.services.model_patterns import (
     UnsafeModelPatternError,
@@ -102,7 +110,7 @@ from app.services.agent_transport import (
 )
 from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
-SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
+SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "codex", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
 CUSTOM_ONLY_ENDPOINT_FIELDS = (
     "url_path_suffix",
@@ -169,6 +177,15 @@ def _validate_rule_dump_path(dump_path: str | None) -> str | None:
         return _normalize_dump_path(dump_path)
     except HTTPException:
         raise
+
+
+def _validate_rule_exposure_format(value: object) -> str:
+    normalized = normalize_exposure_format(value)
+    if normalized == DEFAULT_EXPOSURE_FORMAT and isinstance(value, str):
+        raw = value.strip().lower().replace("-", "_")
+        if raw and raw not in SUPPORTED_EXPOSURE_FORMATS and raw != "responses":
+            raise HTTPException(status_code=400, detail="Invalid exposure_format")
+    return normalized
 
 
 def _normalize_endpoint_provider(raw: object) -> str:
@@ -239,6 +256,16 @@ def _build_provider_api_url(endpoint: Endpoint, default_suffix: str) -> str:
     custom_suffix = _normalize_url_path_suffix(endpoint.url_path_suffix)
     if endpoint.provider == "custom" and custom_suffix:
         return f"{endpoint.base_url.rstrip('/')}{custom_suffix}"
+    if endpoint.provider == "codex" and default_suffix in {
+        "/v1/responses",
+        "/v1/responses/compact",
+    }:
+        suffix = (
+            "/backend-api/codex/responses/compact"
+            if default_suffix.endswith("/compact")
+            else "/backend-api/codex/responses"
+        )
+        return f"{endpoint.base_url.rstrip('/')}{suffix}"
 
     cleaned = endpoint.base_url.rstrip("/")
     for version in ("v1", "v1beta", "v1alpha"):
@@ -330,6 +357,8 @@ async def _send_endpoint_request(
 
 def _default_direct_test_template(endpoint: Endpoint) -> str:
     provider = _normalize_endpoint_provider(endpoint.provider)
+    if provider == "codex":
+        return "codex"
     if provider == "anthropic":
         return "claude-code"
     if provider == "gemini":
@@ -846,7 +875,9 @@ async def _sync_rule_targets_for_api_key(
         if group_lookup not in affected_lookup:
             continue
 
-        target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+        target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+            rule.target_key_ids_json
+        )
         target_key_set = set(target_key_ids)
         should_select = group_lookup in current_lookup
         changed = False
@@ -859,7 +890,7 @@ async def _sync_rule_targets_for_api_key(
 
         if changed:
             rule.target_key_ids_json = _serialize_rule_config(
-                sorted(target_key_set), strategy
+                sorted(target_key_set), strategy, exposure_format
             )
 
 
@@ -1027,6 +1058,7 @@ async def list_endpoints(session: AsyncSession = Depends(get_session)) -> list[E
     ]
     probe_results = await probe_store.read_many(api_key_ids)
     probe_series_map = await probe_store.read_series_many(api_key_ids)
+    codex_usage_by_key = await read_codex_usage_many(redis, api_key_ids)
 
     items: list[EndpointDetailOut] = []
     for endpoint in endpoints:
@@ -1054,6 +1086,7 @@ async def list_endpoints(session: AsyncSession = Depends(get_session)) -> list[E
                 _resolve_endpoint_status(endpoint, probe_results),
                 ping_latency,
                 uptime,
+                codex_usage_by_key=codex_usage_by_key,
             )
         )
     return items
@@ -1717,14 +1750,23 @@ async def test_api_key_direct(
     url, request_payload, probe_headers = _build_direct_test_request(
         endpoint, model, request_template, prompt
     )
+    client = await get_http_client()
+    codex_credential = None
+    if provider == "codex":
+        codex_credential = await resolve_codex_credential(
+            api_key,
+            client=client,
+            session=session,
+        )
     headers = _build_upstream_headers(
         probe_headers,
         endpoint,
         api_key.key,
         request_path=urlparse(url).path,
         payload=request_payload,
+        codex_credential=codex_credential,
+        is_stream=bool(request_payload.get("stream")),
     )
-    client = await get_http_client()
     start = time.perf_counter()
     status_code = 0
     raw_response: object | None = None
@@ -1787,7 +1829,9 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
     log_rows = log_result.all()
     items: list[RoutingRuleOut] = []
     for rule in rules:
-        target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+        target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+            rule.target_key_ids_json
+        )
         try:
             matcher = compile_model_pattern(rule.model_pattern)
         except UnsafeModelPatternError:
@@ -1827,6 +1871,7 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
                 rule,
                 target_key_ids=target_key_ids,
                 strategy=strategy,
+                exposure_format=exposure_format,
                 request_count=request_count,
                 total_tokens=total_tokens,
                 avg_ttft_ms=avg_ttft_ms,
@@ -1842,6 +1887,7 @@ async def create_rule(
     group_name = await _ensure_rule_group_available(session, payload.group_name)
     model_pattern = _validate_rule_model_pattern(payload.model_pattern)
     dump_path = _validate_rule_dump_path(payload.dump_path)
+    exposure_format = _validate_rule_exposure_format(payload.exposure_format)
     rule = RoutingRule(
         model_pattern=model_pattern,
         group_name=group_name,
@@ -1850,7 +1896,7 @@ async def create_rule(
         dump_enabled=payload.dump_enabled,
         dump_path=dump_path,
         target_key_ids_json=_serialize_rule_config(
-            payload.target_key_ids, payload.strategy
+            payload.target_key_ids, payload.strategy, exposure_format
         ),
     )
     session.add(rule)
@@ -1871,15 +1917,19 @@ async def create_rule(
             **audit_snapshot(rule),
             "target_key_ids": payload.target_key_ids,
             "strategy": payload.strategy,
+            "exposure_format": exposure_format,
         },
     )
     await session.commit()
     await session.refresh(rule)
-    target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+    target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+        rule.target_key_ids_json
+    )
     return _build_routing_rule_out(
         rule,
         target_key_ids=target_key_ids,
         strategy=strategy,
+        exposure_format=exposure_format,
     )
 
 
@@ -1891,20 +1941,26 @@ async def update_rule(
     rule = await session.get(RoutingRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Routing rule not found")
-    before_targets, before_strategy = _deserialize_rule_config(rule.target_key_ids_json)
+    before_targets, before_strategy, before_exposure_format = _deserialize_rule_config_detail(
+        rule.target_key_ids_json
+    )
     before_snapshot = {
         **audit_snapshot(rule),
         "target_key_ids": before_targets,
         "strategy": before_strategy,
+        "exposure_format": before_exposure_format,
     }
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     previous_group_name = rule.group_name
-    current_targets, current_strategy = _deserialize_rule_config(rule.target_key_ids_json)
+    current_targets, current_strategy, current_exposure_format = (
+        _deserialize_rule_config_detail(rule.target_key_ids_json)
+    )
     next_targets = current_targets
     next_strategy = current_strategy
+    next_exposure_format = current_exposure_format
 
     if _is_default_rule_group(rule.group_name):
         if data.get("group_name") is not None and not _is_default_rule_group(
@@ -1926,10 +1982,17 @@ async def update_rule(
         )
 
     has_target_update = "target_key_ids" in data
-    if has_target_update or "strategy" in data:
+    has_exposure_update = "exposure_format" in data
+    if has_exposure_update:
+        next_exposure_format = _validate_rule_exposure_format(
+            data.pop("exposure_format")
+        )
+    if has_target_update or "strategy" in data or has_exposure_update:
         next_targets = data.pop("target_key_ids", current_targets)
         next_strategy = data.pop("strategy", current_strategy)
-        rule.target_key_ids_json = _serialize_rule_config(next_targets, next_strategy)
+        rule.target_key_ids_json = _serialize_rule_config(
+            next_targets, next_strategy, next_exposure_format
+        )
 
     if "model_pattern" in data:
         data["model_pattern"] = _validate_rule_model_pattern(data["model_pattern"])
@@ -1977,15 +2040,19 @@ async def update_rule(
             **audit_snapshot(rule),
             "target_key_ids": next_targets,
             "strategy": next_strategy,
+            "exposure_format": next_exposure_format,
         },
     )
     await session.commit()
     await session.refresh(rule)
-    target_key_ids, strategy = _deserialize_rule_config(rule.target_key_ids_json)
+    target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+        rule.target_key_ids_json
+    )
     return _build_routing_rule_out(
         rule,
         target_key_ids=target_key_ids,
         strategy=strategy,
+        exposure_format=exposure_format,
     )
 
 

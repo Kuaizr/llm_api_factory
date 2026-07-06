@@ -135,6 +135,7 @@ class EndpointKeyOut(BaseModel):
     daily_limit: int | None
     used_today: int
     is_active: bool
+    codex_usage: dict[str, object] | None = None
 
 
 class EndpointDetailOut(BaseModel):
@@ -167,6 +168,7 @@ class EndpointDetailOut(BaseModel):
 class RoutingRuleCreate(BaseModel):
     model_pattern: str
     group_name: str = "default"
+    exposure_format: str = "any"
     priority: int = 10
     strategy: str = "weighted_round_robin"
     is_active: bool = True
@@ -178,6 +180,7 @@ class RoutingRuleCreate(BaseModel):
 class RoutingRuleUpdate(BaseModel):
     model_pattern: str | None = None
     group_name: str | None = None
+    exposure_format: str | None = None
     priority: int | None = None
     strategy: str | None = None
     is_active: bool | None = None
@@ -190,6 +193,7 @@ class RoutingRuleOut(BaseModel):
     id: int
     model_pattern: str
     group_name: str
+    exposure_format: str = "any"
     priority: int
     strategy: str
     is_active: bool
@@ -631,6 +635,7 @@ class DeleteResponse(BaseModel):
 class RouteTestRequest(BaseModel):
     model: str = Field(..., min_length=1)
     rule_group: str = "default"
+    exposure_format: str = "any"
 
 
 class RouteCandidateOut(BaseModel):

@@ -491,6 +491,7 @@ export const useConsoleActions = ({
         body: JSON.stringify({
           model_pattern: payload.model_pattern,
           group_name: payload.group_name,
+          exposure_format: payload.exposure_format,
           priority: payload.priority,
           strategy: payload.strategy,
           is_active: payload.is_active,

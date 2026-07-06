@@ -25,6 +25,16 @@ import {
 } from "./shared";
 import { parseModelMapList, parseStringList } from "./response-validators";
 
+const exposureFormatOptions = [
+  { value: "any", label: "any", hint: "兼容旧规则" },
+  { value: "chat", label: "chat", hint: "OpenAI Chat" },
+  { value: "response", label: "response", hint: "OpenAI Responses" },
+  { value: "codex", label: "codex", hint: "Codex CLI Responses" },
+  { value: "message", label: "message", hint: "Anthropic Messages" },
+  { value: "claude_code", label: "claude code", hint: "Claude Code" },
+  { value: "gemini", label: "gemini", hint: "Gemini" },
+] as const;
+
 export const RuleEditorModal = ({
   endpoints,
   rule,
@@ -42,6 +52,9 @@ export const RuleEditorModal = ({
 }) => {
   const [modelPattern, setModelPattern] = useState(rule?.model_pattern ?? "");
   const [groupName, setGroupName] = useState(rule?.group_name ?? "custom");
+  const [exposureFormat, setExposureFormat] = useState(
+    rule?.exposure_format ?? "any"
+  );
   const [priority, setPriority] = useState(String(rule?.priority ?? 10));
   const [strategy, setStrategy] = useState(
     rule?.strategy ?? "weighted_round_robin"
@@ -379,7 +392,7 @@ export const RuleEditorModal = ({
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
                   规则组
@@ -393,6 +406,23 @@ export const RuleEditorModal = ({
                 {isDefaultRule && (
                   <p className="mt-1 text-[11px] text-gray-500">系统默认分组不可重命名。</p>
                 )}
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
+                  暴露格式
+                </label>
+                <select
+                  value={exposureFormat}
+                  onChange={(event) => setExposureFormat(event.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none"
+                  disabled={!isAdmin}
+                >
+                  {exposureFormatOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label} - {option.hint}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
@@ -625,6 +655,7 @@ export const RuleEditorModal = ({
                 id: rule?.id,
                 model_pattern: modelPattern,
                 group_name: groupName,
+                exposure_format: exposureFormat,
                 priority: Number(priority) || 0,
                 strategy,
                 is_active: rule?.is_active ?? true,

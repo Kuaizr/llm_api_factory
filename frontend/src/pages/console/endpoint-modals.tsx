@@ -165,6 +165,15 @@ export const EditEndpointModal = ({
                       auth_header_prefix: "Bearer",
                     };
                   }
+                  if (provider === "codex") {
+                    return {
+                      ...prev,
+                      ...customOnly,
+                      provider,
+                      auth_header_name: "Authorization",
+                      auth_header_prefix: "Bearer",
+                    };
+                  }
                   return { ...prev, ...customOnly, provider };
                 });
               }}
@@ -174,8 +183,15 @@ export const EditEndpointModal = ({
               <option value="openai">OpenAI Compatible</option>
               <option value="anthropic">Anthropic</option>
               <option value="gemini">Gemini</option>
+              <option value="codex">Codex OAuth</option>
               <option value="custom">Custom Template</option>
             </select>
+            {form.provider === "codex" && (
+              <p className="mt-2 text-[11px] text-cyan-300/80 leading-relaxed">
+                Codex OAuth 端点使用 API Key JSON 中的 access_token / refresh_token /
+                account_id，转发到 Codex backend API；不要上传本机 ~/.codex/auth.json。
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

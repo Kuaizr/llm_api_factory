@@ -19,6 +19,7 @@ export type ApiKey = {
   used_today: number;
   is_active: boolean;
   name?: string | null;
+  codex_usage?: Record<string, unknown> | null;
 };
 
 export type HealthStatus = {
@@ -103,6 +104,7 @@ export type RoutingRule = {
   id: number;
   model_pattern: string;
   group_name: string;
+  exposure_format?: string;
   target_key_ids: number[];
   priority: number;
   strategy: string;
@@ -119,6 +121,7 @@ export type RoutingRuleSavePayload = {
   id?: number;
   model_pattern: string;
   group_name: string;
+  exposure_format: string;
   target_key_ids: number[];
   priority: number;
   strategy: string;

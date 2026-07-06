@@ -25,7 +25,69 @@ import {
   type UsageStats,
 } from "./shared";
 
-const providerFilters = ["openai", "anthropic", "gemini", "custom"] as const;
+const providerFilters = ["openai", "anthropic", "gemini", "codex", "custom"] as const;
+
+const readCodexWindow = (
+  usage: Record<string, unknown> | null | undefined,
+  window: "primary" | "secondary"
+) => {
+  const raw = usage?.[window];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const item = raw as Record<string, unknown>;
+  const usedPercent =
+    typeof item.used_percent === "number" && Number.isFinite(item.used_percent)
+      ? item.used_percent
+      : null;
+  const windowMinutes =
+    typeof item.window_minutes === "number" && Number.isFinite(item.window_minutes)
+      ? item.window_minutes
+      : null;
+  const resetAfterSeconds =
+    typeof item.reset_after_seconds === "number" &&
+    Number.isFinite(item.reset_after_seconds)
+      ? item.reset_after_seconds
+      : null;
+  return { usedPercent, windowMinutes, resetAfterSeconds };
+};
+
+const formatCodexWindowLabel = (
+  fallback: string,
+  windowMinutes: number | null | undefined
+) => {
+  if (!windowMinutes) {
+    return fallback;
+  }
+  if (windowMinutes % (60 * 24 * 7) === 0) {
+    return `${windowMinutes / (60 * 24 * 7)}w`;
+  }
+  if (windowMinutes % 60 === 0) {
+    return `${windowMinutes / 60}h`;
+  }
+  return `${windowMinutes}m`;
+};
+
+const CodexUsageBar = ({
+  label,
+  percent,
+}: {
+  label: string;
+  percent: number | null;
+}) => (
+  <div>
+    <div className="mb-1 flex items-center justify-between text-[10px] text-cyan-200/80">
+      <span>{label}</span>
+      <span className="font-mono">{percent == null ? "--" : `${percent.toFixed(1)}%`}</span>
+    </div>
+    <div className="h-1.5 rounded-full bg-gray-800 overflow-hidden">
+      <div
+        className="h-full rounded-full bg-cyan-400"
+        style={{ width: `${Math.min(Math.max(percent ?? 0, 0), 100)}%` }}
+      />
+    </div>
+  </div>
+);
 
 type EndpointsPanelProps = {
   endpoints: Endpoint[];
@@ -57,6 +119,9 @@ const EndpointCard = ({
   const availableKeys = data.keys.filter((key) =>
     resolveKeyStatus(key, healthStatusMap[key.id]).isAvailable
   ).length;
+  const codexUsage = data.keys.find((key) => key.codex_usage)?.codex_usage ?? null;
+  const codexPrimary = readCodexWindow(codexUsage, "primary");
+  const codexSecondary = readCodexWindow(codexUsage, "secondary");
 
   return (
     <div className="group relative bg-[#0f1117] border border-gray-800 rounded-xl p-5 hover:border-blue-500/50 transition-all duration-300 shadow-lg hover:shadow-blue-900/10 flex flex-col h-full">
@@ -70,7 +135,9 @@ const EndpointCard = ({
                   ? "bg-purple-900/20 text-purple-400"
                   : data.provider === "gemini"
                     ? "bg-blue-900/20 text-blue-400"
-                  : "bg-amber-900/20 text-amber-400"
+                    : data.provider === "codex"
+                      ? "bg-cyan-900/20 text-cyan-400"
+                      : "bg-amber-900/20 text-amber-400"
             }`}
           >
             <Cpu size={18} />
@@ -128,6 +195,27 @@ const EndpointCard = ({
           <button className="flex items-center gap-1 text-[10px] font-mono text-blue-300/70 hover:text-white hover:bg-blue-600/50 px-1.5 py-0.5 rounded transition cursor-pointer">
             {data.agent_node ?? "选择"} <ChevronDown size={10} />
           </button>
+        </div>
+      )}
+
+      {data.provider === "codex" && (
+        <div className="mb-4 rounded-lg border border-cyan-800/40 bg-cyan-950/10 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-medium text-cyan-200">Codex 用量窗口</span>
+            <span className="text-[10px] text-cyan-200/50">
+              {codexUsage ? "响应头同步" : "等待数据"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            <CodexUsageBar
+              label={formatCodexWindowLabel("3h", codexPrimary?.windowMinutes)}
+              percent={codexPrimary?.usedPercent ?? null}
+            />
+            <CodexUsageBar
+              label={formatCodexWindowLabel("1w", codexSecondary?.windowMinutes)}
+              percent={codexSecondary?.usedPercent ?? null}
+            />
+          </div>
         </div>
       )}
 

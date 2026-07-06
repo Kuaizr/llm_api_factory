@@ -88,6 +88,15 @@ def prepare_upstream_payload_and_body(
         stream_options["include_usage"] = True
         upstream_payload["stream_options"] = stream_options
 
+    should_apply_codex_backend_shape = provider == "codex"
+    if should_apply_codex_backend_shape:
+        if upstream_payload is payload:
+            upstream_payload = dict(payload)
+        upstream_payload.setdefault("instructions", "")
+        upstream_payload["store"] = False
+        upstream_payload.pop("max_output_tokens", None)
+        upstream_payload.pop("temperature", None)
+
     templated_payload = _apply_request_body_template(
         candidate.endpoint, upstream_payload, candidate.real_model
     )
@@ -98,6 +107,7 @@ def prepare_upstream_payload_and_body(
         templated_payload is not None
         or should_rewrite_body_model
         or should_include_openai_stream_usage
+        or should_apply_codex_backend_shape
     ):
         return upstream_payload, json.dumps(upstream_payload).encode("utf-8")
     return upstream_payload, raw_body

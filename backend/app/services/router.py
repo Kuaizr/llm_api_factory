@@ -9,6 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.providers import normalize_provider_filters, normalize_provider_name
+from app.core.route_exposure import (
+    DEFAULT_EXPOSURE_FORMAT,
+    exposure_format_matches,
+    normalize_exposure_format,
+)
 from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
 from app.core.timezone import app_today
 from app.services.agent_transport import get_agent_manager
@@ -71,9 +76,10 @@ class ModelRouter:
         provider_filter_fallback_to_any: bool = False,
         allow_unmapped_fallback: bool = False,
         allow_default_rule_fallback: bool = True,
+        exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
     ) -> tuple[list[RouteCandidate], str]:
         target_key_ids, strategy = await self._select_rule_targets(
-            session, model_alias, rule_group
+            session, model_alias, rule_group, exposure_format=exposure_format
         )
         effective_group = rule_group
         if (
@@ -82,7 +88,10 @@ class ModelRouter:
             and allow_default_rule_fallback
         ):
             fallback_targets, fallback_strategy = await self._select_rule_targets(
-                session, model_alias, "default"
+                session,
+                model_alias,
+                "default",
+                exposure_format=exposure_format,
             )
             target_key_ids = fallback_targets
             strategy = fallback_strategy
@@ -383,7 +392,12 @@ class ModelRouter:
         return max(getattr(candidate.api_key, "weight", 1), 1)
 
     async def _select_rule_targets(
-        self, session: AsyncSession, model_alias: str, rule_group: str
+        self,
+        session: AsyncSession,
+        model_alias: str,
+        rule_group: str,
+        *,
+        exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
     ) -> tuple[list[int], str]:
         result = await session.execute(
             select(RoutingRule)
@@ -392,20 +406,29 @@ class ModelRouter:
         )
         rules = result.scalars().all()
         for rule in rules:
-            if model_pattern_matches(rule.model_pattern, model_alias):
+            if not model_pattern_matches(rule.model_pattern, model_alias):
+                continue
+            _, _, rule_exposure_format = self._parse_rule_config_detail(
+                rule.target_key_ids_json
+            )
+            if exposure_format_matches(rule_exposure_format, exposure_format):
                 return self._parse_rule_config(rule.target_key_ids_json)
         return [], DEFAULT_RULE_STRATEGY
 
     @staticmethod
-    def _parse_rule_config(raw: str) -> tuple[list[int], str]:
+    def _parse_rule_config_detail(raw: str) -> tuple[list[int], str, str]:
         if not raw:
-            return [], DEFAULT_RULE_STRATEGY
+            return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            return [], DEFAULT_RULE_STRATEGY
+            return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
         if isinstance(data, list):
-            return ModelRouter._parse_key_ids(data), DEFAULT_RULE_STRATEGY
+            return (
+                ModelRouter._parse_key_ids(data),
+                DEFAULT_RULE_STRATEGY,
+                DEFAULT_EXPOSURE_FORMAT,
+            )
         if isinstance(data, dict):
             target_key_ids = ModelRouter._parse_key_ids(
                 data.get("target_key_ids", [])
@@ -413,8 +436,14 @@ class ModelRouter:
             strategy = data.get("strategy") or DEFAULT_RULE_STRATEGY
             if not isinstance(strategy, str):
                 strategy = str(strategy)
-            return target_key_ids, strategy
-        return [], DEFAULT_RULE_STRATEGY
+            exposure_format = normalize_exposure_format(data.get("exposure_format"))
+            return target_key_ids, strategy, exposure_format
+        return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+
+    @staticmethod
+    def _parse_rule_config(raw: str) -> tuple[list[int], str]:
+        target_key_ids, strategy, _ = ModelRouter._parse_rule_config_detail(raw)
+        return target_key_ids, strategy
 
     @staticmethod
     def _parse_key_ids(data: object) -> list[int]:

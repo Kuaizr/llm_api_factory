@@ -29,6 +29,7 @@ const endpointForm: EndpointFormState = {
 const rulePayload: RoutingRuleSavePayload = {
   model_pattern: "gpt-.*",
   group_name: "default",
+  exposure_format: "any",
   target_key_ids: [],
   priority: 10,
   strategy: "sequential",
@@ -41,6 +42,7 @@ const savedRule = {
   id: 42,
   model_pattern: "gpt-.*",
   group_name: "default",
+  exposure_format: "any",
   target_key_ids: [],
   priority: 10,
   strategy: "sequential",

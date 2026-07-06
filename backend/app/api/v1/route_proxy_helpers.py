@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.db.models import RoutingRule
 from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
+from app.services.codex_oauth import CodexCredential
 from app.services.router import RouteCandidate
 from app.services.secrets import decrypt_oauth_config, decrypt_secret_value
 
@@ -21,7 +22,7 @@ DEFAULT_OAUTH_REFRESH_LEEWAY_SECONDS = 120
 DEFAULT_OAUTH_LOCK_TTL_SECONDS = 10
 OAUTH_LOCK_WAIT_STEP_SECONDS = 0.1
 OAUTH_LOCK_WAIT_ROUNDS = 20
-STANDARD_PROVIDER_NAMES = {"openai", "anthropic", "gemini"}
+STANDARD_PROVIDER_NAMES = {"openai", "anthropic", "gemini", "codex"}
 
 # 请求体模板变量替换的正则模式
 # 先匹配被双引号包裹的占位符，避免字符串转义问题
@@ -168,8 +169,11 @@ def _apply_request_body_template(
 
 def _is_openai_responses_path(request_path: str | None) -> bool:
     normalized = str(request_path or "").rstrip("/")
-    return normalized.endswith("/v1/responses") or normalized.endswith(
-        "/v1/responses/compact"
+    return (
+        normalized.endswith("/v1/responses")
+        or normalized.endswith("/v1/responses/compact")
+        or normalized.endswith("/backend-api/codex/responses")
+        or normalized.endswith("/backend-api/codex/responses/compact")
     )
 
 
@@ -197,12 +201,13 @@ def _build_upstream_headers(
     *,
     request_path: str | None = None,
     payload: dict[str, object] | None = None,
+    codex_credential: CodexCredential | None = None,
+    is_stream: bool = False,
 ) -> dict:
     headers = {}
-    resolved_api_key = decrypt_secret_value(api_key, settings=get_settings())
     provider = str(getattr(endpoint, "provider", "") or "").strip().lower()
     allow_codex_headers = (
-        provider == "openai"
+        provider in {"openai", "codex"}
         and _is_openai_responses_path(request_path)
         and _looks_like_codex_request(incoming_headers, payload)
     )
@@ -230,6 +235,19 @@ def _build_upstream_headers(
         if not is_allowed:
             continue
         headers[key] = value
+
+    if provider == "codex":
+        if codex_credential is None:
+            raise RuntimeError("Codex credential is required for codex provider")
+        headers["Authorization"] = f"Bearer {codex_credential.access_token}"
+        headers["chatgpt-account-id"] = codex_credential.account_id
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "text/event-stream" if is_stream else "application/json"
+        headers.setdefault("OpenAI-Beta", "responses=experimental")
+        headers.setdefault("originator", "codex_cli_rs")
+        return headers
+
+    resolved_api_key = decrypt_secret_value(api_key, settings=get_settings())
 
     header_name = getattr(endpoint, "auth_header_name", "Authorization") or "Authorization"
     header_prefix = getattr(endpoint, "auth_header_prefix", "Bearer") or ""
@@ -301,6 +319,15 @@ def _build_target_url(
 ) -> str:
     base = base_url.rstrip("/")
     path = path_override if path_override is not None else request.url.path
+    provider = str(getattr(endpoint, "provider", "") or "").strip().lower()
+    if provider == "codex":
+        if str(path).rstrip("/").endswith("/v1/responses/compact"):
+            path = "/backend-api/codex/responses/compact"
+        else:
+            path = "/backend-api/codex/responses"
+        url = f"{base}{path}"
+        upstream_query = _upstream_query_string(request, endpoint)
+        return f"{url}?{upstream_query}" if upstream_query else url
     if path_prefix and path.startswith(path_prefix):
         path = path[len(path_prefix) :]
         if not path.startswith("/"):

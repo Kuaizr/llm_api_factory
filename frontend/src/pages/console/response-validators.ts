@@ -178,6 +178,7 @@ const parseApiKey = (value: unknown): ApiKey | null => {
     used_today: usedToday,
     is_active: isActive,
     name: isNullableString(value.name) ? value.name : undefined,
+    codex_usage: isRecord(value.codex_usage) ? value.codex_usage : undefined,
   };
 };
 
@@ -328,6 +329,7 @@ export const parseRoutingRule = (value: unknown): RoutingRule | null => {
     id: value.id,
     model_pattern: value.model_pattern,
     group_name: value.group_name,
+    exposure_format: isString(value.exposure_format) ? value.exposure_format : "any",
     target_key_ids: targetKeyIds,
     priority: value.priority,
     strategy: isString(value.strategy) ? value.strategy : "weighted_round_robin",

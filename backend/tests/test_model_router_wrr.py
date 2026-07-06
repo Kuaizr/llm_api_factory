@@ -1,11 +1,15 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+import json
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
 from app.core.redis import MemoryRedis
 from app.core.timezone import app_today
+from app.db.base import Base
+from app.db.models import APIKey, Endpoint, ModelMap, RoutingRule
 from app.services.circuit_breaker import CircuitBreaker
 from app.services import router as router_module
 from app.services.router import (
@@ -182,6 +186,107 @@ async def test_filter_available_candidates_batches_circuit_lookup() -> None:
     assert [candidate.api_key.id for candidate in available] == [1, 3]
     assert redis.mget_count == 1
     assert redis.get_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_candidates_filters_rules_by_exposure_format() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        response_endpoint = Endpoint(
+            name="Responses",
+            base_url="https://api.example.com",
+            provider="openai",
+            is_active=True,
+        )
+        codex_endpoint = Endpoint(
+            name="Codex",
+            base_url="https://chatgpt.example.com",
+            provider="codex",
+            is_active=True,
+        )
+        session.add_all([response_endpoint, codex_endpoint])
+        await session.flush()
+
+        response_key = APIKey(
+            endpoint_id=response_endpoint.id,
+            key="sk-response",
+            is_active=True,
+        )
+        codex_key = APIKey(
+            endpoint_id=codex_endpoint.id,
+            key="{}",
+            is_active=True,
+        )
+        session.add_all([response_key, codex_key])
+        await session.flush()
+        session.add_all(
+            [
+                ModelMap(
+                    endpoint_id=response_endpoint.id,
+                    model_alias="gpt-5.5",
+                    real_model="gpt-5.5-response",
+                ),
+                ModelMap(
+                    endpoint_id=codex_endpoint.id,
+                    model_alias="gpt-5.5",
+                    real_model="gpt-5.5-codex",
+                ),
+                RoutingRule(
+                    model_pattern="^gpt-5\\.5$",
+                    group_name="gpt",
+                    priority=20,
+                    is_active=True,
+                    target_key_ids_json=json.dumps(
+                        {
+                            "target_key_ids": [codex_key.id],
+                            "strategy": "sequential",
+                            "exposure_format": "codex",
+                        }
+                    ),
+                ),
+                RoutingRule(
+                    model_pattern="^gpt-5\\.5$",
+                    group_name="gpt",
+                    priority=10,
+                    is_active=True,
+                    target_key_ids_json=json.dumps(
+                        {
+                            "target_key_ids": [response_key.id],
+                            "strategy": "sequential",
+                            "exposure_format": "response",
+                        }
+                    ),
+                ),
+            ]
+        )
+        await session.commit()
+
+        router = ModelRouter(CircuitBreakerStub())
+        response_candidates, _ = await router.get_candidates(
+            session,
+            "gpt-5.5",
+            "gpt",
+            exposure_format="response",
+        )
+        codex_candidates, _ = await router.get_candidates(
+            session,
+            "gpt-5.5",
+            "gpt",
+            exposure_format="codex",
+        )
+
+    await engine.dispose()
+
+    assert [candidate.api_key.id for candidate in response_candidates] == [
+        response_key.id
+    ]
+    assert response_candidates[0].real_model == "gpt-5.5-response"
+    assert [candidate.api_key.id for candidate in codex_candidates] == [codex_key.id]
+    assert codex_candidates[0].real_model == "gpt-5.5-codex"
 
 
 @pytest.mark.asyncio
