@@ -5,6 +5,7 @@ export const apiBase =
 export const tokenStorageKey = "llm_admin_token";
 export const consoleThemeStorageKey = "llm_console_theme";
 export const consoleAvatarStorageKey = "llm_console_avatar";
+export const appTimeZone = import.meta.env.VITE_APP_TIMEZONE ?? "Asia/Shanghai";
 
 export type EndpointStatus = "online" | "degraded" | "offline";
 
@@ -397,8 +398,31 @@ export const usageTrendConfig: Record<
   "30d": { label: "30d", hours: 24 * 30, bucketMinutes: 1440 },
 };
 
-export const formatTimestamp = (value: string | null) =>
-  value ? new Date(value).toLocaleString() : "--";
+export const parseApiTimestamp = (value: string | null) => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+  const normalized = hasTimezone ? trimmed : `${trimmed}Z`;
+  const date = new Date(normalized);
+  return Number.isFinite(date.getTime()) ? date : null;
+};
+
+export const formatTimestamp = (value: string | null) => {
+  const date = parseApiTimestamp(value);
+  return date
+    ? date.toLocaleString("zh-CN", {
+        timeZone: appTimeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      })
+    : "--";
+};
 
 export const maskEndpointUrl = (value: string) => {
   if (!value) return "hidden";

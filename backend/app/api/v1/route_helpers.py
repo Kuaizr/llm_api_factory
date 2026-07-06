@@ -24,6 +24,7 @@ from app.api.v1.route_models import (
     RoutingRuleOut,
 )
 from app.core.config import get_settings
+from app.core.timezone import app_today
 from app.db.models import (
     APIKey,
     Agent,
@@ -84,7 +85,7 @@ def _normalize_datetime(value: datetime) -> datetime:
 
 
 def _today_utc_date() -> date:
-    return datetime.now(timezone.utc).date()
+    return app_today()
 
 
 def _normalize_api_key_usage(api_key: APIKey, today: date) -> bool:

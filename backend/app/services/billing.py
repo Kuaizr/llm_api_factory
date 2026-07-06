@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import case, func, update
 
+from app.core.timezone import app_today
 from app.db.models import APIKey, RequestAttemptLog, RequestLog
 from app.db.session import SessionLocal
 
@@ -178,7 +179,7 @@ async def write_request_log(metrics: RequestMetrics) -> None:
         tokens = metrics.total_tokens
         if tokens is None:
             tokens = (metrics.prompt_tokens or 0) + (metrics.completion_tokens or 0)
-        today = datetime.now(timezone.utc).date()
+        today = app_today()
         await session.execute(
             update(APIKey)
             .where(APIKey.id == metrics.api_key_id)

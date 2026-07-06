@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "llm_api_factory"
+    app_timezone: str = "Asia/Shanghai"
     database_url: str = (
         f"sqlite+aiosqlite:///{(Path(__file__).resolve().parents[2] / 'llm_api_factory.db').as_posix()}"
     )

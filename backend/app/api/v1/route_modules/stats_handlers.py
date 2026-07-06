@@ -39,6 +39,7 @@ from app.api.v1.route_models import (
     StatsTopKeyOut,
 )
 from app.core.config import get_settings
+from app.core.timezone import app_day_start_utc, app_today
 from app.core.redis import get_redis
 from app.db.models import APIKey, Agent, DumpIndex, Endpoint, ModelMap, RequestLog, RoutingRule
 from app.db.session import get_session
@@ -106,7 +107,7 @@ async def admin_usage_stats(
     key_totals: dict[int, dict[str, int]] = {}
     total_tokens = 0
     total_tokens_today = 0
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = app_day_start_utc()
     for log, api_key, endpoint in rows:
         tokens = log.total_tokens
         if tokens is None:
@@ -705,7 +706,7 @@ def _key_in_rule_group(api_key: APIKey, group: str) -> bool:
 def _is_daily_limit_exhausted(api_key: APIKey) -> bool:
     if api_key.daily_limit is None:
         return False
-    today = datetime.now(timezone.utc).date()
+    today = app_today()
     used_today = 0 if api_key.used_today_date != today else (api_key.used_today or 0)
     return used_today >= api_key.daily_limit
 

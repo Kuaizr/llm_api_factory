@@ -22,8 +22,10 @@ import {
 } from "recharts";
 
 import {
+  appTimeZone,
   formatTimestamp,
   formatTokens,
+  parseApiTimestamp,
   type DumpSearchResult,
   type MetricsBucket,
   type StatsDistributionItem,
@@ -44,13 +46,15 @@ const chartTooltipStyle = {
 };
 
 const formatShortTime = (value: string) => {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
+  const date = parseApiTimestamp(value);
+  if (!date) return value;
+  return date.toLocaleString("zh-CN", {
+    timeZone: appTimeZone,
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
   });
 };
 
@@ -59,6 +63,9 @@ const formatLatency = (value: number | null | undefined) =>
 
 const formatPercent = (value: number | null | undefined) =>
   value == null ? "--" : `${value.toFixed(1)}%`;
+
+const formatNullableTokens = (value: number | null | undefined) =>
+  value == null ? "--" : formatTokens(value);
 
 const KpiCard = ({
   label,
@@ -174,12 +181,14 @@ export const UsageStatsView = ({
   groupDistribution,
   topKeys,
   dumpSearch,
+  dumpSearchOffset,
   range,
   updatedAt,
   loading,
   error,
   onRangeChange,
   onRefresh,
+  onDumpSearchPageChange,
 }: {
   stats: UsageStats | null;
   buckets: MetricsBucket[];
@@ -190,12 +199,14 @@ export const UsageStatsView = ({
   groupDistribution: StatsDistributionItem[];
   topKeys: StatsTopKey[];
   dumpSearch: DumpSearchResult | null;
+  dumpSearchOffset: number;
   range: UsageTrendRange;
   updatedAt: string | null;
   loading: boolean;
   error: string | null;
   onRangeChange: (range: UsageTrendRange) => void;
   onRefresh: () => void;
+  onDumpSearchPageChange: (offset: number) => void;
 }) => {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
@@ -256,8 +267,15 @@ export const UsageStatsView = ({
   }, [dumpSearch?.items, expandedKeyId]);
 
   const statusText = updatedAt
-    ? `最近刷新：${new Date(updatedAt).toLocaleString()}`
+    ? `最近刷新：${formatTimestamp(updatedAt)}`
     : "等待统计数据。";
+  const dumpLimit = dumpSearch?.limit ?? 20;
+  const dumpTotal = dumpSearch?.total ?? 0;
+  const currentDumpOffset = dumpSearch?.offset ?? dumpSearchOffset;
+  const currentDumpPage = Math.floor(currentDumpOffset / dumpLimit) + 1;
+  const totalDumpPages = Math.max(1, Math.ceil(dumpTotal / dumpLimit));
+  const canPrevDumpPage = currentDumpOffset > 0 && !loading;
+  const canNextDumpPage = currentDumpOffset + dumpLimit < dumpTotal && !loading;
 
   return (
     <div className="space-y-6">
@@ -628,29 +646,45 @@ export const UsageStatsView = ({
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className="min-w-[1120px] w-full table-fixed text-left text-xs">
             <thead className="border-b border-gray-800 text-gray-500">
               <tr>
-                <th className="pb-2 font-medium">Time</th>
-                <th className="pb-2 font-medium">Model</th>
-                <th className="pb-2 text-right font-medium">Tokens</th>
-                <th className="pb-2 text-right font-medium">Latency</th>
-                <th className="pb-2 text-right font-medium">Cache</th>
-                <th className="pb-2 text-right font-medium">Status</th>
-                <th className="pb-2 font-medium">Trace</th>
+                <th className="w-[110px] pb-2 font-medium">Time</th>
+                <th className="w-[190px] pb-2 font-medium">Model</th>
+                <th className="w-[84px] pb-2 text-right font-medium">Input</th>
+                <th className="w-[84px] pb-2 text-right font-medium">Output</th>
+                <th className="w-[84px] pb-2 text-right font-medium">Cached</th>
+                <th className="w-[84px] pb-2 text-right font-medium">Total</th>
+                <th className="w-[92px] pb-2 text-right font-medium">Latency</th>
+                <th className="w-[76px] pb-2 text-right font-medium">Cache</th>
+                <th className="w-[76px] pb-2 text-right font-medium">Status</th>
+                <th className="w-[300px] pl-6 pb-2 font-medium">Trace</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/50">
-              {filteredLogs.map((item) => (
+              {filteredLogs.slice(0, 20).map((item) => (
                 <tr
                   key={item.request_id}
                   title={item.file_path ?? "metadata only"}
                   className="hover:bg-gray-900/40"
                 >
                   <td className="py-3 text-gray-500">{formatShortTime(item.created_at)}</td>
-                  <td className="py-3 text-gray-300">{item.model_alias}</td>
+                  <td className="py-3 pr-3 text-gray-300">
+                    <span className="block truncate" title={item.model_alias}>
+                      {item.model_alias}
+                    </span>
+                  </td>
                   <td className="py-3 text-right text-gray-200">
-                    {formatTokens(item.total_tokens ?? 0)}
+                    {formatNullableTokens(item.prompt_tokens)}
+                  </td>
+                  <td className="py-3 text-right text-gray-200">
+                    {formatNullableTokens(item.completion_tokens)}
+                  </td>
+                  <td className="py-3 text-right text-emerald-300">
+                    {formatNullableTokens(item.cached_tokens)}
+                  </td>
+                  <td className="py-3 text-right text-gray-200">
+                    {formatNullableTokens(item.total_tokens)}
                   </td>
                   <td className="py-3 text-right text-gray-300">
                     {formatLatency(item.latency_ms)}
@@ -667,18 +701,45 @@ export const UsageStatsView = ({
                   <td className="py-3 text-right text-gray-300">
                     {item.status_code ?? "--"}
                   </td>
-                  <td className="py-3 font-mono text-gray-500">{item.trace_id}</td>
+                  <td className="py-3 pl-6 font-mono text-gray-500">
+                    <span className="block truncate" title={item.trace_id}>
+                      {item.trace_id}
+                    </span>
+                  </td>
                 </tr>
               ))}
               {filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-5 text-center text-gray-600">
+                  <td colSpan={10} className="py-5 text-center text-gray-600">
                     暂无匹配日志
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-3 text-xs text-gray-500">
+          <span>
+            第 {currentDumpPage} / {totalDumpPages} 页 · 共 {dumpTotal.toLocaleString()} 条
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!canPrevDumpPage}
+              onClick={() => onDumpSearchPageChange(Math.max(0, currentDumpOffset - dumpLimit))}
+              className="rounded border border-gray-700 px-3 py-1.5 text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              上一页
+            </button>
+            <button
+              type="button"
+              disabled={!canNextDumpPage}
+              onClick={() => onDumpSearchPageChange(currentDumpOffset + dumpLimit)}
+              className="rounded border border-gray-700 px-3 py-1.5 text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              下一页
+            </button>
+          </div>
         </div>
       </div>
     </div>

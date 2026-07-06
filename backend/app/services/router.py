@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.providers import normalize_provider_filters, normalize_provider_name
 from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
+from app.core.timezone import app_today
 from app.services.agent_transport import get_agent_manager
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.model_patterns import model_pattern_matches
@@ -277,7 +278,7 @@ class ModelRouter:
 
     @staticmethod
     def _passes_key_limits(api_key: APIKey) -> bool:
-        today = datetime.now(timezone.utc).date()
+        today = app_today()
         used_today = getattr(api_key, "used_today", 0) or 0
         if getattr(api_key, "used_today_date", None) != today:
             used_today = 0

@@ -55,6 +55,7 @@ export const useConsoleData = () => {
   >([]);
   const [statsTopKeys, setStatsTopKeys] = useState<StatsTopKey[]>([]);
   const [dumpSearch, setDumpSearch] = useState<DumpSearchResult | null>(null);
+  const [dumpSearchOffset, setDumpSearchOffset] = useState(0);
   const [usageTrendUpdatedAt, setUsageTrendUpdatedAt] = useState<string | null>(null);
   const [usageTrendLoading, setUsageTrendLoading] = useState(false);
   const [usageTrendError, setUsageTrendError] = useState<string | null>(null);
@@ -219,7 +220,8 @@ export const useConsoleData = () => {
 
   const loadUsageTrend = async (
     authToken: string | null,
-    nextRange: UsageTrendRange = usageTrendRange
+    nextRange: UsageTrendRange = usageTrendRange,
+    nextDumpOffset = dumpSearchOffset
   ) => {
     if (!authToken) {
       setUsageTrendBuckets([]);
@@ -264,7 +266,7 @@ export const useConsoleData = () => {
         fetchJson(`/admin/stats/distribution/models?hours=${config.hours}`),
         fetchJson(`/admin/stats/distribution/groups?hours=${config.hours}`),
         fetchJson(`/admin/stats/top-keys?hours=${config.hours}&limit=10`),
-        fetchJson(`/admin/dump/search?hours=${config.hours}&limit=20`),
+        fetchJson(`/admin/dump/search?hours=${config.hours}&limit=20&offset=${nextDumpOffset}`),
       ]);
       const overview = parseStatsOverview(overviewPayload);
       const timeseries = parseStatsTimeseriesBucketList(timeseriesPayload);
@@ -320,12 +322,19 @@ export const useConsoleData = () => {
   };
 
   const handleUsageRangeChange = (range: UsageTrendRange) => {
+    setDumpSearchOffset(0);
     setUsageTrendRange(range);
-    void loadUsageTrend(token, range);
+    void loadUsageTrend(token, range, 0);
   };
 
   const handleUsageRefresh = () => {
-    void loadUsageTrend(token, usageTrendRange);
+    void loadUsageTrend(token, usageTrendRange, dumpSearchOffset);
+  };
+
+  const handleDumpSearchPageChange = (offset: number) => {
+    const nextOffset = Math.max(0, offset);
+    setDumpSearchOffset(nextOffset);
+    void loadUsageTrend(token, usageTrendRange, nextOffset);
   };
 
   const loadHealthStatus = async (authToken: string | null) => {
@@ -591,6 +600,7 @@ export const useConsoleData = () => {
     statsGroupDistribution,
     statsTopKeys,
     dumpSearch,
+    dumpSearchOffset,
     usageTrendUpdatedAt,
     usageTrendLoading,
     usageTrendError,
@@ -605,6 +615,7 @@ export const useConsoleData = () => {
     loadHealthStatus,
     handleUsageRangeChange,
     handleUsageRefresh,
+    handleDumpSearchPageChange,
     handleLogin,
     handleLogout,
     handleAvatarUpdate,

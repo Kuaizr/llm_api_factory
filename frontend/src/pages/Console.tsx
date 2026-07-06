@@ -42,6 +42,7 @@ export const Console = () => {
     statsGroupDistribution,
     statsTopKeys,
     dumpSearch,
+    dumpSearchOffset,
     usageTrendUpdatedAt,
     usageTrendLoading,
     usageTrendError,
@@ -56,6 +57,7 @@ export const Console = () => {
     loadHealthStatus,
     handleUsageRangeChange,
     handleUsageRefresh,
+    handleDumpSearchPageChange,
     handleLogin,
     handleLogout,
     handleAvatarUpdate,
@@ -410,12 +412,14 @@ export const Console = () => {
             groupDistribution={statsGroupDistribution}
             topKeys={statsTopKeys}
             dumpSearch={dumpSearch}
+            dumpSearchOffset={dumpSearchOffset}
             range={usageTrendRange}
             updatedAt={usageTrendUpdatedAt}
             loading={usageTrendLoading}
             error={usageTrendError}
             onRangeChange={handleUsageRangeChange}
             onRefresh={handleUsageRefresh}
+            onDumpSearchPageChange={handleDumpSearchPageChange}
           />
         )}
         {activeTab === "settings" && (

@@ -5,6 +5,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.redis import MemoryRedis
+from app.core.timezone import app_today
 from app.services.circuit_breaker import CircuitBreaker
 from app.services import router as router_module
 from app.services.router import (
@@ -187,7 +188,7 @@ async def test_filter_available_candidates_batches_circuit_lookup() -> None:
 async def test_filter_available_candidates_applies_daily_and_rpm_limits() -> None:
     redis = CountingRedis()
     router = ModelRouter(CircuitBreaker(redis, settings=Settings()))
-    today = datetime.now(timezone.utc).date()
+    today = app_today()
     candidates = build_candidates([1, 1, 1])
     candidates[0].api_key.daily_limit = 10
     candidates[0].api_key.used_today = 10
