@@ -307,6 +307,71 @@ async def test_openai_responses_passthrough_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_openai_responses_passthrough_preserves_codex_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(id=93, name="OpenAI", base_url="https://api.example.com")
+    api_key = APIKeyStub(id=94, key="sk-openai")
+    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-5.5")
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"X-Codex-Turn-State": "next-turn-state"},
+            json={"id": "resp-codex", "object": "response"},
+        )
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/responses",
+            headers={
+                "Authorization": "Bearer token",
+                "User-Agent": "codex-cli/0.1",
+                "Originator": "codex_cli_rs",
+                "Session-Id": "sess-123",
+                "Thread-Id": "thread-123",
+                "X-Client-Request-Id": "thread-123",
+                "X-Codex-Beta-Features": "feature-a",
+                "X-Codex-Installation-Id": "install-123",
+                "X-Codex-Turn-State": "turn-state-a",
+                "X-Codex-Turn-Metadata": "turn-a",
+                "X-Codex-Window-Id": "window-123",
+                "Cookie": "browser=session",
+            },
+            json={
+                "model": "gpt-5.5",
+                "input": "hi",
+                "prompt_cache_key": "cache-123",
+            },
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert response.headers["x-codex-turn-state"] == "next-turn-state"
+    assert requests
+    sent_request = requests[0]
+    assert sent_request.headers.get("originator") == "codex_cli_rs"
+    assert sent_request.headers.get("session-id") == "sess-123"
+    assert sent_request.headers.get("thread-id") == "thread-123"
+    assert sent_request.headers.get("x-client-request-id") == "thread-123"
+    assert sent_request.headers.get("x-codex-beta-features") == "feature-a"
+    assert sent_request.headers.get("x-codex-installation-id") == "install-123"
+    assert sent_request.headers.get("x-codex-turn-state") == "turn-state-a"
+    assert sent_request.headers.get("x-codex-turn-metadata") == "turn-a"
+    assert sent_request.headers.get("x-codex-window-id") == "window-123"
+    assert "cookie" not in sent_request.headers
+
+
+@pytest.mark.asyncio
 async def test_legacy_v1_routes_removed(monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = EndpointStub(id=29, name="OpenAI", base_url="https://api.example.com")
     api_key = APIKeyStub(id=30, key="sk-openai")

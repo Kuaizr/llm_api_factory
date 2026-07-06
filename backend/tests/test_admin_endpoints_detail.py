@@ -1173,6 +1173,15 @@ async def test_api_key_delete_removes_related_request_logs(
             },
         ),
         (
+            "codex",
+            "/v1/responses",
+            "input",
+            {
+                "id": "resp-codex-test",
+                "output": [{"content": [{"type": "output_text", "text": "我是 codex"}]}],
+            },
+        ),
+        (
             "claude",
             "/v1/messages",
             "messages",
@@ -1227,9 +1236,48 @@ async def test_api_key_direct_test_supports_request_templates(
         assert request.url.path == expected_path
         if request_template == "gemini":
             assert "model" not in body
+        elif request_template == "codex":
+            assert body["model"] == "gemini-test"
+            assert body["store"] is False
+            assert body["stream"] is True
+            assert body["tool_choice"] == "auto"
+            assert body["parallel_tool_calls"] is False
+            assert str(body["prompt_cache_key"]).startswith("lmf-codex-test-")
+            assert isinstance(body["client_metadata"], dict)
+            assert body["client_metadata"]["session_id"].startswith(
+                "lmf-codex-test-session-"
+            )
+            assert body["client_metadata"]["thread_id"].startswith(
+                "lmf-codex-test-thread-"
+            )
+            assert request.headers.get("originator") == "codex_cli_rs"
+            assert str(request.headers.get("session-id")).startswith(
+                "lmf-codex-test-session-"
+            )
+            assert str(request.headers.get("thread-id")).startswith(
+                "lmf-codex-test-thread-"
+            )
+            assert str(request.headers.get("x-client-request-id")).startswith(
+                "lmf-codex-test-thread-"
+            )
+            assert str(request.headers.get("x-codex-installation-id")).startswith(
+                "lmf-codex-test-installation-"
+            )
+            assert request.headers.get("x-codex-beta-features") == "responses"
+            assert request.headers.get("x-codex-turn-metadata")
         else:
             assert body["model"] == "gemini-test"
         assert expected_body_key in body
+        if request_template == "codex":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=(
+                    'event: response.output_text.delta\n'
+                    'data: {"type":"response.output_text.delta","delta":"我是 codex"}\n\n'
+                    'data: [DONE]\n\n'
+                ),
+            )
         return httpx.Response(200, json=response_payload)
 
     upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

@@ -3,7 +3,8 @@ import json
 import logging
 import re
 import time
-from urllib.parse import quote
+import uuid
+from urllib.parse import quote, urlparse
 
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy import delete, select
@@ -247,7 +248,7 @@ def _build_provider_api_url(endpoint: Endpoint, default_suffix: str) -> str:
     return f"{cleaned}{default_suffix}"
 
 
-DIRECT_TEST_TEMPLATES = {"chat", "response", "claude", "gemini"}
+DIRECT_TEST_TEMPLATES = {"chat", "response", "codex", "claude", "gemini"}
 
 
 def _endpoint_agent_name(endpoint: Endpoint) -> str | None:
@@ -333,19 +334,78 @@ def _normalize_direct_test_template(raw: object, endpoint: Endpoint) -> str:
 
 def _build_direct_test_request(
     endpoint: Endpoint, model: str, request_template: str, prompt: str
-) -> tuple[str, dict[str, object]]:
-    if request_template == "response":
-        return _build_provider_api_url(endpoint, "/v1/responses"), {
+) -> tuple[str, dict[str, object], dict[str, str]]:
+    headers: dict[str, str] = {}
+    if request_template in {"response", "codex"}:
+        payload: dict[str, object] = {
             "model": model,
             "input": prompt,
             "max_output_tokens": 64,
         }
+        if request_template == "codex":
+            request_id = uuid.uuid4().hex
+            session_id = f"lmf-codex-test-session-{request_id}"
+            thread_id = f"lmf-codex-test-thread-{request_id}"
+            turn_id = f"lmf-codex-test-turn-{request_id}"
+            window_id = f"lmf-codex-test-window-{request_id}"
+            installation_id = f"lmf-codex-test-installation-{request_id}"
+            turn_metadata = json.dumps(
+                {
+                    "installation_id": installation_id,
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "window_id": window_id,
+                    "request_kind": "turn",
+                    "source": "llm_api_factory_api_key_test",
+                },
+                separators=(",", ":"),
+            )
+            client_metadata = {
+                "x-codex-installation-id": installation_id,
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "x-codex-window-id": window_id,
+                "x-codex-turn-metadata": turn_metadata,
+            }
+            payload = {
+                "model": model,
+                "instructions": "",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}],
+                    }
+                ],
+                "tools": [],
+                "tool_choice": "auto",
+                "parallel_tool_calls": False,
+                "reasoning": None,
+                "store": False,
+                "stream": True,
+                "include": [],
+                "prompt_cache_key": f"lmf-codex-test-{request_id}",
+                "client_metadata": client_metadata,
+            }
+            headers = {
+                "User-Agent": "codex-cli/0.0.0 lmf-api-key-test",
+                "Originator": "codex_cli_rs",
+                "session-id": session_id,
+                "thread-id": thread_id,
+                "x-client-request-id": thread_id,
+                "x-codex-installation-id": installation_id,
+                "x-codex-window-id": window_id,
+                "x-codex-beta-features": "responses",
+                "x-codex-turn-metadata": turn_metadata,
+            }
+        return _build_provider_api_url(endpoint, "/v1/responses"), payload, headers
     if request_template == "claude":
         return _build_provider_api_url(endpoint, "/v1/messages"), {
             "model": model,
             "max_tokens": 64,
             "messages": [{"role": "user", "content": prompt}],
-        }
+        }, headers
     if request_template == "gemini":
         encoded_model = quote(model, safe="/")
         return _build_provider_api_url(
@@ -354,14 +414,14 @@ def _build_direct_test_request(
             "contents": [
                 {"role": "user", "parts": [{"text": prompt}]},
             ]
-        }
+        }, headers
 
     return _build_provider_api_url(endpoint, "/v1/chat/completions"), {
         "model": model,
         "stream": False,
         "max_tokens": 64,
         "messages": [{"role": "user", "content": prompt}],
-    }
+    }, headers
 
 
 def _extract_direct_test_text(payload: object) -> str | None:
@@ -427,6 +487,52 @@ def _extract_direct_test_text(payload: object) -> str | None:
             return "\n".join(parts).strip()
 
     return None
+
+
+def _extract_direct_test_sse_text(text: str) -> str | None:
+    parts: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("data:"):
+            continue
+        data = stripped[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        delta = payload.get("delta")
+        if isinstance(delta, str):
+            parts.append(delta)
+            continue
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str):
+            parts.append(output_text)
+            continue
+        if payload.get("type") == "response.output_text.delta":
+            event_delta = payload.get("delta")
+            if isinstance(event_delta, str):
+                parts.append(event_delta)
+                continue
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0]
+            if isinstance(choice, dict):
+                choice_delta = choice.get("delta")
+                if isinstance(choice_delta, dict):
+                    content = choice_delta.get("content")
+                    if isinstance(content, str):
+                        parts.append(content)
+                        continue
+        extracted = _extract_direct_test_text(payload)
+        if extracted:
+            parts.append(extracted)
+    if not parts:
+        return None
+    return "".join(parts).strip() or None
 
 
 def _direct_test_error_reason(status_code: int, payload: object) -> str | None:
@@ -1513,10 +1619,16 @@ async def test_api_key_direct(
     provider = _normalize_endpoint_provider(endpoint.provider)
     request_template = _normalize_direct_test_template(payload.request_template, endpoint)
     prompt = (payload.prompt or "").strip() or "你是什么模型"
-    url, request_payload = _build_direct_test_request(
+    url, request_payload, probe_headers = _build_direct_test_request(
         endpoint, model, request_template, prompt
     )
-    headers = _build_upstream_headers({}, endpoint, api_key.key)
+    headers = _build_upstream_headers(
+        probe_headers,
+        endpoint,
+        api_key.key,
+        request_path=urlparse(url).path,
+        payload=request_payload,
+    )
     client = await get_http_client()
     start = time.perf_counter()
     status_code = 0
@@ -1538,6 +1650,8 @@ async def test_api_key_direct(
         except (json.JSONDecodeError, ValueError):
             raw_response = text[:4000]
         output_text = _extract_direct_test_text(raw_response)
+        if output_text is None and isinstance(raw_response, str):
+            output_text = _extract_direct_test_sse_text(raw_response)
         error_reason = _direct_test_error_reason(status_code, raw_response)
     except AgentUnavailableError as exc:
         error_reason = "agent_unavailable"

@@ -43,6 +43,21 @@ PASSTHROUGH_HEADER_ALLOWLIST = {
     "x-goog-user-project",
 }
 PASSTHROUGH_HEADER_PREFIXES = ("x-stainless-",)
+CODEX_PASSTHROUGH_HEADER_ALLOWLIST = {
+    "originator",
+    "session-id",
+    "session_id",
+    "thread-id",
+    "x-client-request-id",
+    "x-codex-beta-features",
+    "x-codex-installation-id",
+    "x-codex-parent-thread-id",
+    "x-codex-turn-state",
+    "x-codex-turn-metadata",
+    "x-codex-window-id",
+    "x-openai-subagent",
+    "x-responsesapi-include-timing-metrics",
+}
 
 
 def _is_custom_provider(endpoint: object | None) -> bool:
@@ -148,11 +163,46 @@ def _apply_request_body_template(
         return None
 
 
+def _is_openai_responses_path(request_path: str | None) -> bool:
+    normalized = str(request_path or "").rstrip("/")
+    return normalized.endswith("/v1/responses") or normalized.endswith(
+        "/v1/responses/compact"
+    )
+
+
+def _looks_like_codex_request(
+    incoming_headers: dict,
+    payload: dict[str, object] | None,
+) -> bool:
+    lowered_headers = {str(key).lower(): value for key, value in incoming_headers.items()}
+    if any(key in lowered_headers for key in CODEX_PASSTHROUGH_HEADER_ALLOWLIST):
+        return True
+    user_agent = str(lowered_headers.get("user-agent") or "").lower()
+    if "codex" in user_agent:
+        return True
+    if payload and (
+        "prompt_cache_key" in payload or "client_metadata" in payload
+    ):
+        return True
+    return False
+
+
 def _build_upstream_headers(
-    incoming_headers: dict, endpoint: object, api_key: str
+    incoming_headers: dict,
+    endpoint: object,
+    api_key: str,
+    *,
+    request_path: str | None = None,
+    payload: dict[str, object] | None = None,
 ) -> dict:
     headers = {}
     resolved_api_key = decrypt_secret_value(api_key, settings=get_settings())
+    provider = str(getattr(endpoint, "provider", "") or "").strip().lower()
+    allow_codex_headers = (
+        provider == "openai"
+        and _is_openai_responses_path(request_path)
+        and _looks_like_codex_request(incoming_headers, payload)
+    )
     skip_headers = {
         "host",
         "content-length",
@@ -164,9 +214,17 @@ def _build_upstream_headers(
         lowered_key = key.lower()
         if lowered_key in skip_headers:
             continue
-        if lowered_key not in PASSTHROUGH_HEADER_ALLOWLIST and not any(
-            lowered_key.startswith(prefix) for prefix in PASSTHROUGH_HEADER_PREFIXES
-        ):
+        is_allowed = (
+            lowered_key in PASSTHROUGH_HEADER_ALLOWLIST
+            or any(
+                lowered_key.startswith(prefix) for prefix in PASSTHROUGH_HEADER_PREFIXES
+            )
+            or (
+                allow_codex_headers
+                and lowered_key in CODEX_PASSTHROUGH_HEADER_ALLOWLIST
+            )
+        )
+        if not is_allowed:
             continue
         headers[key] = value
 

@@ -61,7 +61,11 @@ async def prepare_candidate_request_context(
         model_payload_keys=model_payload_keys,
     )
     headers = _build_upstream_headers(
-        request.headers, candidate.endpoint, candidate.api_key.key
+        request.headers,
+        candidate.endpoint,
+        candidate.api_key.key,
+        request_path=request.url.path,
+        payload=payload,
     )
     headers, oauth_enabled = await _apply_oauth_access_token(
         headers,

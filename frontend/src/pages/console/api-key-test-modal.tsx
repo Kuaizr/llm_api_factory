@@ -16,6 +16,7 @@ import {
 const requestTemplates = [
   { value: "chat", label: "Chat" },
   { value: "response", label: "Response" },
+  { value: "codex", label: "Codex" },
   { value: "claude", label: "Claude" },
   { value: "gemini", label: "Gemini" },
 ];
