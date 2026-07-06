@@ -21,3 +21,6 @@ scripts/logs/
 scripts/pids/
 .vscode/
 .idea/
+
+# macOS AppleDouble resource forks
+._*
