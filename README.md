@@ -185,7 +185,8 @@ curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/master/scrip
 - [部署与配置](docs/deployment.md)
 - [观测、日志与缓存命中](docs/observability.md)
 - [安全模型](docs/security.md)
-- [v0.1 发布说明](docs/v0.1.md)
+- [v0.2 发布说明](docs/v0.2.md)
+- [v0.1 历史发布说明](docs/v0.1.md)
 
 ## 当前边界
 
