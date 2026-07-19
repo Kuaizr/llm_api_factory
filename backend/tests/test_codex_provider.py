@@ -1,13 +1,21 @@
 import json
 import asyncio
+import base64
 import time
 
 import httpx
 import pytest
 
+from app.api.v1.route_modules import proxy_direct_handler
 from app.core.config import Settings
-from app.services.codex_oauth import parse_codex_credential, resolve_codex_credential
+from app.services.codex_oauth import (
+    CodexCredential,
+    normalize_codex_credential_json,
+    parse_codex_credential,
+    resolve_codex_credential,
+)
 from app.services.router import RouteCandidate
+from conftest import TestMemoryRedis as MemoryRedis
 from proxy_test_utils import APIKeyStub, EndpointStub, build_proxy_app
 
 
@@ -20,6 +28,53 @@ def _mock_codex_key(**overrides: object) -> str:
     }
     payload.update(overrides)
     return json.dumps(payload)
+
+
+def _mock_jwt(payload: dict[str, object]) -> str:
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"mock.{encoded}.signature"
+
+
+def test_codex_credential_uses_jwt_exp_when_expiry_field_is_missing() -> None:
+    expires_at = int(time.time()) + 1800
+    credential = parse_codex_credential(
+        json.dumps(
+            {
+                "access_token": _mock_jwt(
+                    {"exp": expires_at, "chatgpt_account_id": "jwt-account"}
+                )
+            }
+        )
+    )
+
+    assert credential.expires_at == expires_at
+    assert credential.account_id == "jwt-account"
+
+
+def test_normalize_codex_credential_supports_nested_tokens_and_drops_extra_data() -> None:
+    normalized = json.loads(
+        normalize_codex_credential_json(
+            json.dumps(
+                {
+                    "email": "private@example.test",
+                    "id_token": "private-id-token",
+                    "tokens": {
+                        "access_token": "nested-access",
+                        "refresh_token": "nested-refresh",
+                        "account_id": "nested-account",
+                        "expires_at": 1_900_000_000,
+                    },
+                }
+            )
+        )
+    )
+
+    assert normalized == {
+        "access_token": "nested-access",
+        "refresh_token": "nested-refresh",
+        "account_id": "nested-account",
+        "expires_at": 1_900_000_000,
+    }
 
 
 @pytest.mark.asyncio
@@ -92,12 +147,13 @@ async def test_codex_provider_uses_backend_api_shape(
     assert sent_request.headers.get("originator") == "codex_cli_rs"
     assert sent_request.headers.get("session-id") == "sess-123"
     assert sent_request.headers.get_list("content-type") == ["application/json"]
-    assert sent_request.headers.get_list("accept") == ["application/json"]
+    assert sent_request.headers.get_list("accept") == ["text/event-stream"]
     assert sent_request.headers.get_list("openai-beta") == ["responses=experimental"]
     body = json.loads(sent_request.content.decode("utf-8"))
     assert body["model"] == "gpt-5.5-codex-real"
     assert body["instructions"] == ""
     assert body["store"] is False
+    assert body["stream"] is True
     assert "max_output_tokens" not in body
     assert "temperature" not in body
     raw_usage = await recorded["redis"].get("codex:usage:202")
@@ -105,6 +161,58 @@ async def test_codex_provider_uses_backend_api_shape(
     usage = json.loads(raw_usage)
     assert usage["primary"]["used_percent"] == 12.5
     assert usage["secondary"]["window_minutes"] == 10080
+
+
+@pytest.mark.asyncio
+async def test_codex_provider_refreshes_and_retries_once_after_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=211,
+        name="Codex",
+        base_url="https://chatgpt.example.test",
+        provider="codex",
+    )
+    api_key = APIKeyStub(id=212, key=_mock_codex_key())
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gpt-5.5-codex-real",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(401, json={"error": "expired"})
+        return httpx.Response(200, content=b"data: [DONE]\n\n")
+
+    async def fake_resolve(*args, **kwargs) -> CodexCredential:  # noqa: ANN002, ANN003
+        assert kwargs["force_refresh"] is True
+        return CodexCredential(
+            access_token="refreshed-access-token",
+            account_id="mock-account-id",
+        )
+
+    monkeypatch.setattr(proxy_direct_handler, "resolve_codex_credential", fake_resolve)
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer token", "User-Agent": "codex-cli/1.0"},
+            json={"model": "gpt-5.5", "input": "hi"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert len(requests) == 2
+    assert requests[0].headers["authorization"] == "Bearer mock-access-token"
+    assert requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 
 @pytest.mark.asyncio
@@ -196,3 +304,54 @@ async def test_codex_credential_refreshes_when_account_id_missing() -> None:
 
     assert credential.access_token == "mock-refreshed-access-token"
     assert credential.account_id == "mock-refreshed-account-id"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_codex_refresh_only_calls_token_endpoint_once() -> None:
+    api_key = APIKeyStub(
+        id=205,
+        key=_mock_codex_key(access_token="", expires_at=int(time.time()) - 60),
+    )
+
+    class FakeSession:
+        async def commit(self) -> None:
+            return None
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "shared-access-token",
+                "refresh_token": "shared-refresh-token",
+                "account_id": "shared-account",
+                "expires_in": 3600,
+            },
+        )
+
+    redis = MemoryRedis()
+    settings = Settings(codex_oauth_token_url="https://auth.example.test/oauth/token")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    first, second = await asyncio.gather(
+        resolve_codex_credential(
+            api_key,
+            client=client,
+            session=FakeSession(),  # type: ignore[arg-type]
+            redis=redis,
+            settings=settings,
+        ),
+        resolve_codex_credential(
+            api_key,
+            client=client,
+            session=FakeSession(),  # type: ignore[arg-type]
+            redis=redis,
+            settings=settings,
+        ),
+    )
+    await client.aclose()
+
+    assert first.access_token == "shared-access-token"
+    assert second.access_token == "shared-access-token"
+    assert len(requests) == 1

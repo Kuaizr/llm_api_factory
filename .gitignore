@@ -14,6 +14,9 @@ __pycache__/
 *.sqlite
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
+*.tsbuildinfo
 node_modules/
 dist/
 build/

@@ -29,6 +29,8 @@ from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.codex_usage import record_codex_usage_from_headers
+from app.services.codex_oauth import apply_codex_auth_headers, resolve_codex_credential
+from app.db.session import SessionLocal
 from app.services.router import ModelRouter, RouteCandidate
 
 
@@ -121,7 +123,33 @@ async def handle_direct_candidate(
                 detail="Upstream connection error",
             ) from exc
 
-        if response.status_code == 401 and oauth_enabled:
+        if response.status_code == 401 and candidate_provider == "codex":
+            await response.aclose()
+            try:
+                credential = await resolve_codex_credential(
+                    candidate.api_key,
+                    client=client,
+                    session_factory=SessionLocal,
+                    redis=redis,
+                    force_refresh=True,
+                )
+                headers = apply_codex_auth_headers(headers, credential)
+                request_obj = client.build_request(
+                    request.method,
+                    url,
+                    headers=headers,
+                    content=upstream_body,
+                )
+                response = await client.send(request_obj, stream=is_stream)
+            except Exception as exc:
+                await circuit_breaker.record_failure(candidate.api_key.id)
+                if candidate != last_candidate:
+                    break
+                raise HTTPException(
+                    status_code=502,
+                    detail="Codex token refresh failed",
+                ) from exc
+        elif response.status_code == 401 and oauth_enabled:
             await response.aclose()
             try:
                 headers, _ = await _apply_oauth_access_token(
@@ -209,8 +237,6 @@ async def handle_direct_candidate(
         latency_ms = int((time.perf_counter() - request_start) * 1000)
 
         if is_stream:
-            await circuit_breaker.record_success(candidate.api_key.id)
-            await router_service.record_candidate_success(candidate)
             if candidate_provider == "codex":
                 safe_create_task(
                     record_codex_usage_from_headers(
@@ -258,6 +284,9 @@ async def handle_direct_candidate(
                 execution_mode=candidate.execution_mode,
                 agent_node=agent_name,
                 upstream_url=url,
+                circuit_breaker=circuit_breaker,
+                router_service=router_service,
+                route_candidate=candidate,
             )
             return CandidateProxyResult(
                 response=StreamingResponse(

@@ -13,7 +13,7 @@ from app.api.v1.route_modules.stats_handlers import (
     admin_stats_top_keys,
     public_dashboard,
 )
-from app.db.models import APIKey, DumpIndex, Endpoint, RequestLog
+from app.db.models import APIKey, Agent, DumpIndex, Endpoint, RequestLog
 
 
 @pytest.mark.asyncio
@@ -27,12 +27,23 @@ async def test_public_dashboard_hides_upstream_base_url(
             provider="openai",
         )
     )
+    db_session.add(
+        Agent(
+            name="Private Agent",
+            region="test",
+            endpoint_url="https://secret-agent.example.test",
+            is_active=True,
+            last_seen_at=datetime.now(timezone.utc),
+        )
+    )
     await db_session.commit()
 
     result = await public_dashboard(session=db_session)
 
     assert result.endpoints[0].base_url == "hidden"
+    assert result.agents[0].endpoint_url is None
     assert "secret-upstream" not in result.model_dump_json()
+    assert "secret-agent" not in result.model_dump_json()
 
 
 @pytest.mark.asyncio

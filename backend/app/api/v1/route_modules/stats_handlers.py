@@ -71,7 +71,7 @@ async def public_dashboard(
                 region=status.region,
                 status=status.status,
                 last_seen_at=status.last_seen_at,
-                endpoint_url=status.endpoint_url,
+                endpoint_url=None,
             )
             for status in agent_statuses
         ],

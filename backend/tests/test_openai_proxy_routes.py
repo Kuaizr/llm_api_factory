@@ -559,7 +559,7 @@ async def test_anthropic_standard_passthrough_filters_provider(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_standard_passthrough_falls_back_to_openai_candidates(
+async def test_anthropic_standard_passthrough_rejects_openai_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     endpoint = EndpointStub(id=21, name="Gateway", base_url="https://api.example.com")
@@ -570,12 +570,11 @@ async def test_anthropic_standard_passthrough_falls_back_to_openai_candidates(
         real_model="minimax/minimax-m2.5",
     )
 
-    upstream_payload = {"id": "msg_fallback", "type": "message"}
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(200, json=upstream_payload)
+        return httpx.Response(500)
 
     recorded: dict[str, object] = {}
     upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -591,15 +590,10 @@ async def test_anthropic_standard_passthrough_falls_back_to_openai_candidates(
 
     await upstream_client.aclose()
 
-    assert response.status_code == 200
-    assert response.json() == upstream_payload
+    assert response.status_code == 404
     assert recorded["model_alias"] == "minimax-m2.5"
-    assert requests
-    sent_request = requests[0]
-    assert sent_request.url.path == "/v1/messages"
-    assert sent_request.headers.get("authorization") == "Bearer sk-openai"
-    payload = json.loads(sent_request.content.decode("utf-8"))
-    assert payload["model"] == "minimax/minimax-m2.5"
+    assert recorded["candidate_kwargs"]["provider_filter_fallback_to_any"] is False
+    assert requests == []
 
 
 @pytest.mark.asyncio

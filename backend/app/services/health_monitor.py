@@ -338,6 +338,8 @@ class HealthMonitor:
                 credential = await resolve_codex_credential(
                     target.api_key,
                     client=client,
+                    session_factory=self._session_factory,
+                    redis=redis,
                     settings=self.settings,
                 )
                 url = build_codex_models_url(

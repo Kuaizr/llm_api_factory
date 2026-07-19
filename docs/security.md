@@ -46,7 +46,9 @@ Factory key 只在创建或轮换时返回完整值。之后只显示预览。
 - 上游第三方 provider 不应该收到下游所有隐私 header。
 - 某些 CLI 场景需要特定 header，因此采用有边界的 allowlist。
 
-Codex Responses 场景会保留 Codex 需要的 header，例如 `originator`、`session_id`、`x-codex-turn-metadata` 等。
+Codex Responses 场景会保留 Codex 需要的请求 header，例如 `originator`、`session_id`、`x-codex-turn-metadata` 等。响应中的账号套餐、5 小时/1 周额度和 Cookie header 不会透传给下游。
+
+Codex Auth JSON 在服务端只保留访问 token、刷新 token、账号 ID 和过期时间，其他导出字段会在加密入库前丢弃。公开仪表盘不会返回 endpoint 或 Agent 的真实上游地址。
 
 ## Agent 安全边界
 
@@ -82,15 +84,13 @@ Agent 端会校验：
 - `x-real-model`
 - `x-agent-node`
 
-## 不支持的高风险能力
+## 实验性账号态 Provider
 
-v0.1 不内置订阅账号 OAuth 转 API provider。
+Codex OAuth provider 作为隔离的实验 provider 提供，不会混入标准 OpenAI API key provider。管理员应确认其账号权限、服务条款和风控风险，并使用独立的 Factory key 控制访问范围。
 
-这类能力包括：
+其他订阅账号 OAuth 转 API provider 当前不内置，包括：
 
-- OpenAI ChatGPT/Codex OAuth 账号态转 API
 - Claude.ai OAuth 账号态转 API
 - Gemini 账号态转 API
 
-它们不是标准 API key provider，涉及更强协议模拟、token refresh、账号风控和服务条款风险。未来如果支持，也应作为隔离的实验 provider，而不是混入标准 provider。
-
+它们不是标准 API key provider，涉及更强协议模拟、token refresh、账号风控和服务条款风险。未来如果支持，也应继续作为隔离的实验 provider。

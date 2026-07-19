@@ -209,6 +209,10 @@ def test_filter_response_headers_preserves_codex_turn_state() -> None:
             "Content-Type": "text/event-stream",
             "Content-Length": "123",
             "X-Codex-Turn-State": "sticky-turn-state",
+            "X-Codex-Primary-Used-Percent": "42.0",
+            "X-Codex-Secondary-Reset-After-Seconds": "3600",
+            "X-Codex-Plan-Type": "plus",
+            "Set-Cookie": "upstream_session=secret",
             "OpenAI-Model": "gpt-5.5",
         }
     )
@@ -218,3 +222,7 @@ def test_filter_response_headers_preserves_codex_turn_state() -> None:
     assert lowered["openai-model"] == "gpt-5.5"
     assert "content-type" not in lowered
     assert "content-length" not in lowered
+    assert "x-codex-primary-used-percent" not in lowered
+    assert "x-codex-secondary-reset-after-seconds" not in lowered
+    assert "x-codex-plan-type" not in lowered
+    assert "set-cookie" not in lowered

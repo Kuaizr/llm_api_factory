@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.db.models import RoutingRule
 from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
-from app.services.codex_oauth import CodexCredential
+from app.services.codex_oauth import CodexCredential, apply_codex_auth_headers
 from app.services.router import RouteCandidate
 from app.services.secrets import decrypt_oauth_config, decrypt_secret_value
 
@@ -248,8 +248,7 @@ def _build_upstream_headers(
                 del headers[key]
             headers[name] = resolved_value
 
-        set_header("Authorization", f"Bearer {codex_credential.access_token}")
-        set_header("chatgpt-account-id", codex_credential.account_id)
+        headers = apply_codex_auth_headers(headers, codex_credential)
         set_header("Content-Type", "application/json")
         set_header("Accept", "text/event-stream" if is_stream else "application/json")
         set_header("OpenAI-Beta", "responses=experimental", preserve_existing=True)
@@ -654,8 +653,21 @@ def _filter_response_headers(headers: dict) -> dict:
         "transfer-encoding",
         "connection",
         "content-type",
+        "set-cookie",
     }
-    return {key: value for key, value in headers.items() if key.lower() not in excluded}
+    sensitive_prefixes = (
+        "x-codex-primary-",
+        "x-codex-secondary-",
+        "x-codex-credits-",
+    )
+    sensitive_exact = {"x-codex-plan-type"}
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in excluded
+        and key.lower() not in sensitive_exact
+        and not key.lower().startswith(sensitive_prefixes)
+    }
 
 
 def _build_debug_headers(
@@ -725,32 +737,46 @@ async def _stream_response(
     execution_mode: str = "direct",
     agent_node: str | None = None,
     upstream_url: str | None = None,
+    circuit_breaker=None,
+    router_service=None,
+    route_candidate: RouteCandidate | None = None,
 ) -> AsyncGenerator[bytes, None]:
     buffer = ""
     usage_payload = None
     first_data_at: float | None = None
     chunks: list[bytes] = []
     stream_complete = False
+    stream_failed = False
     try:
         async for chunk in response.aiter_bytes():
             if chunk:
-                chunks.append(chunk)
-                buffer, usage_payload, data_seen = _inspect_stream_chunk(
+                if dump_rule is not None:
+                    chunks.append(chunk)
+                buffer, usage_payload, data_seen, chunk_failed = _inspect_stream_chunk(
                     buffer, usage_payload, chunk
                 )
+                stream_failed = stream_failed or chunk_failed
                 if data_seen and first_data_at is None:
                     first_data_at = time.perf_counter()
             yield chunk
-        stream_complete = True
+        stream_complete = not stream_failed
     except (asyncio.CancelledError, GeneratorExit):
         stream_complete = False
         raise
     except Exception:
         stream_complete = False
+        stream_failed = True
         raise
     finally:
         stream_end = time.perf_counter()
         await response.aclose()
+        if circuit_breaker is not None and route_candidate is not None:
+            if stream_failed:
+                await circuit_breaker.record_failure(route_candidate.api_key.id)
+            elif stream_complete:
+                await circuit_breaker.record_success(route_candidate.api_key.id)
+                if router_service is not None:
+                    await router_service.record_candidate_success(route_candidate)
         ttft_ms = (
             int((first_data_at - request_start) * 1000)
             if first_data_at is not None
@@ -823,16 +849,17 @@ def _calculate_tps(
 
 def _inspect_stream_chunk(
     buffer: str, usage_payload: dict | None, chunk: bytes
-) -> tuple[str, dict | None, bool]:
+) -> tuple[str, dict | None, bool, bool]:
     try:
         text = chunk.decode("utf-8")
     except UnicodeDecodeError:
-        return buffer, usage_payload, False
+        return buffer, usage_payload, False, False
 
     buffer += text
     lines = buffer.split("\n")
     buffer = lines.pop()
     data_seen = False
+    stream_failed = False
     for line in lines:
         line = line.strip()
         if not line.startswith("data:"):
@@ -845,6 +872,11 @@ def _inspect_stream_chunk(
             payload = json.loads(data)
         except json.JSONDecodeError:
             continue
+        payload_type = str(payload.get("type") or "").strip().lower()
+        if payload_type in {"error", "response.failed"} or isinstance(
+            payload.get("error"), dict
+        ):
+            stream_failed = True
         metadata = payload.get("metadata")
         if "usage" in payload or "usageMetadata" in payload or "total_usage" in payload:
             usage_payload = payload
@@ -863,4 +895,4 @@ def _inspect_stream_chunk(
                 for choice in choices
             ):
                 usage_payload = payload
-    return buffer, usage_payload, data_seen
+    return buffer, usage_payload, data_seen, stream_failed

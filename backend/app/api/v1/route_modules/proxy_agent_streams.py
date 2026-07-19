@@ -28,31 +28,44 @@ async def agent_stream_generator(
     upstream_body: bytes,
     session_id: str | None,
     request_path: str,
+    circuit_breaker=None,
+    router_service=None,
 ) -> AsyncGenerator[bytes, None]:
     buffer = ""
     usage_payload = None
     first_data_at: float | None = None
     chunks: list[bytes] = []
     stream_complete = False
+    stream_failed = False
     try:
         async for chunk in agent_response.iter_bytes():
             if chunk:
-                chunks.append(chunk)
-                buffer, usage_payload, data_seen = _inspect_stream_chunk(
+                if dump_rule is not None:
+                    chunks.append(chunk)
+                buffer, usage_payload, data_seen, chunk_failed = _inspect_stream_chunk(
                     buffer, usage_payload, chunk
                 )
+                stream_failed = stream_failed or chunk_failed
                 if data_seen and first_data_at is None:
                     first_data_at = time.perf_counter()
             yield chunk
-        stream_complete = True
+        stream_complete = not stream_failed
     except (asyncio.CancelledError, GeneratorExit):
         stream_complete = False
         raise
     except Exception:
         stream_complete = False
+        stream_failed = True
         raise
     finally:
         stream_end = time.perf_counter()
+        if circuit_breaker is not None:
+            if stream_failed:
+                await circuit_breaker.record_failure(candidate.api_key.id)
+            elif stream_complete:
+                await circuit_breaker.record_success(candidate.api_key.id)
+                if router_service is not None:
+                    await router_service.record_candidate_success(candidate)
         ttft_ms = (
             int((first_data_at - request_start) * 1000)
             if first_data_at is not None

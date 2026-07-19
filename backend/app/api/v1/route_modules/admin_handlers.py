@@ -81,7 +81,7 @@ from app.db.models import (
     RequestLog,
     RoutingRule,
 )
-from app.db.session import get_session
+from app.db.session import SessionLocal, get_session
 from app.services.access_keys import (
     access_key_preview,
     hash_access_key,
@@ -89,8 +89,10 @@ from app.services.access_keys import (
 )
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.codex_oauth import (
+    CodexCredentialError,
     build_codex_headers,
     build_codex_models_url,
+    normalize_codex_credential_json,
     parse_codex_credential,
     resolve_codex_credential,
 )
@@ -125,6 +127,17 @@ CUSTOM_ONLY_ENDPOINT_FIELDS = (
     "oauth_config",
     "request_body_template",
 )
+
+
+def _normalize_api_key_secret(endpoint: Endpoint, raw: str) -> str:
+    if _normalize_endpoint_provider(endpoint.provider) != "codex":
+        return raw
+    try:
+        return normalize_codex_credential_json(raw)
+    except CodexCredentialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1297,7 +1310,8 @@ async def probe_endpoint(
             credential = await resolve_codex_credential(
                 api_key,
                 client=client,
-                session=session,
+                session_factory=SessionLocal,
+                redis=redis,
                 settings=settings,
             )
             headers = build_codex_headers(
@@ -1421,7 +1435,9 @@ async def create_endpoint_key(
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     data = payload.model_dump()
-    data["key"] = encrypt_secret_value(data["key"], settings=get_settings())
+    data["key"] = encrypt_secret_value(
+        _normalize_api_key_secret(endpoint, data["key"]), settings=get_settings()
+    )
     raw_rule_groups = data.pop("rule_groups", None)
     normalized_groups = await _validate_rule_groups(
         session,
@@ -1620,7 +1636,9 @@ async def create_api_key(
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     data = payload.model_dump()
-    data["key"] = encrypt_secret_value(data["key"], settings=get_settings())
+    data["key"] = encrypt_secret_value(
+        _normalize_api_key_secret(endpoint, data["key"]), settings=get_settings()
+    )
     raw_rule_groups = data.pop("rule_groups", None)
     normalized_groups = await _validate_rule_groups(
         session,
@@ -1679,7 +1697,12 @@ async def _update_api_key_record(
         normalized_groups = previous_groups
 
     if "key" in data and data["key"] is not None:
-        data["key"] = encrypt_secret_value(data["key"], settings=get_settings())
+        endpoint = await session.get(Endpoint, api_key.endpoint_id)
+        if not endpoint:
+            raise HTTPException(status_code=404, detail="Endpoint not found")
+        data["key"] = encrypt_secret_value(
+            _normalize_api_key_secret(endpoint, data["key"]), settings=get_settings()
+        )
 
     for field, value in data.items():
         setattr(api_key, field, value)
@@ -1791,7 +1814,8 @@ async def test_api_key_direct(
         codex_credential = await resolve_codex_credential(
             api_key,
             client=client,
-            session=session,
+            session_factory=SessionLocal,
+            redis=await get_redis(),
         )
     headers = _build_upstream_headers(
         probe_headers,

@@ -62,26 +62,36 @@ const formatCodexWindow = (fallback: string, minutes: number | null | undefined)
   return `${minutes}m`;
 };
 
-const formatResetAfter = (seconds: number | null | undefined) => {
+const formatResetAfter = (
+  seconds: number | null | undefined,
+  updatedAt: number | null
+) => {
   if (seconds == null) return null;
-  if (seconds >= 86400) return `${Math.ceil(seconds / 86400)}天后重置`;
-  if (seconds >= 3600) return `${Math.ceil(seconds / 3600)}小时后重置`;
-  return `${Math.max(1, Math.ceil(seconds / 60))}分钟后重置`;
+  const elapsed = updatedAt == null ? 0 : Math.max(0, Date.now() / 1000 - updatedAt);
+  const remaining = Math.max(0, seconds - elapsed);
+  if (remaining === 0) return "等待用量刷新";
+  if (remaining >= 86400) return `${Math.ceil(remaining / 86400)}天后重置`;
+  if (remaining >= 3600) return `${Math.ceil(remaining / 3600)}小时后重置`;
+  return `${Math.max(1, Math.ceil(remaining / 60))}分钟后重置`;
 };
 
 const CodexKeyUsage = ({ usage }: { usage?: Record<string, unknown> | null }) => {
   const primary = readCodexUsageWindow(usage, "primary");
   const secondary = readCodexUsageWindow(usage, "secondary");
+  const updatedAt =
+    typeof usage?.updated_at === "number" && Number.isFinite(usage.updated_at)
+      ? usage.updated_at
+      : null;
   const rows = [
     {
       label: formatCodexWindow("5h", primary?.windowMinutes),
       percent: primary?.usedPercent ?? null,
-      reset: formatResetAfter(primary?.resetAfterSeconds),
+      reset: formatResetAfter(primary?.resetAfterSeconds, updatedAt),
     },
     {
       label: formatCodexWindow("1w", secondary?.windowMinutes),
       percent: secondary?.usedPercent ?? null,
-      reset: formatResetAfter(secondary?.resetAfterSeconds),
+      reset: formatResetAfter(secondary?.resetAfterSeconds, updatedAt),
     },
   ];
   return (

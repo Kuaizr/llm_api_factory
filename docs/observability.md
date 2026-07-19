@@ -34,7 +34,7 @@ dump 文件路径按机器和日期分层：
 流式请求会记录：
 
 - `stream_complete=true`：流正常结束
-- `stream_complete=false`：客户端或上游中途断开
+- `stream_complete=false`：客户端或上游中途断开，或者流内出现明确的失败事件
 
 ## Cache hit
 
@@ -60,7 +60,7 @@ OpenAI Chat Completions 流式请求会自动注入：
 
 这样 OpenAI 在流末尾返回 usage，便于统计 token。
 
-Responses API 流式、Anthropic 流式、Gemini 流式会从各自事件结构中旁路解析 usage，不改变响应内容。
+Responses API 流式、Anthropic 流式、Gemini 流式会从各自事件结构中旁路解析 usage，不改变响应内容。Codex provider 始终使用 SSE；只有流正常结束后才给候选 Key 记成功，`response.failed` 或 `error` 事件会记为失败。
 
 ## 最近请求日志
 
@@ -86,4 +86,3 @@ trace id 可以继续在请求尝试日志里定位每一次 fallback 尝试。
 - Agent 是否在线
 - key 是否处于熔断
 - provider 是否匹配入口协议
-

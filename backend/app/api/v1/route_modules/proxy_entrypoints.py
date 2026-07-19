@@ -61,7 +61,7 @@ async def responses(
         rewrite_model=False,
         strip_rule_group_from_payload=False,
         provider_filter=("openai", "codex", "custom"),
-        provider_filter_fallback_to_any=True,
+        provider_filter_fallback_to_any=False,
         exposure_format=EXPOSURE_FORMAT_RESPONSE,
         detect_codex_exposure=True,
     )
@@ -81,7 +81,7 @@ async def openai_passthrough(
                 provider="openai",
                 path_prefix="/openai",
                 provider_filter=("openai", "custom"),
-                provider_filter_fallback_to_any=True,
+                provider_filter_fallback_to_any=False,
             )
         except (AttributeError, AssertionError):
             payload = None
@@ -91,7 +91,7 @@ async def openai_passthrough(
                     request,
                     session,
                     provider_filter=("openai", "custom"),
-                    provider_filter_fallback_to_any=True,
+                    provider_filter_fallback_to_any=False,
                 )
             except (AttributeError, AssertionError):
                 payload = None
@@ -108,7 +108,7 @@ async def openai_passthrough(
         provider_filter=("openai", "codex", "custom")
         if is_responses_path
         else ("openai", "custom"),
-        provider_filter_fallback_to_any=True,
+        provider_filter_fallback_to_any=False,
         exposure_format=EXPOSURE_FORMAT_RESPONSE
         if is_responses_path
         else EXPOSURE_FORMAT_CHAT,
@@ -131,7 +131,7 @@ async def anthropic_passthrough(
                 provider="anthropic",
                 path_prefix="/anthropic",
                 provider_filter=("anthropic", "custom"),
-                provider_filter_fallback_to_any=True,
+                provider_filter_fallback_to_any=False,
             )
         except (AttributeError, AssertionError):
             payload = None
@@ -141,7 +141,7 @@ async def anthropic_passthrough(
                     request,
                     session,
                     provider_filter=("anthropic", "custom"),
-                    provider_filter_fallback_to_any=True,
+                    provider_filter_fallback_to_any=False,
                 )
             except (AttributeError, AssertionError):
                 payload = None
@@ -155,7 +155,7 @@ async def anthropic_passthrough(
         strip_rule_group_from_payload=False,
         path_prefix="/anthropic",
         provider_filter=("anthropic", "custom"),
-        provider_filter_fallback_to_any=True,
+        provider_filter_fallback_to_any=False,
         exposure_format=EXPOSURE_FORMAT_MESSAGE,
         allow_missing_model=True,
     )
@@ -175,7 +175,7 @@ async def gemini_passthrough(
                 provider="gemini",
                 path_prefix="/gemini",
                 provider_filter=("gemini", "custom"),
-                provider_filter_fallback_to_any=True,
+                provider_filter_fallback_to_any=False,
             )
         except (AttributeError, AssertionError):
             payload = None
@@ -185,7 +185,7 @@ async def gemini_passthrough(
                     request,
                     session,
                     provider_filter=("gemini", "custom"),
-                    provider_filter_fallback_to_any=True,
+                    provider_filter_fallback_to_any=False,
                 )
             except (AttributeError, AssertionError):
                 model_aliases = None
@@ -202,7 +202,7 @@ async def gemini_passthrough(
             strip_rule_group_from_payload=False,
             path_prefix="/gemini",
             provider_filter=("gemini", "custom"),
-            provider_filter_fallback_to_any=True,
+            provider_filter_fallback_to_any=False,
             exposure_format=EXPOSURE_FORMAT_GEMINI,
             allow_missing_model=False,
             model_payload_keys=("model", "agent"),
@@ -219,7 +219,7 @@ async def gemini_passthrough(
         strip_rule_group_from_payload=False,
         path_prefix="/gemini",
         provider_filter=("gemini", "custom"),
-        provider_filter_fallback_to_any=True,
+        provider_filter_fallback_to_any=False,
         exposure_format=EXPOSURE_FORMAT_GEMINI,
         allow_missing_model=False,
         model_alias_override=model_alias,
@@ -241,7 +241,7 @@ async def gemini_interactions(
         strip_rule_group_from_payload=False,
         path_prefix="/gemini",
         provider_filter=("gemini", "custom"),
-        provider_filter_fallback_to_any=True,
+        provider_filter_fallback_to_any=False,
         exposure_format=EXPOSURE_FORMAT_GEMINI,
         allow_missing_model=False,
         model_payload_keys=("model", "agent"),

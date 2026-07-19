@@ -48,6 +48,8 @@ curl http://127.0.0.1:8000/openai/v1/chat/completions \
 
 Codex 场景会额外保留 Responses 需要的 Codex header，例如 `originator`、`session_id`、`x-codex-turn-metadata` 等。
 
+每类标准入口只会选择协议兼容的 provider。比如 Anthropic Messages 不会在没有 Anthropic/custom 候选时退回 OpenAI endpoint，Codex 候选仅参与 Responses/Codex 路由。
+
 ## Anthropic
 
 支持入口：
@@ -112,4 +114,3 @@ Gemini 路由使用 URL path 中的 `{model}`。转发上游时会把 path model
 - 下游只能看到自己能访问的模型。
 - 字段结构尽量贴近原生 provider。
 - 不把平台内部 rule group、endpoint、key 信息暴露给下游。
-

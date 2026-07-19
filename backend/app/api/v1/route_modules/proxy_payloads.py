@@ -94,6 +94,7 @@ def prepare_upstream_payload_and_body(
             upstream_payload = dict(payload)
         upstream_payload.setdefault("instructions", "")
         upstream_payload["store"] = False
+        upstream_payload["stream"] = True
         upstream_payload.pop("max_output_tokens", None)
         upstream_payload.pop("temperature", None)
 

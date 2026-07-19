@@ -32,6 +32,8 @@ from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.codex_usage import record_codex_usage_from_headers
+from app.services.codex_oauth import apply_codex_auth_headers, resolve_codex_credential
+from app.db.session import SessionLocal
 from app.services.router import ModelRouter, RouteCandidate
 
 
@@ -128,7 +130,40 @@ async def handle_agent_candidate(
 
         status_code = agent_response.status_code or 500
 
-        if status_code == 401 and oauth_enabled:
+        if status_code == 401 and candidate_provider == "codex":
+            if is_stream:
+                await agent_response.read_all()
+            try:
+                credential = await resolve_codex_credential(
+                    candidate.api_key,
+                    client=client,
+                    session_factory=SessionLocal,
+                    redis=redis,
+                    force_refresh=True,
+                )
+                headers = apply_codex_auth_headers(headers, credential)
+                retry_request = AgentRequest(
+                    method=request.method,
+                    url=url,
+                    headers=headers,
+                    body=upstream_body,
+                    stream=is_stream,
+                )
+                agent_response = await agent_manager.send_request(agent_name, retry_request)
+                status_code = agent_response.status_code or 500
+            except AgentUnavailableError:
+                await circuit_breaker.record_failure(candidate.api_key.id)
+                if candidate != last_candidate:
+                    break
+                raise HTTPException(status_code=502, detail="Agent unavailable")
+            except Exception as exc:
+                await circuit_breaker.record_failure(candidate.api_key.id)
+                if candidate != last_candidate:
+                    break
+                raise HTTPException(
+                    status_code=502, detail="Codex token refresh failed"
+                ) from exc
+        elif status_code == 401 and oauth_enabled:
             try:
                 headers, _ = await _apply_oauth_access_token(
                     headers,
@@ -210,8 +245,6 @@ async def handle_agent_candidate(
             )
 
         if is_stream:
-            await circuit_breaker.record_success(candidate.api_key.id)
-            await router_service.record_candidate_success(candidate)
             if candidate_provider == "codex":
                 safe_create_task(
                     record_codex_usage_from_headers(
@@ -254,6 +287,8 @@ async def handle_agent_candidate(
                 upstream_body=upstream_body,
                 session_id=session_id,
                 request_path=request.url.path,
+                circuit_breaker=circuit_breaker,
+                router_service=router_service,
             )
 
             return CandidateProxyResult(
