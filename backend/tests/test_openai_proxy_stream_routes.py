@@ -21,9 +21,13 @@ async def test_anthropic_messages_stream_preserves_content_blocks(
         auth_header_prefix="",
     )
     api_key = APIKeyStub(id=45, key="sk-anthropic")
-    candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="claude-sonnet")
+    candidate = RouteCandidate(
+        api_key=api_key, endpoint=endpoint, real_model="claude-sonnet"
+    )
     requests: list[httpx.Request] = []
-    stream_payload = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"
+    stream_payload = (
+        b'event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n'
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -117,12 +121,16 @@ async def test_gemini_stream_generate_content_rewrites_model_path(
 
     assert response.status_code == 200
     assert response.content == stream_payload
-    assert requests[0].url.path == "/v1beta/models/gemini-2.0-flash:streamGenerateContent"
+    assert (
+        requests[0].url.path == "/v1beta/models/gemini-2.0-flash:streamGenerateContent"
+    )
     assert json.loads(requests[0].content) == body
 
 
 @pytest.mark.asyncio
-async def test_proxy_stream_path_records_usage_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_proxy_stream_path_records_usage_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     endpoint = EndpointStub(id=40, name="OpenAI", base_url="https://api.example.com")
     api_key = APIKeyStub(id=41, key="sk-stream")
     candidate = RouteCandidate(api_key=api_key, endpoint=endpoint, real_model="gpt-4o")
@@ -172,12 +180,71 @@ async def test_proxy_stream_path_records_usage_metrics(monkeypatch: pytest.Monke
     assert metrics.completion_tokens == 4
     assert metrics.total_tokens == 6
     assert metrics.ttft_ms is not None
+    attempts = recorded.get("attempts")
+    assert attempts is not None
+    assert len(attempts) == 1
+    assert attempts[0].outcome == "success"
+    assert attempts[0].failure_reason is None
+    assert attempts[0].latency_ms >= metrics.ttft_ms
     sent_payload = json.loads(requests[0].content)
     assert sent_payload["stream_options"]["include_usage"] is True
 
 
 @pytest.mark.asyncio
-async def test_gemini_stream_records_usage_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_responses_stream_without_completed_event_is_recorded_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=48,
+        name="OpenAI Responses",
+        base_url="https://api.example.com",
+    )
+    api_key = APIKeyStub(id=49, key="sk-incomplete")
+    candidate = RouteCandidate(
+        api_key=api_key,
+        endpoint=endpoint,
+        real_model="gpt-5.6-sol",
+    )
+    stream_payload = b'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n'
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_payload,
+        )
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidate, upstream_client, recorded)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-5.6-sol", "input": "hello", "stream": True},
+        )
+
+    await upstream_client.aclose()
+    for _ in range(5):
+        if recorded.get("attempts") is not None:
+            break
+        await asyncio.sleep(0)
+
+    assert response.status_code == 200
+    assert response.content == stream_payload
+    attempts = recorded.get("attempts")
+    assert attempts is not None
+    assert len(attempts) == 1
+    assert attempts[0].outcome == "error"
+    assert attempts[0].failure_reason == "incomplete_stream"
+
+
+@pytest.mark.asyncio
+async def test_gemini_stream_records_usage_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     endpoint = EndpointStub(
         id=48,
         name="Gemini",

@@ -177,7 +177,9 @@ class AgentClient:
                     heartbeat = asyncio.create_task(self._heartbeat(ws))
                     status_task: asyncio.Task | None = None
                     try:
-                        async with httpx.AsyncClient() as client:
+                        async with httpx.AsyncClient(
+                            timeout=get_settings().http_timeout_seconds
+                        ) as client:
                             if heartbeat_url:
                                 status_task = asyncio.create_task(
                                     self._status_heartbeat(client, heartbeat_url, auth_headers)

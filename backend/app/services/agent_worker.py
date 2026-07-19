@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
+import logging
 import socket
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
-from httpx import AsyncClient, HTTPError
+from httpx import AsyncClient, HTTPError, Response, Timeout
 
 from app.core.config import get_settings
 
@@ -15,6 +16,7 @@ from app.core.config import get_settings
 SendFunc = Callable[[dict[str, Any]], Awaitable[None]]
 ResolvedAddress = IPv4Address | IPv6Address
 ResolveHostFunc = Callable[[str, int | None], Awaitable[list[ResolvedAddress]]]
+logger = logging.getLogger(__name__)
 
 
 def _decode_body(encoded: str | None) -> bytes:
@@ -230,11 +232,21 @@ async def handle_proxy_request(
         headers = {}
     body = _decode_body(payload.get("body"))
     stream = bool(payload.get("stream"))
+    response: Response | None = None
+    response_started = False
 
     try:
         if stream:
+            stream_timeout = Timeout(
+                settings.http_timeout_seconds,
+                read=settings.agent_upstream_read_timeout_seconds,
+            )
             request_obj = client.build_request(
-                method, url, headers=headers, content=body
+                method,
+                url,
+                headers=headers,
+                content=body,
+                timeout=stream_timeout,
             )
             response = await client.send(request_obj, stream=True)
             await send(
@@ -245,6 +257,7 @@ async def handle_proxy_request(
                     "headers": dict(response.headers),
                 }
             )
+            response_started = True
             async for chunk in response.aiter_bytes():
                 if chunk:
                     await send(
@@ -255,12 +268,16 @@ async def handle_proxy_request(
                         }
                     )
             await send({"type": "proxy_stream_end", "request_id": request_id})
-            await response.aclose()
             return
 
-        response = await client.request(method, url, headers=headers, content=body)
+        response = await client.request(
+            method,
+            url,
+            headers=headers,
+            content=body,
+            timeout=settings.http_timeout_seconds,
+        )
         content = await response.aread()
-        await response.aclose()
         await send(
             {
                 "type": "proxy_response",
@@ -270,14 +287,32 @@ async def handle_proxy_request(
                 "body": _encode_body(content),
             }
         )
-    except HTTPError:
-        error_payload = {
-            "type": "proxy_response",
-            "request_id": request_id,
-            "status_code": 502,
-            "headers": {},
-            "body": _encode_body(b"upstream_error"),
-        }
-        await send(error_payload)
+    except HTTPError as exc:
+        error_type = type(exc).__name__
+        logger.warning(
+            "Agent upstream request failed request_id=%s error_type=%s stream=%s",
+            request_id,
+            error_type,
+            stream,
+        )
+        if not response_started:
+            await send(
+                {
+                    "type": "proxy_response",
+                    "request_id": request_id,
+                    "status_code": 502,
+                    "headers": {},
+                    "body": _encode_body(b"upstream_error"),
+                }
+            )
         if stream:
-            await send({"type": "proxy_stream_error", "request_id": request_id})
+            await send(
+                {
+                    "type": "proxy_stream_error",
+                    "request_id": request_id,
+                    "error_type": error_type,
+                }
+            )
+    finally:
+        if response is not None:
+            await response.aclose()

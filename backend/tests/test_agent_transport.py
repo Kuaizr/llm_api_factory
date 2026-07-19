@@ -7,6 +7,7 @@ from app.services.agent_transport import (
     AgentManager,
     AgentRequest,
     AgentResponse,
+    AgentStreamError,
     AgentUnavailableError,
 )
 
@@ -111,6 +112,85 @@ async def test_agent_manager_stream_request() -> None:
 
     chunks = [chunk async for chunk in stream.iter_bytes()]
     assert b"".join(chunks) == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_stream_error_is_not_treated_as_eof() -> None:
+    manager = AgentManager()
+    channel = FakeChannel()
+    manager.register("edge-hk", channel)
+
+    task = asyncio.create_task(
+        manager.send_request(
+            "edge-hk",
+            AgentRequest(
+                method="POST",
+                url="https://api.example.com/v1/responses",
+                headers={},
+                body=b"{}",
+                stream=True,
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+    request_id = channel.sent[-1]["request_id"]
+    await manager.handle_message(
+        "edge-hk",
+        {
+            "type": "proxy_response",
+            "request_id": request_id,
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        },
+    )
+    stream = await task
+    await manager.handle_message(
+        "edge-hk",
+        {
+            "type": "proxy_stream_error",
+            "request_id": request_id,
+            "error_type": "ReadTimeout",
+        },
+    )
+
+    with pytest.raises(AgentStreamError, match="ReadTimeout"):
+        _ = [chunk async for chunk in stream.iter_bytes()]
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_disconnect_fails_pending_stream() -> None:
+    manager = AgentManager()
+    channel = FakeChannel()
+    manager.register("edge-hk", channel)
+
+    task = asyncio.create_task(
+        manager.send_request(
+            "edge-hk",
+            AgentRequest(
+                method="POST",
+                url="https://api.example.com/v1/responses",
+                headers={},
+                body=b"{}",
+                stream=True,
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+    request_id = channel.sent[-1]["request_id"]
+    await manager.handle_message(
+        "edge-hk",
+        {
+            "type": "proxy_response",
+            "request_id": request_id,
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        },
+    )
+    stream = await task
+    manager.unregister("edge-hk")
+
+    with pytest.raises(AgentStreamError, match="disconnected"):
+        _ = [chunk async for chunk in stream.iter_bytes()]
 
 
 @pytest.mark.asyncio

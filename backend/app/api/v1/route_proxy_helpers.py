@@ -1,6 +1,7 @@
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 import asyncio
 import json
+import logging
 import re
 import time
 from urllib.parse import parse_qsl, urlencode
@@ -24,6 +25,8 @@ DEFAULT_OAUTH_LOCK_TTL_SECONDS = 10
 OAUTH_LOCK_WAIT_STEP_SECONDS = 0.1
 OAUTH_LOCK_WAIT_ROUNDS = 20
 STANDARD_PROVIDER_NAMES = {"openai", "anthropic", "gemini", "codex"}
+STREAM_EXPLICIT_COMPLETION_EXPOSURES = {"codex", "response"}
+logger = logging.getLogger(__name__)
 
 # 请求体模板变量替换的正则模式
 # 先匹配被双引号包裹的占位符，避免字符串转义问题
@@ -240,6 +243,7 @@ def _build_upstream_headers(
     if provider == "codex":
         if codex_credential is None:
             raise RuntimeError("Codex credential is required for codex provider")
+
         def set_header(name: str, value: str, *, preserve_existing: bool = False) -> None:
             matching = [key for key in headers if key.lower() == name.lower()]
             resolved_value = value
@@ -730,7 +734,6 @@ async def _stream_response(
     rule_group: str,
     exposure_format: str,
     status_code: int,
-    latency_ms: int,
     request_start: float,
     dump_rule: RoutingRule | None = None,
     dump_endpoint_name: str | None = None,
@@ -743,6 +746,7 @@ async def _stream_response(
     circuit_breaker=None,
     router_service=None,
     route_candidate: RouteCandidate | None = None,
+    record_attempt: Callable[[str, str | None], None] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     buffer = ""
     usage_payload = None
@@ -750,29 +754,67 @@ async def _stream_response(
     chunks: list[bytes] = []
     stream_complete = False
     stream_failed = False
+    response_completed = False
+    failure_reason: str | None = None
     try:
         async for chunk in response.aiter_bytes():
             if chunk:
                 if dump_rule is not None:
                     chunks.append(chunk)
-                buffer, usage_payload, data_seen, chunk_failed = _inspect_stream_chunk(
-                    buffer, usage_payload, chunk
-                )
+                (
+                    buffer,
+                    usage_payload,
+                    data_seen,
+                    chunk_failed,
+                    chunk_completed,
+                ) = _inspect_stream_chunk(buffer, usage_payload, chunk)
                 stream_failed = stream_failed or chunk_failed
+                response_completed = response_completed or chunk_completed
                 if data_seen and first_data_at is None:
                     first_data_at = time.perf_counter()
             yield chunk
-        stream_complete = not stream_failed
+        requires_completion = exposure_format in STREAM_EXPLICIT_COMPLETION_EXPOSURES
+        stream_complete = not stream_failed and (
+            response_completed or not requires_completion
+        )
+        if stream_failed:
+            failure_reason = "upstream_stream_failed"
+        elif not stream_complete:
+            stream_failed = True
+            failure_reason = "incomplete_stream"
+            logger.warning(
+                "Upstream stream ended without response.completed request_id=%s "
+                "endpoint_id=%s exposure_format=%s",
+                request_id,
+                endpoint_id,
+                exposure_format,
+            )
     except (asyncio.CancelledError, GeneratorExit):
         stream_complete = False
+        failure_reason = "client_disconnect"
         raise
-    except Exception:
+    except Exception as exc:
         stream_complete = False
         stream_failed = True
+        failure_reason = "upstream_stream_error"
+        logger.warning(
+            "Upstream stream failed request_id=%s endpoint_id=%s error_type=%s",
+            request_id,
+            endpoint_id,
+            type(exc).__name__,
+        )
         raise
     finally:
         stream_end = time.perf_counter()
         await response.aclose()
+        total_latency_ms = int((stream_end - request_start) * 1000)
+        if record_attempt is not None:
+            if stream_complete:
+                record_attempt("success", None)
+            elif failure_reason == "client_disconnect":
+                record_attempt("cancelled", failure_reason)
+            else:
+                record_attempt("error", failure_reason)
         if circuit_breaker is not None and route_candidate is not None:
             if stream_failed:
                 await circuit_breaker.record_failure(route_candidate.api_key.id)
@@ -789,7 +831,7 @@ async def _stream_response(
             usage_payload
         )
         tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
-        resolved_latency_ms = ttft_ms if ttft_ms is not None else latency_ms
+        resolved_latency_ms = total_latency_ms
         metrics = RequestMetrics(
             request_id=request_id,
             trace_id=trace_id,
@@ -853,17 +895,18 @@ def _calculate_tps(
 
 def _inspect_stream_chunk(
     buffer: str, usage_payload: dict | None, chunk: bytes
-) -> tuple[str, dict | None, bool, bool]:
+) -> tuple[str, dict | None, bool, bool, bool]:
     try:
         text = chunk.decode("utf-8")
     except UnicodeDecodeError:
-        return buffer, usage_payload, False, False
+        return buffer, usage_payload, False, False, False
 
     buffer += text
     lines = buffer.split("\n")
     buffer = lines.pop()
     data_seen = False
     stream_failed = False
+    response_completed = False
     for line in lines:
         line = line.strip()
         if not line.startswith("data:"):
@@ -877,6 +920,8 @@ def _inspect_stream_chunk(
         except json.JSONDecodeError:
             continue
         payload_type = str(payload.get("type") or "").strip().lower()
+        if payload_type == "response.completed":
+            response_completed = True
         if payload_type in {"error", "response.failed"} or isinstance(
             payload.get("error"), dict
         ):
@@ -888,7 +933,7 @@ def _inspect_stream_chunk(
             "total_usage" in metadata or "usage" in metadata
         ):
             usage_payload = payload
-        elif payload.get("type") == "response.completed":
+        elif payload_type == "response.completed":
             response_payload = payload.get("response")
             if isinstance(response_payload, dict) and "usage" in response_payload:
                 usage_payload = response_payload
@@ -899,4 +944,4 @@ def _inspect_stream_chunk(
                 for choice in choices
             ):
                 usage_payload = payload
-    return buffer, usage_payload, data_seen, stream_failed
+    return buffer, usage_payload, data_seen, stream_failed, response_completed

@@ -21,6 +21,12 @@ class FakeSender:
         self.messages.append(payload)
 
 
+class FailingStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"type":"response.created"}\n\n'
+        raise httpx.ReadTimeout("stream stalled")
+
+
 async def resolve_public_host(_host: str, _port: int | None):
     return [ip_address("93.184.216.34")]
 
@@ -40,7 +46,9 @@ async def test_handle_proxy_request_non_stream(monkeypatch: pytest.MonkeyPatch) 
     }
 
     respx.post("https://api.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
+        return_value=httpx.Response(
+            200, content=b"ok", headers={"content-type": "text/plain"}
+        )
     )
 
     from app.services import agent_worker
@@ -97,6 +105,87 @@ async def test_handle_proxy_request_stream(monkeypatch: pytest.MonkeyPatch) -> N
     assert sender.messages[1]["type"] == "proxy_stream"
     assert base64.b64decode(sender.messages[1]["data"]) == b"chunk"
     assert sender.messages[2]["type"] == "proxy_stream_end"
+
+
+@pytest.mark.asyncio
+async def test_handle_proxy_request_stream_uses_extended_read_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = FakeSender()
+    observed_timeout: dict[str, float] = {}
+    payload = {
+        "type": "proxy_request",
+        "request_id": "req-timeout",
+        "method": "POST",
+        "url": "https://api.example.com/v1/responses",
+        "headers": {},
+        "body": base64.b64encode(b"{}").decode("utf-8"),
+        "stream": True,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_timeout.update(request.extensions["timeout"])
+        return httpx.Response(200, content=b"data: [DONE]\n\n")
+
+    from app.services import agent_worker
+
+    monkeypatch.setattr(
+        agent_worker,
+        "get_settings",
+        lambda: Settings(
+            agent_allowed_targets="api.example.com",
+            http_timeout_seconds=60,
+            agent_upstream_read_timeout_seconds=240,
+        ),
+    )
+    monkeypatch.setattr(agent_worker, "_resolve_host_ips", resolve_public_host)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await handle_proxy_request(payload, client, sender.send)
+
+    assert observed_timeout["connect"] == 60
+    assert observed_timeout["read"] == 240
+    assert sender.messages[-1]["type"] == "proxy_stream_end"
+
+
+@pytest.mark.asyncio
+async def test_handle_proxy_request_reports_error_after_stream_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = FakeSender()
+    payload = {
+        "type": "proxy_request",
+        "request_id": "req-read-timeout",
+        "method": "POST",
+        "url": "https://api.example.com/v1/responses",
+        "headers": {},
+        "body": base64.b64encode(b"{}").decode("utf-8"),
+        "stream": True,
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=FailingStream(),
+        )
+
+    from app.services import agent_worker
+
+    monkeypatch.setattr(
+        agent_worker,
+        "get_settings",
+        lambda: Settings(agent_allowed_targets="api.example.com"),
+    )
+    monkeypatch.setattr(agent_worker, "_resolve_host_ips", resolve_public_host)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await handle_proxy_request(payload, client, sender.send)
+
+    assert [message["type"] for message in sender.messages] == [
+        "proxy_response",
+        "proxy_stream",
+        "proxy_stream_error",
+    ]
+    assert sender.messages[-1]["error_type"] == "ReadTimeout"
 
 
 @pytest.mark.asyncio

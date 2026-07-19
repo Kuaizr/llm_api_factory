@@ -127,6 +127,7 @@ export LLM_REDIS_URL="redis://localhost:6379/0"
 | `LLM_AGENT_ALLOWED_TARGETS` | `*` | Agent 默认目标 allowlist |
 | `LLM_AGENT_REQUEST_TIMEOUT_SECONDS` | `60` | Agent 请求启动超时 |
 | `LLM_AGENT_STREAM_IDLE_TIMEOUT_SECONDS` | `300` | Agent 流式空闲超时 |
+| `LLM_AGENT_UPSTREAM_READ_TIMEOUT_SECONDS` | `240` | Agent 等待上游流式数据的读超时 |
 | `LLM_PROXY_DUMP_ROOT` | `backend/proxy_dumps` | dump 文件目录 |
 
 生产环境至少设置 `LLM_MASTER_AUTH_TOKEN` 和 `LLM_DATA_ENCRYPTION_KEY`。

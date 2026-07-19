@@ -259,21 +259,27 @@ async def handle_agent_candidate(
                         headers=agent_response.headers,
                     )
                 )
-            _record_attempt_log(
-                request_id=request_id,
-                trace_id=trace_id,
-                model_alias=model_alias,
-                candidate=candidate,
-                requested_rule_group=requested_rule_group,
-                rule_group=effective_group,
-                attempt_order=attempt_order,
-                status_code=status_code,
-                outcome="success",
-                failure_reason=None,
-                latency_ms=_elapsed_ms(attempt_start),
-                agent_node=agent_name,
-                upstream_url=url,
-            )
+
+            def _record_stream_attempt(
+                outcome: str,
+                failure_reason: str | None,
+            ) -> None:
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=status_code,
+                    outcome=outcome,
+                    failure_reason=failure_reason,
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
+
             stream_headers = _merge_headers(
                 _filter_response_headers(agent_response.headers), debug_headers
             )
@@ -296,6 +302,7 @@ async def handle_agent_candidate(
                 request_path=request.url.path,
                 circuit_breaker=circuit_breaker,
                 router_service=router_service,
+                record_attempt=_record_stream_attempt,
             )
 
             return CandidateProxyResult(

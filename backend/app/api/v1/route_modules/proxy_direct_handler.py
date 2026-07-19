@@ -240,8 +240,6 @@ async def handle_direct_candidate(
                 attempt_order=attempt_order,
             )
 
-        latency_ms = int((time.perf_counter() - request_start) * 1000)
-
         if is_stream:
             if candidate_provider == "codex":
                 safe_create_task(
@@ -251,21 +249,27 @@ async def handle_direct_candidate(
                         headers=response.headers,
                     )
                 )
-            _record_attempt_log(
-                request_id=request_id,
-                trace_id=trace_id,
-                model_alias=model_alias,
-                candidate=candidate,
-                requested_rule_group=requested_rule_group,
-                rule_group=effective_group,
-                attempt_order=attempt_order,
-                status_code=response.status_code,
-                outcome="success",
-                failure_reason=None,
-                latency_ms=_elapsed_ms(attempt_start),
-                agent_node=agent_name,
-                upstream_url=url,
-            )
+
+            def _record_stream_attempt(
+                outcome: str,
+                failure_reason: str | None,
+            ) -> None:
+                _record_attempt_log(
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    model_alias=model_alias,
+                    candidate=candidate,
+                    requested_rule_group=requested_rule_group,
+                    rule_group=effective_group,
+                    attempt_order=attempt_order,
+                    status_code=response.status_code,
+                    outcome=outcome,
+                    failure_reason=failure_reason,
+                    latency_ms=_elapsed_ms(attempt_start),
+                    agent_node=agent_name,
+                    upstream_url=url,
+                )
+
             stream_headers = _merge_headers(
                 _filter_response_headers(response.headers), debug_headers
             )
@@ -281,7 +285,6 @@ async def handle_direct_candidate(
                 rule_group=effective_group,
                 exposure_format=exposure_format,
                 status_code=response.status_code,
-                latency_ms=latency_ms,
                 request_start=request_start,
                 dump_rule=dump_rule,
                 dump_endpoint_name=candidate.endpoint.name,
@@ -294,6 +297,7 @@ async def handle_direct_candidate(
                 circuit_breaker=circuit_breaker,
                 router_service=router_service,
                 route_candidate=candidate,
+                record_attempt=_record_stream_attempt,
             )
             return CandidateProxyResult(
                 response=StreamingResponse(
@@ -305,6 +309,7 @@ async def handle_direct_candidate(
                 attempt_order=attempt_order,
             )
 
+        latency_ms = int((time.perf_counter() - request_start) * 1000)
         content = await response.aread()
         response_payload = parse_json_object_bytes(content)
         semantic_failure_reason = detect_semantic_failure_reason(

@@ -30,6 +30,10 @@ class AgentUnavailableError(RuntimeError):
     pass
 
 
+class AgentStreamError(AgentUnavailableError):
+    pass
+
+
 @dataclass
 class AgentStream:
     request_id: str
@@ -37,7 +41,9 @@ class AgentStream:
     on_idle_timeout: Callable[[], None] | None = None
     status_code: int | None = None
     headers: dict[str, str] = field(default_factory=dict)
-    _queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
+    _queue: asyncio.Queue[bytes | AgentStreamError | None] = field(
+        default_factory=asyncio.Queue
+    )
     _started: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def wait_started(self) -> None:
@@ -62,6 +68,8 @@ class AgentStream:
                 ) from exc
             if chunk is None:
                 break
+            if isinstance(chunk, AgentStreamError):
+                raise chunk
             yield chunk
 
     async def read_all(self) -> bytes:
@@ -101,7 +109,16 @@ class AgentManager:
         return connection
 
     def unregister(self, name: str) -> None:
-        self._connections.pop(name, None)
+        connection = self._connections.pop(name, None)
+        if not connection:
+            return
+        error = AgentUnavailableError(f"Agent {name} disconnected")
+        for pending in list(connection.pending.values()):
+            if isinstance(pending, AgentStream):
+                pending._queue.put_nowait(AgentStreamError(str(error)))
+            elif not pending.done():
+                pending.set_exception(error)
+        connection.pending.clear()
 
     def get(self, name: str) -> AgentConnection | None:
         return self._connections.get(name)
@@ -237,8 +254,15 @@ class AgentManager:
                     data = b""
                 await pending._queue.put(data)
                 return
-            if message_type in {"proxy_stream_end", "proxy_stream_error"}:
+            if message_type == "proxy_stream_end":
                 await pending._queue.put(None)
+                connection.pending.pop(request_id, None)
+                return
+            if message_type == "proxy_stream_error":
+                error_type = str(message.get("error_type") or "upstream_error")
+                await pending._queue.put(
+                    AgentStreamError(f"Agent upstream stream failed ({error_type})")
+                )
                 connection.pending.pop(request_id, None)
                 return
 

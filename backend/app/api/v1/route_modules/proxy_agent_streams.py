@@ -1,19 +1,23 @@
 import asyncio
+import logging
 import time
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 from app.api.v1.route_helpers import _dump_proxy_record
 from app.api.v1.route_proxy_helpers import _calculate_tps, _inspect_stream_chunk
 from app.db.models import RoutingRule
-from app.services.agent_transport import AgentResponse
+from app.services.agent_transport import AgentStream
 from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.router import RouteCandidate
 
 
+logger = logging.getLogger(__name__)
+
+
 async def agent_stream_generator(
     *,
-    agent_response: AgentResponse,
+    agent_response: AgentStream,
     request_start: float,
     request_id: str,
     trace_id: str,
@@ -31,6 +35,7 @@ async def agent_stream_generator(
     request_path: str,
     circuit_breaker=None,
     router_service=None,
+    record_attempt: Callable[[str, str | None], None] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     buffer = ""
     usage_payload = None
@@ -38,28 +43,67 @@ async def agent_stream_generator(
     chunks: list[bytes] = []
     stream_complete = False
     stream_failed = False
+    response_completed = False
+    failure_reason: str | None = None
     try:
         async for chunk in agent_response.iter_bytes():
             if chunk:
                 if dump_rule is not None:
                     chunks.append(chunk)
-                buffer, usage_payload, data_seen, chunk_failed = _inspect_stream_chunk(
-                    buffer, usage_payload, chunk
-                )
+                (
+                    buffer,
+                    usage_payload,
+                    data_seen,
+                    chunk_failed,
+                    chunk_completed,
+                ) = _inspect_stream_chunk(buffer, usage_payload, chunk)
                 stream_failed = stream_failed or chunk_failed
+                response_completed = response_completed or chunk_completed
                 if data_seen and first_data_at is None:
                     first_data_at = time.perf_counter()
             yield chunk
-        stream_complete = not stream_failed
+        requires_completion = exposure_format in {"codex", "response"}
+        stream_complete = not stream_failed and (
+            response_completed or not requires_completion
+        )
+        if stream_failed:
+            failure_reason = "upstream_stream_failed"
+        elif not stream_complete:
+            stream_failed = True
+            failure_reason = "incomplete_stream"
+            logger.warning(
+                "Agent stream ended without response.completed request_id=%s "
+                "api_key_id=%s agent=%s",
+                request_id,
+                candidate.api_key.id,
+                agent_name,
+            )
     except (asyncio.CancelledError, GeneratorExit):
         stream_complete = False
+        failure_reason = "client_disconnect"
         raise
-    except Exception:
+    except Exception as exc:
         stream_complete = False
         stream_failed = True
+        failure_reason = "agent_stream_error"
+        logger.warning(
+            "Agent stream failed request_id=%s api_key_id=%s agent=%s error_type=%s",
+            request_id,
+            candidate.api_key.id,
+            agent_name,
+            type(exc).__name__,
+        )
         raise
     finally:
         stream_end = time.perf_counter()
+        latency_ms = int((stream_end - request_start) * 1000)
+        if record_attempt is not None:
+            if stream_complete:
+                record_attempt("success", None)
+            elif failure_reason == "client_disconnect":
+                record_attempt("cancelled", failure_reason)
+            else:
+                record_attempt("error", failure_reason)
         if circuit_breaker is not None:
             if stream_failed:
                 await circuit_breaker.record_failure(candidate.api_key.id)
@@ -76,9 +120,6 @@ async def agent_stream_generator(
             usage_payload
         )
         tps = _calculate_tps(first_data_at, stream_end, completion_tokens)
-        latency_ms = (
-            ttft_ms if ttft_ms is not None else int((stream_end - request_start) * 1000)
-        )
         metrics = RequestMetrics(
             request_id=request_id,
             trace_id=trace_id,

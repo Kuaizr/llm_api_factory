@@ -276,7 +276,14 @@ async def test_codex_provider_refreshes_and_retries_once_after_401(
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(401, json={"error": "expired"})
-        return httpx.Response(200, content=b"data: [DONE]\n\n")
+        return httpx.Response(
+            200,
+            content=(
+                b'data: {"type":"response.completed","response":{"usage":'
+                b'{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
 
     async def fake_resolve(*args, **kwargs) -> CodexCredential:  # noqa: ANN002, ANN003
         assert kwargs["force_refresh"] is True
@@ -342,7 +349,14 @@ async def test_codex_model_error_falls_back_to_next_auth(
         requests.append(request)
         if request.headers["authorization"] == "Bearer access-a":
             return httpx.Response(400, json={"error": "model_not_supported"})
-        return httpx.Response(200, content=b"data: [DONE]\n\n")
+        return httpx.Response(
+            200,
+            content=(
+                b'data: {"type":"response.completed","response":{"usage":'
+                b'{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
 
     recorded: dict[str, object] = {}
     upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
