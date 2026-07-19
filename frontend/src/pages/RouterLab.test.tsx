@@ -48,6 +48,7 @@ const buildFetchMock = () =>
           id: 1,
           model_pattern: "gpt-4.*",
           group_name: "default",
+          exposure_formats: ["chat", "response", "codex", "message", "claude_code", "gemini"],
           priority: 10,
           is_active: true,
           target_key_ids: [1],
@@ -63,6 +64,7 @@ const buildFetchMock = () =>
           id: 2,
           model_pattern: "claude-3.*",
           group_name: "canary",
+          exposure_formats: ["message", "claude_code"],
           priority: 8,
           is_active: true,
           target_key_ids: [2],
@@ -137,7 +139,7 @@ describe("Console rules", () => {
     expect(await screen.findByText("System Group")).toBeInTheDocument();
   });
 
-  it("requires an explicit protocol for new routing rules", async () => {
+  it("supports selecting multiple API entries for a new routing rule", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("llm_admin_token", "token");
     render(<Console />);
@@ -145,14 +147,16 @@ describe("Console rules", () => {
     await user.click(await screen.findByText("路由规则"));
     await user.click(await screen.findByRole("button", { name: "新建规则" }));
 
-    const exposureSelect = screen
-      .getByText("暴露格式")
-      .parentElement?.querySelector("select");
-    expect(exposureSelect).not.toBeNull();
-    expect(exposureSelect).toHaveValue("chat");
-    expect(
-      Array.from(exposureSelect?.options ?? []).map((option) => option.value)
-    ).not.toContain("any");
+    expect(screen.getByText("可用 API 入口")).toBeInTheDocument();
+    const chatEntry = screen.getByRole("checkbox", { name: /chat OpenAI Chat/i });
+    const responsesEntry = screen.getByRole("checkbox", {
+      name: /response OpenAI Responses/i,
+    });
+    expect(chatEntry).toBeChecked();
+    expect(responsesEntry).not.toBeChecked();
+    await user.click(responsesEntry);
+    expect(chatEntry).toBeChecked();
+    expect(responsesEntry).toBeChecked();
   });
 
   it("copies access key from rule key list", async () => {
@@ -186,7 +190,7 @@ describe("Console rules", () => {
     await user.click(editButtons[1]);
 
     expect(await screen.findByText("编辑路由规则")).toBeInTheDocument();
-    const dumpSwitch = screen.getByRole("checkbox");
+    const dumpSwitch = screen.getByRole("checkbox", { name: "启用" });
     await user.click(dumpSwitch);
     await user.type(screen.getByPlaceholderText("例如: /tmp/llm-dumps"), "/tmp/router-dump");
     await user.click(screen.getByRole("button", { name: "保存规则" }));

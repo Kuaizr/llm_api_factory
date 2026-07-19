@@ -88,6 +88,7 @@ describe("console response validators", () => {
           id: 1,
           model_pattern: "gpt-.*",
           group_name: "default",
+          exposure_formats: ["chat", "response", "codex", "message", "claude_code", "gemini"],
           target_key_ids: [1, 2],
           priority: 10,
           strategy: "sequential",

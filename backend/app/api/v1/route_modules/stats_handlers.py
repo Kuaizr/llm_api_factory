@@ -680,11 +680,11 @@ async def _matching_route_rule(
     fallback: tuple[RoutingRule, list[int], str] | None = None
     for rule in result.scalars().all():
         if model_pattern_matches(rule.model_pattern, model_alias):
-            target_key_ids, strategy, rule_exposure = _deserialize_rule_config_detail(
+            target_key_ids, strategy, rule_exposures = _deserialize_rule_config_detail(
                 rule.target_key_ids_json
             )
             match_priority = exposure_format_match_priority(
-                rule_exposure, exposure_format
+                rule_exposures, exposure_format
             )
             if match_priority == 2:
                 return rule, target_key_ids, strategy

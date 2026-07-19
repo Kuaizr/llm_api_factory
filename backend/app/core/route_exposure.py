@@ -19,6 +19,15 @@ SUPPORTED_EXPOSURE_FORMATS = {
     EXPOSURE_FORMAT_GEMINI,
 }
 
+EXPLICIT_EXPOSURE_FORMATS = (
+    EXPOSURE_FORMAT_CHAT,
+    EXPOSURE_FORMAT_RESPONSE,
+    EXPOSURE_FORMAT_CODEX,
+    EXPOSURE_FORMAT_MESSAGE,
+    EXPOSURE_FORMAT_CLAUDE_CODE,
+    EXPOSURE_FORMAT_GEMINI,
+)
+
 
 def normalize_exposure_format(value: object) -> str:
     if not isinstance(value, str):
@@ -33,6 +42,17 @@ def normalize_exposure_format(value: object) -> str:
     return normalized
 
 
+def normalize_exposure_formats(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    normalized: list[str] = []
+    for item in value:
+        exposure_format = normalize_exposure_format(item)
+        if exposure_format not in normalized:
+            normalized.append(exposure_format)
+    return normalized
+
+
 def exposure_format_matches(configured: object, requested: object) -> bool:
     return exposure_format_match_priority(configured, requested) is not None
 
@@ -40,12 +60,10 @@ def exposure_format_matches(configured: object, requested: object) -> bool:
 def exposure_format_match_priority(
     configured: object, requested: object
 ) -> int | None:
-    normalized_configured = normalize_exposure_format(configured)
+    normalized_configured = normalize_exposure_formats(configured)
     normalized_requested = normalize_exposure_format(requested)
     if normalized_requested == EXPOSURE_FORMAT_ANY:
         return 1
-    if normalized_configured == normalized_requested:
+    if normalized_requested in normalized_configured:
         return 2
-    if normalized_configured == EXPOSURE_FORMAT_ANY:
-        return 1
     return None

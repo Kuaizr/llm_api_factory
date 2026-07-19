@@ -49,10 +49,16 @@ export const RuleEditorModal = ({
   onClose: () => void;
   onSave: (payload: RoutingRuleSavePayload) => void | Promise<boolean>;
 }) => {
+  const isDefaultRule = (rule?.group_name ?? "").toLowerCase() === "default";
+  const allExposureFormats = exposureFormatOptions.map((option) => option.value);
   const [modelPattern, setModelPattern] = useState(rule?.model_pattern ?? "");
   const [groupName, setGroupName] = useState(rule?.group_name ?? "custom");
-  const [exposureFormat, setExposureFormat] = useState(
-    rule?.exposure_format ?? "chat"
+  const [selectedExposureFormats, setSelectedExposureFormats] = useState<string[]>(
+    isDefaultRule
+      ? allExposureFormats
+      : rule?.exposure_formats?.length
+        ? rule.exposure_formats
+        : ["chat"]
   );
   const [priority, setPriority] = useState(String(rule?.priority ?? 10));
   const [strategy, setStrategy] = useState(
@@ -126,11 +132,15 @@ export const RuleEditorModal = ({
     endpointId: number;
     keyId: number;
   } | null>(null);
-  const isDefaultRule = (rule?.group_name ?? "").toLowerCase() === "default";
-  const visibleExposureFormatOptions =
-    rule?.exposure_format === "any"
-      ? [{ value: "any", label: "any", hint: "兼容旧规则" }, ...exposureFormatOptions]
-      : exposureFormatOptions;
+
+  const toggleExposureFormat = (value: string) => {
+    if (isDefaultRule) return;
+    setSelectedExposureFormats((current) =>
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+    );
+  };
 
   useEffect(() => {
     setEndpointOrder((prev) => {
@@ -210,6 +220,7 @@ export const RuleEditorModal = ({
   }, [orderedEndpoints, selectedKeyIds]);
 
   const toggleKey = (id: number) => {
+    if (isDefaultRule) return;
     setSelectedKeyIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -363,11 +374,11 @@ export const RuleEditorModal = ({
                   }}
                   placeholder="e.g. gpt-4* or claude-3-opus"
                   className="flex-1 bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none"
-                  disabled={!isAdmin}
+                  disabled={!isAdmin || isDefaultRule}
                 />
                 <button
                   onClick={handleScan}
-                  disabled={!modelPattern || isScanning || !isAdmin}
+                  disabled={!modelPattern || isScanning || !isAdmin || isDefaultRule}
                   className="bg-yellow-600/20 text-yellow-500 border border-yellow-600/50 px-4 rounded text-sm font-medium hover:bg-yellow-600/30 flex items-center gap-2 disabled:opacity-50 transition"
                 >
                   {isScanning ? "扫描中" : "扫描"}
@@ -410,22 +421,42 @@ export const RuleEditorModal = ({
                   <p className="mt-1 text-[11px] text-gray-500">系统默认分组不可重命名。</p>
                 )}
               </div>
-              <div>
+              <div className="col-span-2">
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
-                  暴露格式
+                  可用 API 入口
                 </label>
-                <select
-                  value={exposureFormat}
-                  onChange={(event) => setExposureFormat(event.target.value)}
-                  className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none"
-                  disabled={!isAdmin}
-                >
-                  {visibleExposureFormatOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label} - {option.hint}
-                    </option>
-                  ))}
-                </select>
+                <div className="grid grid-cols-2 gap-2 rounded border border-gray-700 bg-gray-900 p-2.5">
+                  {exposureFormatOptions.map((option) => {
+                    const checked = selectedExposureFormats.includes(option.value);
+                    return (
+                      <label
+                        key={option.value}
+                        className={`flex items-start gap-2 rounded px-2 py-1.5 text-xs ${
+                          isDefaultRule
+                            ? "cursor-not-allowed opacity-75"
+                            : "cursor-pointer hover:bg-gray-800"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleExposureFormat(option.value)}
+                          disabled={!isAdmin || isDefaultRule}
+                          className="mt-0.5 accent-yellow-500"
+                        />
+                        <span>
+                          <span className="font-semibold text-gray-200">{option.label}</span>
+                          <span className="ml-1 text-gray-500">{option.hint}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  {isDefaultRule
+                    ? "默认规则固定支持全部 API 入口。"
+                    : "所选入口共享这条规则的候选 Key 与调度策略。"}
+                </p>
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
@@ -488,16 +519,18 @@ export const RuleEditorModal = ({
                 选择 Key
               </h4>
               <span className="text-[11px] text-gray-500">
-                可拖拽端点卡片与 Key 卡片排序；顺序主备按从上到下执行。
+                {isDefaultRule
+                  ? "默认规则动态使用全部启用 Key，无需手动选择。"
+                  : "可拖拽端点卡片与 Key 卡片排序；顺序主备按从上到下执行。"}
               </span>
             </div>
             <div className="space-y-2">
               {filteredEndpoints.map((endpoint) => (
                 <div
                   key={endpoint.id}
-                  draggable={isAdmin}
+                  draggable={isAdmin && !isDefaultRule}
                   onDragStart={(event) => {
-                    if (!isAdmin) {
+                    if (!isAdmin || isDefaultRule) {
                       return;
                     }
                     setDraggingKey(null);
@@ -506,7 +539,7 @@ export const RuleEditorModal = ({
                   }}
                   onDragOver={(event) => {
                     if (
-                      !isAdmin ||
+                      !isAdmin || isDefaultRule ||
                       draggingEndpointId === null ||
                       draggingEndpointId === endpoint.id
                     ) {
@@ -517,7 +550,7 @@ export const RuleEditorModal = ({
                   }}
                   onDrop={(event) => {
                     if (
-                      !isAdmin ||
+                      !isAdmin || isDefaultRule ||
                       draggingEndpointId === null ||
                       draggingEndpointId === endpoint.id
                     ) {
@@ -555,9 +588,9 @@ export const RuleEditorModal = ({
                         <button
                           key={key.id}
                           type="button"
-                          draggable={isAdmin}
+                          draggable={isAdmin && !isDefaultRule}
                           onDragStart={(event) => {
-                            if (!isAdmin) {
+                            if (!isAdmin || isDefaultRule) {
                               return;
                             }
                             event.stopPropagation();
@@ -567,7 +600,7 @@ export const RuleEditorModal = ({
                           }}
                           onDragOver={(event) => {
                             if (
-                              !isAdmin ||
+                              !isAdmin || isDefaultRule ||
                               !draggingKey ||
                               draggingKey.endpointId !== endpoint.id ||
                               draggingKey.keyId === key.id
@@ -580,7 +613,7 @@ export const RuleEditorModal = ({
                           }}
                           onDrop={(event) => {
                             if (
-                              !isAdmin ||
+                              !isAdmin || isDefaultRule ||
                               !draggingKey ||
                               draggingKey.endpointId !== endpoint.id ||
                               draggingKey.keyId === key.id
@@ -595,7 +628,10 @@ export const RuleEditorModal = ({
                           onDragEnd={() => {
                             setDraggingKey(null);
                           }}
-                          onClick={() => (isAdmin ? toggleKey(key.id) : undefined)}
+                          onClick={() =>
+                            isAdmin && !isDefaultRule ? toggleKey(key.id) : undefined
+                          }
+                          disabled={!isAdmin || isDefaultRule}
                           className={`w-full flex items-center gap-3 p-2 rounded border transition ${
                             isSelected
                               ? "bg-yellow-900/20 border-yellow-600/50"
@@ -658,16 +694,16 @@ export const RuleEditorModal = ({
                 id: rule?.id,
                 model_pattern: modelPattern,
                 group_name: groupName,
-                exposure_format: exposureFormat,
+                exposure_formats: selectedExposureFormats,
                 priority: Number(priority) || 0,
                 strategy,
                 is_active: rule?.is_active ?? true,
-                target_key_ids: orderedSelectedKeyIds,
+                target_key_ids: isDefaultRule ? [] : orderedSelectedKeyIds,
                 dump_enabled: dumpEnabled,
                 dump_path: dumpEnabled && dumpPath.trim() ? dumpPath.trim() : null,
               })
             }
-            disabled={!isAdmin}
+            disabled={!isAdmin || selectedExposureFormats.length === 0}
             className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white text-sm font-bold rounded transition disabled:opacity-50"
           >
             保存规则
@@ -936,9 +972,14 @@ export const RulesView = ({
                 <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
                   Priority: {rule.priority}
                 </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-cyan-950/40 text-cyan-300 border border-cyan-800/50">
-                  {rule.exposure_format ?? "any"}
-                </span>
+                {rule.exposure_formats.map((format) => (
+                  <span
+                    key={format}
+                    className="text-xs px-2 py-0.5 rounded bg-cyan-950/40 text-cyan-300 border border-cyan-800/50"
+                  >
+                    {format}
+                  </span>
+                ))}
                 {isDefaultGroup && (
                   <span className="text-xs px-2 py-0.5 rounded bg-blue-900/20 text-blue-300 border border-blue-700/50">
                     System Group

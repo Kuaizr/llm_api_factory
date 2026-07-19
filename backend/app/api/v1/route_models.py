@@ -169,7 +169,7 @@ class EndpointDetailOut(BaseModel):
 class RoutingRuleCreate(BaseModel):
     model_pattern: str
     group_name: str = "default"
-    exposure_format: str = "chat"
+    exposure_formats: list[str] = Field(default_factory=lambda: ["chat"])
     priority: int = 10
     strategy: str = "weighted_round_robin"
     is_active: bool = True
@@ -177,11 +177,13 @@ class RoutingRuleCreate(BaseModel):
     dump_path: str | None = None
     target_key_ids: list[int]
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class RoutingRuleUpdate(BaseModel):
     model_pattern: str | None = None
     group_name: str | None = None
-    exposure_format: str | None = None
+    exposure_formats: list[str] | None = None
     priority: int | None = None
     strategy: str | None = None
     is_active: bool | None = None
@@ -189,12 +191,14 @@ class RoutingRuleUpdate(BaseModel):
     dump_path: str | None = None
     target_key_ids: list[int] | None = None
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class RoutingRuleOut(BaseModel):
     id: int
     model_pattern: str
     group_name: str
-    exposure_format: str = "any"
+    exposure_formats: list[str] = Field(default_factory=list)
     priority: int
     strategy: str
     is_active: bool

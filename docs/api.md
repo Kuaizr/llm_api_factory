@@ -50,7 +50,7 @@ Codex 场景会额外保留 Responses 需要的 Codex header，例如 `originato
 
 每类标准入口只会选择协议兼容的 provider。比如 Anthropic Messages 不会在没有 Anthropic/custom 候选时退回 OpenAI endpoint，Codex 候选仅参与 Responses/Codex 路由。
 
-同一个规则组可以按 `exposure_format` 配置多条协议规则。显式协议规则优先于旧版 `any` 规则；同组同协议只允许一条规则。Responses/Codex 规则可以包含多个兼容 provider 或多个 Auth Key，候选返回模型不支持、鉴权、额度、限流或上游错误时会继续切换下一个候选。
+同一个规则可以通过 `exposure_formats` 多选 Chat、Responses、Codex、Anthropic、Claude Code 和 Gemini API 入口；同一规则组的不同规则不能选择重叠的入口。`default` 固定支持全部入口，并动态使用全部启用 Key。只有匹配规则的候选池中存在多个兼容 Key 时，模型不支持、鉴权、额度、限流或常见上游错误才会触发下一个候选；规则只包含一个兼容 Key 时不会发生跨 Key 切换。
 
 ## Anthropic
 

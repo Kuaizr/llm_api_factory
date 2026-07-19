@@ -63,7 +63,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
                 "model_pattern": "gpt-4.*",
                 "group_name": "alpha",
                 "priority": 10,
-                "exposure_format": "response",
+                "exposure_formats": ["response", "codex"],
                 "is_active": True,
                 "target_key_ids": [api_key.id],
                 "dump_enabled": True,
@@ -73,7 +73,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
         assert response.status_code == 200
         payload = response.json()
         assert payload["model_pattern"] == "gpt-4.*"
-        assert payload["exposure_format"] == "response"
+        assert payload["exposure_formats"] == ["response", "codex"]
         assert payload["target_key_ids"] == [api_key.id]
         assert payload["dump_enabled"] is True
         assert Path(payload["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
@@ -86,7 +86,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
                 "model_pattern": "gpt-4.*",
                 "group_name": "alpha",
                 "priority": 20,
-                "exposure_format": "codex",
+                "exposure_formats": ["message"],
                 "target_key_ids": [api_key.id],
             },
         )
@@ -96,7 +96,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
             json={
                 "model_pattern": "gpt-5.*",
                 "group_name": "alpha",
-                "exposure_format": "response",
+                "exposure_formats": ["response"],
                 "target_key_ids": [api_key.id],
             },
         )
@@ -122,8 +122,8 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
         assert codex_response.status_code == 200
         assert duplicate_response.status_code == 400
         assert default_format_response.status_code == 200
-        assert default_format_response.json()["exposure_format"] == "chat"
-        assert new_any_response.status_code == 400
+        assert default_format_response.json()["exposure_formats"] == ["chat"]
+        assert new_any_response.status_code == 422
 
         session.add_all(
             [
@@ -186,22 +186,32 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
     assert list_response.status_code == 200
     data = list_response.json()
     alpha_rules = [item for item in data if item["group_name"] == "alpha"]
-    assert {item["exposure_format"] for item in alpha_rules} == {"response", "codex"}
+    assert len(alpha_rules) == 2
     alpha_rule = next(
-        item for item in alpha_rules if item["exposure_format"] == "response"
+        item for item in alpha_rules if item["exposure_formats"] == ["response", "codex"]
     )
-    codex_rule = next(item for item in alpha_rules if item["exposure_format"] == "codex")
+    message_rule = next(
+        item for item in alpha_rules if item["exposure_formats"] == ["message"]
+    )
+    assert alpha_rule["exposure_formats"] == ["response", "codex"]
     assert alpha_rule["request_count"] == 2
-    assert alpha_rule["exposure_format"] == "response"
     assert alpha_rule["total_tokens"] == 50
     assert alpha_rule["avg_ttft_ms"] == 200
     assert alpha_rule["avg_tps"] == 15.0
     assert alpha_rule["dump_enabled"] is True
     assert Path(alpha_rule["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
-    assert codex_rule["request_count"] == 0
+    assert message_rule["request_count"] == 0
     default_rules = [item for item in data if item["group_name"] == "default"]
     assert len(default_rules) == 1
     assert default_rules[0]["model_pattern"] == ".*"
+    assert default_rules[0]["exposure_formats"] == [
+        "chat",
+        "response",
+        "codex",
+        "message",
+        "claude_code",
+        "gemini",
+    ]
 
     await session.close()
     await engine.dispose()
@@ -423,6 +433,20 @@ async def test_admin_default_rule_access_keys_and_guards(
             == "Default rule group cannot be renamed"
         )
 
+        target_response = await client.patch(
+            f"/admin/rules/{default_rule_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"target_key_ids": [1]},
+        )
+        assert target_response.status_code == 400
+
+        formats_response = await client.patch(
+            f"/admin/rules/{default_rule_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"exposure_formats": ["chat"]},
+        )
+        assert formats_response.status_code == 400
+
         delete_response = await client.delete(
             f"/admin/rules/{default_rule_id}",
             headers={"Authorization": "Bearer token"},
@@ -597,7 +621,7 @@ async def test_create_endpoint_key_syncs_multi_rule_group_targets(
     canary_rule = next(item for item in rules_payload if item["group_name"] == "canary")
     beta_rule = next(item for item in rules_payload if item["group_name"] == "beta")
 
-    assert key_id in default_rule["target_key_ids"]
+    assert default_rule["target_key_ids"] == []
     assert key_id in canary_rule["target_key_ids"]
     assert key_id not in beta_rule["target_key_ids"]
 
@@ -699,7 +723,7 @@ async def test_update_key_resyncs_rule_group_targets(monkeypatch: pytest.MonkeyP
     canary_rule = next(item for item in rules_payload if item["group_name"] == "canary")
     beta_rule = next(item for item in rules_payload if item["group_name"] == "beta")
 
-    assert key_id in default_rule["target_key_ids"]
+    assert default_rule["target_key_ids"] == []
     assert key_id not in canary_rule["target_key_ids"]
     assert key_id in beta_rule["target_key_ids"]
 

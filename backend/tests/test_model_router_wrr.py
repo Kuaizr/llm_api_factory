@@ -244,7 +244,7 @@ async def test_get_candidates_filters_rules_by_exposure_format() -> None:
                         {
                             "target_key_ids": [codex_key.id],
                             "strategy": "sequential",
-                            "exposure_format": "codex",
+                            "exposure_formats": ["codex"],
                         }
                     ),
                 ),
@@ -257,7 +257,7 @@ async def test_get_candidates_filters_rules_by_exposure_format() -> None:
                         {
                             "target_key_ids": [response_key.id],
                             "strategy": "sequential",
-                            "exposure_format": "response",
+                            "exposure_formats": ["response"],
                         }
                     ),
                 ),
@@ -270,7 +270,7 @@ async def test_get_candidates_filters_rules_by_exposure_format() -> None:
                         {
                             "target_key_ids": [codex_key.id],
                             "strategy": "sequential",
-                            "exposure_format": "any",
+                            "exposure_formats": ["chat"],
                         }
                     ),
                 ),

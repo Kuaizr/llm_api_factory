@@ -26,8 +26,10 @@ from app.api.v1.route_models import (
 from app.core.config import get_settings
 from app.core.route_exposure import (
     DEFAULT_EXPOSURE_FORMAT,
+    EXPLICIT_EXPOSURE_FORMATS,
     exposure_format_match_priority,
     normalize_exposure_format,
+    normalize_exposure_formats,
 )
 from app.core.timezone import app_today
 from app.db.models import (
@@ -768,32 +770,34 @@ def _parse_target_key_ids(data: object) -> list[int]:
 def _serialize_rule_config(
     target_key_ids: list[int],
     strategy: str,
-    exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
+    exposure_formats: list[str],
 ) -> str:
+    normalized_formats = normalize_exposure_formats(exposure_formats)
     return json.dumps({
         "target_key_ids": target_key_ids,
         "strategy": strategy,
-        "exposure_format": normalize_exposure_format(exposure_format),
+        "exposure_formats": normalized_formats,
     })
 
 
-def _deserialize_rule_config_detail(raw: str) -> tuple[list[int], str, str]:
+def _deserialize_rule_config_detail(raw: str) -> tuple[list[int], str, list[str]]:
     if not raw:
-        return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+        return [], DEFAULT_RULE_STRATEGY, []
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
-    if isinstance(data, list):
-        return _parse_target_key_ids(data), DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+        return [], DEFAULT_RULE_STRATEGY, []
     if isinstance(data, dict):
         target_key_ids = _parse_target_key_ids(data.get("target_key_ids", []))
         strategy = data.get("strategy") or DEFAULT_RULE_STRATEGY
         if not isinstance(strategy, str):
             strategy = str(strategy)
-        exposure_format = normalize_exposure_format(data.get("exposure_format"))
-        return target_key_ids, strategy, exposure_format
-    return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+        return (
+            target_key_ids,
+            strategy,
+            normalize_exposure_formats(data.get("exposure_formats", [])),
+        )
+    return [], DEFAULT_RULE_STRATEGY, []
 
 
 def _deserialize_rule_config(raw: str) -> tuple[list[int], str]:
@@ -810,6 +814,27 @@ async def _ensure_default_rule_group(
         .order_by(RoutingRule.id)
     )
     if existing is not None:
+        target_key_ids, strategy, exposure_formats = _deserialize_rule_config_detail(
+            existing.target_key_ids_json
+        )
+        changed = False
+        if target_key_ids or exposure_formats != list(EXPLICIT_EXPOSURE_FORMATS):
+            existing.target_key_ids_json = _serialize_rule_config(
+                [], strategy, list(EXPLICIT_EXPOSURE_FORMATS)
+            )
+            changed = True
+        if existing.model_pattern != DEFAULT_RULE_MODEL_PATTERN:
+            existing.model_pattern = DEFAULT_RULE_MODEL_PATTERN
+            changed = True
+        if not existing.is_active:
+            existing.is_active = True
+            changed = True
+        if changed:
+            if commit:
+                await session.commit()
+                await session.refresh(existing)
+            else:
+                await session.flush()
         return existing
 
     rule = RoutingRule(
@@ -819,7 +844,9 @@ async def _ensure_default_rule_group(
         is_active=True,
         dump_enabled=False,
         dump_path=None,
-        target_key_ids_json=_serialize_rule_config([], DEFAULT_RULE_STRATEGY),
+        target_key_ids_json=_serialize_rule_config(
+            [], DEFAULT_RULE_STRATEGY, list(EXPLICIT_EXPOSURE_FORMATS)
+        ),
     )
     session.add(rule)
     if commit:
@@ -834,17 +861,18 @@ def _build_routing_rule_out(
     rule: RoutingRule,
     target_key_ids: list[int],
     strategy: str,
-    exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
+    exposure_formats: list[str],
     request_count: int = 0,
     total_tokens: int = 0,
     avg_ttft_ms: int | None = None,
     avg_tps: float | None = None,
 ) -> RoutingRuleOut:
+    normalized_formats = normalize_exposure_formats(exposure_formats)
     return RoutingRuleOut(
         id=rule.id,
         model_pattern=rule.model_pattern,
         group_name=rule.group_name,
-        exposure_format=normalize_exposure_format(exposure_format),
+        exposure_formats=normalized_formats,
         priority=rule.priority,
         strategy=strategy,
         is_active=rule.is_active,
@@ -870,13 +898,13 @@ def _is_default_rule_group(value: str) -> bool:
 async def _ensure_rule_group_available(
     session: AsyncSession,
     group_name: str,
-    exposure_format: str,
+    exposure_formats: list[str],
     exclude_rule_id: int | None = None,
 ) -> str:
     normalized = _normalize_rule_group_name(group_name)
     if not normalized or _is_default_rule_group(normalized):
         raise HTTPException(status_code=400, detail="Invalid rule group name")
-    normalized_exposure = normalize_exposure_format(exposure_format)
+    normalized_exposures = set(normalize_exposure_formats(exposure_formats))
     result = await session.execute(select(RoutingRule))
     canonical_group_name = normalized
     for rule in result.scalars().all():
@@ -885,13 +913,13 @@ async def _ensure_rule_group_available(
         if _normalize_rule_group_name(rule.group_name).lower() != normalized.lower():
             continue
         canonical_group_name = rule.group_name
-        _, _, existing_exposure = _deserialize_rule_config_detail(
+        _, _, existing_exposures = _deserialize_rule_config_detail(
             rule.target_key_ids_json
         )
-        if normalize_exposure_format(existing_exposure) == normalized_exposure:
+        if normalized_exposures.intersection(existing_exposures):
             raise HTTPException(
                 status_code=400,
-                detail="Rule group and exposure format already exist",
+                detail="Rule group and exposure formats overlap an existing rule",
             )
     return canonical_group_name
 

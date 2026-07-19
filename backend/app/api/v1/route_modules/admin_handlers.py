@@ -68,8 +68,10 @@ from app.core.http_client import get_http_client
 from app.core.redis import get_redis
 from app.core.route_exposure import (
     DEFAULT_EXPOSURE_FORMAT,
+    EXPLICIT_EXPOSURE_FORMATS,
     SUPPORTED_EXPOSURE_FORMATS,
     normalize_exposure_format,
+    normalize_exposure_formats,
 )
 from app.db.models import (
     APIKey,
@@ -204,6 +206,20 @@ def _validate_rule_exposure_format(value: object) -> str:
         if raw and raw not in SUPPORTED_EXPOSURE_FORMATS and raw != "responses":
             raise HTTPException(status_code=400, detail="Invalid exposure_format")
     return normalized
+
+
+def _validate_rule_exposure_formats(value: object) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    if not values:
+        raise HTTPException(status_code=400, detail="At least one exposure format is required")
+    normalized = [_validate_rule_exposure_format(item) for item in values]
+    deduplicated = list(dict.fromkeys(normalized))
+    if DEFAULT_EXPOSURE_FORMAT in deduplicated:
+        raise HTTPException(
+            status_code=400,
+            detail="Routing rules require explicit exposure formats",
+        )
+    return normalize_exposure_formats(deduplicated)
 
 
 def _normalize_endpoint_provider(raw: object) -> str:
@@ -892,8 +908,10 @@ async def _sync_rule_targets_for_api_key(
         group_lookup = _normalize_rule_group_key(rule.group_name).lower()
         if group_lookup not in affected_lookup:
             continue
+        if _is_default_rule_group(rule.group_name):
+            continue
 
-        target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+        target_key_ids, strategy, exposure_formats = _deserialize_rule_config_detail(
             rule.target_key_ids_json
         )
         target_key_set = set(target_key_ids)
@@ -908,7 +926,7 @@ async def _sync_rule_targets_for_api_key(
 
         if changed:
             rule.target_key_ids_json = _serialize_rule_config(
-                sorted(target_key_set), strategy, exposure_format
+                sorted(target_key_set), strategy, exposure_formats
             )
 
 
@@ -1978,7 +1996,7 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
     log_rows = log_result.all()
     items: list[RoutingRuleOut] = []
     for rule in rules:
-        target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+        target_key_ids, strategy, exposure_formats = _deserialize_rule_config_detail(
             rule.target_key_ids_json
         )
         try:
@@ -2005,33 +2023,8 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
                 log_exposure_format = normalize_exposure_format(
                     getattr(log, "exposure_format", None)
                 )
-                if exposure_format != DEFAULT_EXPOSURE_FORMAT:
-                    if log_exposure_format != exposure_format:
-                        continue
-                elif log_exposure_format != DEFAULT_EXPOSURE_FORMAT:
-                    has_explicit_match = False
-                    for candidate_rule in rules:
-                        if (
-                            not candidate_rule.is_active
-                            or candidate_rule.group_name != rule.group_name
-                        ):
-                            continue
-                        _, _, candidate_exposure = _deserialize_rule_config_detail(
-                            candidate_rule.target_key_ids_json
-                        )
-                        if candidate_exposure != log_exposure_format:
-                            continue
-                        try:
-                            candidate_matcher = compile_model_pattern(
-                                candidate_rule.model_pattern
-                            )
-                        except UnsafeModelPatternError:
-                            continue
-                        if candidate_matcher.match(log.model_alias):
-                            has_explicit_match = True
-                            break
-                    if has_explicit_match:
-                        continue
+                if log_exposure_format not in exposure_formats:
+                    continue
                 request_count += 1
                 tokens = log.total_tokens
                 if tokens is None:
@@ -2050,7 +2043,7 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
                 rule,
                 target_key_ids=target_key_ids,
                 strategy=strategy,
-                exposure_format=exposure_format,
+                exposure_formats=exposure_formats,
                 request_count=request_count,
                 total_tokens=total_tokens,
                 avg_ttft_ms=avg_ttft_ms,
@@ -2065,14 +2058,9 @@ async def create_rule(
 ) -> RoutingRuleOut:
     model_pattern = _validate_rule_model_pattern(payload.model_pattern)
     dump_path = _validate_rule_dump_path(payload.dump_path)
-    exposure_format = _validate_rule_exposure_format(payload.exposure_format)
-    if exposure_format == DEFAULT_EXPOSURE_FORMAT:
-        raise HTTPException(
-            status_code=400,
-            detail="New routing rules require an explicit exposure format",
-        )
+    exposure_formats = _validate_rule_exposure_formats(payload.exposure_formats)
     group_name = await _ensure_rule_group_available(
-        session, payload.group_name, exposure_format
+        session, payload.group_name, exposure_formats
     )
     rule = RoutingRule(
         model_pattern=model_pattern,
@@ -2082,7 +2070,7 @@ async def create_rule(
         dump_enabled=payload.dump_enabled,
         dump_path=dump_path,
         target_key_ids_json=_serialize_rule_config(
-            payload.target_key_ids, payload.strategy, exposure_format
+            payload.target_key_ids, payload.strategy, exposure_formats
         ),
     )
     session.add(rule)
@@ -2103,19 +2091,19 @@ async def create_rule(
             **audit_snapshot(rule),
             "target_key_ids": payload.target_key_ids,
             "strategy": payload.strategy,
-            "exposure_format": exposure_format,
+            "exposure_formats": exposure_formats,
         },
     )
     await session.commit()
     await session.refresh(rule)
-    target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+    target_key_ids, strategy, exposure_formats = _deserialize_rule_config_detail(
         rule.target_key_ids_json
     )
     return _build_routing_rule_out(
         rule,
         target_key_ids=target_key_ids,
         strategy=strategy,
-        exposure_format=exposure_format,
+        exposure_formats=exposure_formats,
     )
 
 
@@ -2127,26 +2115,26 @@ async def update_rule(
     rule = await session.get(RoutingRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Routing rule not found")
-    before_targets, before_strategy, before_exposure_format = _deserialize_rule_config_detail(
+    before_targets, before_strategy, before_exposure_formats = _deserialize_rule_config_detail(
         rule.target_key_ids_json
     )
     before_snapshot = {
         **audit_snapshot(rule),
         "target_key_ids": before_targets,
         "strategy": before_strategy,
-        "exposure_format": before_exposure_format,
+        "exposure_formats": before_exposure_formats,
     }
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     previous_group_name = rule.group_name
-    current_targets, current_strategy, current_exposure_format = (
+    current_targets, current_strategy, current_exposure_formats = (
         _deserialize_rule_config_detail(rule.target_key_ids_json)
     )
     next_targets = current_targets
     next_strategy = current_strategy
-    next_exposure_format = current_exposure_format
+    next_exposure_formats = current_exposure_formats
 
     if _is_default_rule_group(rule.group_name):
         if data.get("group_name") is not None and not _is_default_rule_group(
@@ -2161,29 +2149,45 @@ async def update_rule(
                 status_code=400,
                 detail="Default rule group cannot be disabled",
             )
+        if data.get("target_key_ids"):
+            raise HTTPException(
+                status_code=400,
+                detail="Default rule group always uses all active API keys",
+            )
+        if data.get("model_pattern") not in (None, ".*"):
+            raise HTTPException(
+                status_code=400,
+                detail="Default rule group always matches all models",
+            )
 
     has_target_update = "target_key_ids" in data
-    has_exposure_update = "exposure_format" in data
+    has_exposure_update = "exposure_formats" in data
     if has_exposure_update:
-        next_exposure_format = _validate_rule_exposure_format(
-            data.pop("exposure_format")
-        )
+        raw_exposure_formats = data.pop("exposure_formats")
+        next_exposure_formats = _validate_rule_exposure_formats(raw_exposure_formats)
+        if _is_default_rule_group(rule.group_name):
+            if set(next_exposure_formats) != set(EXPLICIT_EXPOSURE_FORMATS):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Default rule group supports all API entry formats",
+                )
+            next_exposure_formats = list(EXPLICIT_EXPOSURE_FORMATS)
     if has_target_update or "strategy" in data or has_exposure_update:
         next_targets = data.pop("target_key_ids", current_targets)
         next_strategy = data.pop("strategy", current_strategy)
         rule.target_key_ids_json = _serialize_rule_config(
-            next_targets, next_strategy, next_exposure_format
+            next_targets, next_strategy, next_exposure_formats
         )
 
     requested_group_name = data.get("group_name", rule.group_name)
     if not _is_default_rule_group(rule.group_name) and (
         str(requested_group_name).strip().lower() != rule.group_name.strip().lower()
-        or next_exposure_format != current_exposure_format
+        or next_exposure_formats != current_exposure_formats
     ):
         data["group_name"] = await _ensure_rule_group_available(
             session,
             str(requested_group_name),
-            next_exposure_format,
+            next_exposure_formats,
             exclude_rule_id=rule.id,
         )
 
@@ -2233,19 +2237,19 @@ async def update_rule(
             **audit_snapshot(rule),
             "target_key_ids": next_targets,
             "strategy": next_strategy,
-            "exposure_format": next_exposure_format,
+            "exposure_formats": next_exposure_formats,
         },
     )
     await session.commit()
     await session.refresh(rule)
-    target_key_ids, strategy, exposure_format = _deserialize_rule_config_detail(
+    target_key_ids, strategy, exposure_formats = _deserialize_rule_config_detail(
         rule.target_key_ids_json
     )
     return _build_routing_rule_out(
         rule,
         target_key_ids=target_key_ids,
         strategy=strategy,
-        exposure_format=exposure_format,
+        exposure_formats=exposure_formats,
     )
 
 

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -77,6 +79,9 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
         migration.migration_id: migrations._migration_statements(migration, "postgresql")
         for migration in migrations.SCHEMA_MIGRATIONS
     }
+    exposure_formats_statements = pg_statements.pop(
+        "20260719_routing_rule_exposure_formats"
+    )
 
     assert pg_statements == {
         "20260705_legacy_schema_updates": (),
@@ -99,6 +104,11 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_exposure_format ON request_attempt_logs(exposure_format)",
         ),
     }
+    assert len(exposure_formats_statements) == 3
+    assert all(
+        "exposure_formats" in statement
+        for statement in exposure_formats_statements[:2]
+    )
 
 
 @pytest.mark.asyncio
@@ -134,6 +144,101 @@ async def test_sqlite_only_migration_runs_on_sqlite(
         ).scalars().all()
 
     assert probe_values == [7]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_routing_rule_exposure_formats_sql_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async def noop_encrypt_existing_secret_rows(_conn) -> None:  # noqa: ANN001
+        return None
+
+    migration = next(
+        item
+        for item in migrations.SCHEMA_MIGRATIONS
+        if item.migration_id == "20260719_routing_rule_exposure_formats"
+    )
+    monkeypatch.setattr(migrations, "_encrypt_existing_secret_rows", noop_encrypt_existing_secret_rows)
+    monkeypatch.setattr(migrations, "SCHEMA_MIGRATIONS", (migration,))
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE routing_rules (
+                    id INTEGER PRIMARY KEY,
+                    model_pattern VARCHAR(128),
+                    group_name VARCHAR(64),
+                    is_active BOOLEAN,
+                    target_key_ids_json TEXT
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO routing_rules (
+                    id, model_pattern, group_name, is_active, target_key_ids_json
+                ) VALUES
+                    (1, 'gpt-.*', 'default', 0, :default_config),
+                    (2, 'gpt-.*', 'codex', 1, :codex_config),
+                    (3, '.*', 'legacy-all', 1, :any_config)
+                """
+            ),
+            {
+                "default_config": json.dumps(
+                    {
+                        "target_key_ids": [1],
+                        "strategy": "sequential",
+                        "exposure_format": "any",
+                    }
+                ),
+                "codex_config": json.dumps(
+                    {
+                        "target_key_ids": [2],
+                        "strategy": "sequential",
+                        "exposure_format": "codex",
+                    }
+                ),
+                "any_config": json.dumps(
+                    {
+                        "target_key_ids": [3],
+                        "strategy": "weighted_round_robin",
+                        "exposure_format": "any",
+                    }
+                ),
+            },
+        )
+
+    await migrations.apply_schema_updates(engine)
+
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT id, model_pattern, is_active, target_key_ids_json
+                    FROM routing_rules
+                    ORDER BY id
+                    """
+                )
+            )
+        ).mappings().all()
+
+    all_formats = ["chat", "response", "codex", "message", "claude_code", "gemini"]
+    configs = {row["id"]: json.loads(row["target_key_ids_json"]) for row in rows}
+    assert configs[1]["target_key_ids"] == []
+    assert configs[1]["exposure_formats"] == all_formats
+    assert rows[0]["model_pattern"] == ".*"
+    assert rows[0]["is_active"] == 1
+    assert configs[2]["exposure_formats"] == ["codex"]
+    assert configs[3]["exposure_formats"] == all_formats
+    assert all("exposure_format" not in config for config in configs.values())
 
     await engine.dispose()
 

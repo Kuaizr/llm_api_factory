@@ -75,7 +75,8 @@ When an endpoint has multiple active Auth JSON keys, manual model discovery
 probes every key and stores the union of their model lists. A model can therefore
 appear even when only one key supports it. If a selected key returns a model,
 authorization, quota, rate-limit, or upstream availability error, routing moves
-to the next candidate key automatically.
+to the next compatible key only when the matched rule's candidate pool contains
+another one.
 
 Creating a Codex endpoint with an initial Auth JSON is one database transaction.
 Invalid credentials roll back both the endpoint and key instead of leaving an
@@ -83,9 +84,9 @@ empty endpoint behind.
 
 ## Rule Exposure
 
-Routing rules now have `exposure_format`:
+Routing rules use an `exposure_formats` array. The console exposes these values
+as checkboxes:
 
-- `any`
 - `chat`
 - `response`
 - `codex`
@@ -93,11 +94,10 @@ Routing rules now have `exposure_format`:
 - `claude_code`
 - `gemini`
 
-New rules require an explicit format; the console no longer offers `any` for new
-rules. A group can contain one rule for each format, so the same group may define
-different candidate sets for Chat, Responses, Codex, Anthropic, and Gemini.
-Legacy rules remain `any` and are used only when no matching explicit-format rule
-applies, even if the legacy rule has a higher numeric priority.
+A rule can select one or more entries. Rules in the same group cannot select
+overlapping entries. The built-in `default` rule always selects every entry and
+dynamically uses all active keys; custom rules use only their selected candidate
+keys.
 
 Codex CLI-like `/openai/v1/responses` traffic selects `codex`; ordinary Responses
 API traffic selects `response`.

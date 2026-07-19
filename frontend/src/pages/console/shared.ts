@@ -104,7 +104,7 @@ export type RoutingRule = {
   id: number;
   model_pattern: string;
   group_name: string;
-  exposure_format?: string;
+  exposure_formats: string[];
   target_key_ids: number[];
   priority: number;
   strategy: string;
@@ -121,7 +121,7 @@ export type RoutingRuleSavePayload = {
   id?: number;
   model_pattern: string;
   group_name: string;
-  exposure_format: string;
+  exposure_formats: string[];
   target_key_ids: number[];
   priority: number;
   strategy: string;

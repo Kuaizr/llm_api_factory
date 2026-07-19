@@ -418,7 +418,7 @@ def rule_group_list(args: argparse.Namespace, client: FactoryClient) -> CommandR
         columns=[
             ("id", "ID"),
             ("group_name", "Group"),
-            ("exposure_format", "Protocol"),
+            ("exposure_formats", "Protocols"),
             ("model_pattern", "Pattern"),
             ("strategy", "Strategy"),
             ("is_active", "Active"),
@@ -431,7 +431,7 @@ def rule_group_create(args: argparse.Namespace, client: FactoryClient) -> Comman
     payload = {
         "group_name": args.group,
         "model_pattern": args.model_pattern,
-        "exposure_format": args.exposure_format,
+        "exposure_formats": _csv(args.exposure_formats),
         "priority": args.priority,
         "strategy": args.strategy,
         "is_active": not args.inactive,
@@ -449,8 +449,8 @@ def rule_group_update(args: argparse.Namespace, client: FactoryClient) -> Comman
         payload["group_name"] = args.group
     if args.model_pattern is not None:
         payload["model_pattern"] = args.model_pattern
-    if args.exposure_format is not None:
-        payload["exposure_format"] = args.exposure_format
+    if args.exposure_formats is not None:
+        payload["exposure_formats"] = _csv(args.exposure_formats)
     if args.priority is not None:
         payload["priority"] = args.priority
     if args.strategy is not None:
@@ -647,8 +647,8 @@ def build_parser() -> argparse.ArgumentParser:
     rule_create_parser.add_argument("--key-ids", default="")
     rule_create_parser.add_argument("--strategy", default="weighted_round_robin")
     rule_create_parser.add_argument(
-        "--exposure-format",
-        choices=("chat", "response", "codex", "message", "claude_code", "gemini"),
+        "--exposure-formats",
+        help="Comma-separated API entries: chat,response,codex,message,claude_code,gemini",
         default="chat",
     )
     rule_create_parser.add_argument("--priority", type=int, default=10)
@@ -664,8 +664,8 @@ def build_parser() -> argparse.ArgumentParser:
     rule_update_parser.add_argument("--key-ids")
     rule_update_parser.add_argument("--strategy")
     rule_update_parser.add_argument(
-        "--exposure-format",
-        choices=("chat", "response", "codex", "message", "claude_code", "gemini"),
+        "--exposure-formats",
+        help="Comma-separated API entries: chat,response,codex,message,claude_code,gemini",
     )
     rule_update_parser.add_argument("--priority", type=int)
     active_group = rule_update_parser.add_mutually_exclusive_group()

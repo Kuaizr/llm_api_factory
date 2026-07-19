@@ -315,10 +315,13 @@ export const parseRoutingRule = (value: unknown): RoutingRule | null => {
     return null;
   }
   const targetKeyIds = parseNumberArray(value.target_key_ids);
+  const parsedExposureFormats = parseStringArray(value.exposure_formats);
   if (
     !isNumber(value.id) ||
     !isString(value.model_pattern) ||
     !isString(value.group_name) ||
+    parsedExposureFormats === null ||
+    parsedExposureFormats.length === 0 ||
     targetKeyIds === null ||
     !isNumber(value.priority) ||
     !isBoolean(value.is_active)
@@ -329,7 +332,7 @@ export const parseRoutingRule = (value: unknown): RoutingRule | null => {
     id: value.id,
     model_pattern: value.model_pattern,
     group_name: value.group_name,
-    exposure_format: isString(value.exposure_format) ? value.exposure_format : "any",
+    exposure_formats: parsedExposureFormats,
     target_key_ids: targetKeyIds,
     priority: value.priority,
     strategy: isString(value.strategy) ? value.strategy : "weighted_round_robin",

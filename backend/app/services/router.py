@@ -12,7 +12,7 @@ from app.core.providers import normalize_provider_filters, normalize_provider_na
 from app.core.route_exposure import (
     DEFAULT_EXPOSURE_FORMAT,
     exposure_format_match_priority,
-    normalize_exposure_format,
+    normalize_exposure_formats,
 )
 from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
 from app.core.timezone import app_today
@@ -409,11 +409,11 @@ class ModelRouter:
         for rule in rules:
             if not model_pattern_matches(rule.model_pattern, model_alias):
                 continue
-            _, _, rule_exposure_format = self._parse_rule_config_detail(
+            _, _, rule_exposure_formats = self._parse_rule_config_detail(
                 rule.target_key_ids_json
             )
             match_priority = exposure_format_match_priority(
-                rule_exposure_format, exposure_format
+                rule_exposure_formats, exposure_format
             )
             if match_priority == 2:
                 return self._parse_rule_config(rule.target_key_ids_json)
@@ -422,19 +422,13 @@ class ModelRouter:
         return fallback or ([], DEFAULT_RULE_STRATEGY)
 
     @staticmethod
-    def _parse_rule_config_detail(raw: str) -> tuple[list[int], str, str]:
+    def _parse_rule_config_detail(raw: str) -> tuple[list[int], str, list[str]]:
         if not raw:
-            return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+            return [], DEFAULT_RULE_STRATEGY, []
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
-        if isinstance(data, list):
-            return (
-                ModelRouter._parse_key_ids(data),
-                DEFAULT_RULE_STRATEGY,
-                DEFAULT_EXPOSURE_FORMAT,
-            )
+            return [], DEFAULT_RULE_STRATEGY, []
         if isinstance(data, dict):
             target_key_ids = ModelRouter._parse_key_ids(
                 data.get("target_key_ids", [])
@@ -442,9 +436,12 @@ class ModelRouter:
             strategy = data.get("strategy") or DEFAULT_RULE_STRATEGY
             if not isinstance(strategy, str):
                 strategy = str(strategy)
-            exposure_format = normalize_exposure_format(data.get("exposure_format"))
-            return target_key_ids, strategy, exposure_format
-        return [], DEFAULT_RULE_STRATEGY, DEFAULT_EXPOSURE_FORMAT
+            return (
+                target_key_ids,
+                strategy,
+                normalize_exposure_formats(data.get("exposure_formats", [])),
+            )
+        return [], DEFAULT_RULE_STRATEGY, []
 
     @staticmethod
     def _parse_rule_config(raw: str) -> tuple[list[int], str]:
