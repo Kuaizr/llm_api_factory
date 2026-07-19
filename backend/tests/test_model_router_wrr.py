@@ -303,6 +303,103 @@ async def test_get_candidates_filters_rules_by_exposure_format() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_candidates_rejects_unconfigured_exposure_and_scopes_unmapped_fallback() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        response_endpoint = Endpoint(
+            name="Responses Only",
+            base_url="https://responses.example.com",
+            provider="openai",
+            is_active=True,
+        )
+        codex_endpoint = Endpoint(
+            name="Codex Only",
+            base_url="https://codex.example.com",
+            provider="codex",
+            is_active=True,
+        )
+        session.add_all([response_endpoint, codex_endpoint])
+        await session.flush()
+
+        response_key = APIKey(
+            endpoint_id=response_endpoint.id,
+            key="sk-response",
+            is_active=True,
+        )
+        response_key.assign_rule_groups(["restricted"])
+        codex_key = APIKey(
+            endpoint_id=codex_endpoint.id,
+            key="{}",
+            is_active=True,
+        )
+        codex_key.assign_rule_groups(["restricted"])
+        session.add_all([response_key, codex_key])
+        await session.flush()
+        session.add_all(
+            [
+                RoutingRule(
+                    model_pattern=".*",
+                    group_name="restricted",
+                    priority=20,
+                    is_active=True,
+                    target_key_ids_json=json.dumps(
+                        {
+                            "target_key_ids": [response_key.id],
+                            "strategy": "sequential",
+                            "exposure_formats": ["response"],
+                        }
+                    ),
+                ),
+                RoutingRule(
+                    model_pattern=".*",
+                    group_name="restricted",
+                    priority=10,
+                    is_active=True,
+                    target_key_ids_json=json.dumps(
+                        {
+                            "target_key_ids": [codex_key.id],
+                            "strategy": "sequential",
+                            "exposure_formats": ["codex"],
+                        }
+                    ),
+                ),
+            ]
+        )
+        await session.commit()
+
+        router = ModelRouter(CircuitBreakerStub())
+        chat_candidates, chat_group = await router.get_candidates(
+            session,
+            "gpt-unmapped",
+            "restricted",
+            exposure_format="chat",
+            allow_default_rule_fallback=True,
+            allow_unmapped_fallback=True,
+        )
+        response_candidates, response_group = await router.get_candidates(
+            session,
+            "gpt-unmapped",
+            "restricted",
+            exposure_format="response",
+            allow_default_rule_fallback=False,
+            allow_unmapped_fallback=True,
+        )
+
+    await engine.dispose()
+
+    assert chat_candidates == []
+    assert chat_group == "restricted"
+    assert [candidate.api_key.id for candidate in response_candidates] == [
+        response_key.id
+    ]
+    assert response_group == "restricted"
+
+
+@pytest.mark.asyncio
 async def test_filter_available_candidates_applies_daily_and_rpm_limits() -> None:
     redis = CountingRedis()
     router = ModelRouter(CircuitBreaker(redis, settings=Settings()))

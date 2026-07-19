@@ -104,10 +104,11 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_exposure_format ON request_attempt_logs(exposure_format)",
         ),
     }
-    assert len(exposure_formats_statements) == 3
+    assert len(exposure_formats_statements) == 5
+    assert "pg_input_is_valid" in exposure_formats_statements[0]
     assert all(
         "exposure_formats" in statement
-        for statement in exposure_formats_statements[:2]
+        for statement in exposure_formats_statements[:4]
     )
 
 
@@ -187,7 +188,9 @@ async def test_routing_rule_exposure_formats_sql_migration(
                 ) VALUES
                     (1, 'gpt-.*', 'default', 0, :default_config),
                     (2, 'gpt-.*', 'codex', 1, :codex_config),
-                    (3, '.*', 'legacy-all', 1, :any_config)
+                    (3, '.*', 'legacy-all', 1, :any_config),
+                    (4, '.*', 'blank-config', 1, ''),
+                    (5, '.*', 'invalid-config', 1, 'not-json')
                 """
             ),
             {
@@ -238,6 +241,10 @@ async def test_routing_rule_exposure_formats_sql_migration(
     assert rows[0]["is_active"] == 1
     assert configs[2]["exposure_formats"] == ["codex"]
     assert configs[3]["exposure_formats"] == all_formats
+    assert configs[4]["target_key_ids"] == []
+    assert configs[4]["exposure_formats"] == all_formats
+    assert configs[5]["target_key_ids"] == []
+    assert configs[5]["exposure_formats"] == all_formats
     assert all("exposure_format" not in config for config in configs.values())
 
     await engine.dispose()

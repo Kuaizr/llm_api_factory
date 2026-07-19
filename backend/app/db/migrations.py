@@ -313,6 +313,26 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             """
             UPDATE routing_rules
             SET target_key_ids_json = jsonb_build_object(
+                'target_key_ids', '[]'::jsonb,
+                'strategy', 'weighted_round_robin',
+                'exposure_formats', '["chat","response","codex","message","claude_code","gemini"]'::jsonb
+            )::text
+            WHERE target_key_ids_json IS NULL
+               OR BTRIM(target_key_ids_json) = ''
+               OR NOT pg_input_is_valid(target_key_ids_json, 'jsonb')
+            """,
+            """
+            UPDATE routing_rules
+            SET target_key_ids_json = jsonb_build_object(
+                'target_key_ids', '[]'::jsonb,
+                'strategy', 'weighted_round_robin',
+                'exposure_formats', '["chat","response","codex","message","claude_code","gemini"]'::jsonb
+            )::text
+            WHERE jsonb_typeof(target_key_ids_json::jsonb) NOT IN ('array', 'object')
+            """,
+            """
+            UPDATE routing_rules
+            SET target_key_ids_json = jsonb_build_object(
                 'target_key_ids', target_key_ids_json::jsonb,
                 'strategy', 'weighted_round_robin',
                 'exposure_formats', '["chat","response","codex","message","claude_code","gemini"]'::jsonb

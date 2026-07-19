@@ -53,6 +53,14 @@ class RouteCandidate:
         return trimmed or None
 
 
+@dataclass(frozen=True)
+class RuleTargetSelection:
+    target_key_ids: list[int]
+    strategy: str
+    matched_rule: bool
+    exposure_supported: bool
+
+
 DEFAULT_RULE_STRATEGY = "weighted_round_robin"
 SEQUENTIAL_STATE_TTL_SECONDS = 86400
 WRR_STATE_MAX_POOLS = 1024
@@ -78,24 +86,32 @@ class ModelRouter:
         allow_default_rule_fallback: bool = True,
         exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
     ) -> tuple[list[RouteCandidate], str]:
-        target_key_ids, strategy = await self._select_rule_targets(
+        selection = await self._select_rule_targets(
             session, model_alias, rule_group, exposure_format=exposure_format
         )
         effective_group = rule_group
-        if (
-            not target_key_ids
-            and rule_group != "default"
-            and allow_default_rule_fallback
-        ):
-            fallback_targets, fallback_strategy = await self._select_rule_targets(
+        if not selection.exposure_supported:
+            return [], effective_group
+        if not selection.matched_rule:
+            if rule_group.lower() == "default" or not allow_default_rule_fallback:
+                return [], effective_group
+            fallback_selection = await self._select_rule_targets(
                 session,
                 model_alias,
                 "default",
                 exposure_format=exposure_format,
             )
-            target_key_ids = fallback_targets
-            strategy = fallback_strategy
+            if (
+                not fallback_selection.exposure_supported
+                or not fallback_selection.matched_rule
+            ):
+                return [], effective_group
+            selection = fallback_selection
             effective_group = "default"
+        target_key_ids = selection.target_key_ids
+        strategy = selection.strategy
+        if effective_group.lower() != "default" and not target_key_ids:
+            return [], effective_group
         stmt = (
             select(APIKey, Endpoint, ModelMap)
             .join(Endpoint, APIKey.endpoint_id == Endpoint.id)
@@ -129,7 +145,10 @@ class ModelRouter:
 
         if not candidates and allow_unmapped_fallback:
             fallback_candidates = await self._load_unmapped_candidates(
-                session, model_alias, effective_group
+                session,
+                model_alias,
+                effective_group,
+                target_key_ids=target_key_ids,
             )
             candidates = self._filter_provider_candidates(
                 fallback_candidates,
@@ -211,6 +230,8 @@ class ModelRouter:
         session: AsyncSession,
         model_alias: str,
         effective_group: str,
+        *,
+        target_key_ids: list[int],
     ) -> list[RouteCandidate]:
         fallback_stmt = (
             select(APIKey, Endpoint)
@@ -221,13 +242,18 @@ class ModelRouter:
             )
             .order_by(APIKey.id)
         )
+        if target_key_ids:
+            fallback_stmt = fallback_stmt.where(APIKey.id.in_(target_key_ids))
         result = await session.execute(fallback_stmt)
         candidates = [
             RouteCandidate(api_key=api_key, endpoint=endpoint, real_model=model_alias)
             for api_key, endpoint in result.all()
         ]
         return await self._filter_available_candidates(
-            session, candidates, effective_group, target_key_ids=[]
+            session,
+            candidates,
+            effective_group,
+            target_key_ids=target_key_ids,
         )
 
     async def _filter_available_candidates(
@@ -398,28 +424,59 @@ class ModelRouter:
         rule_group: str,
         *,
         exposure_format: str = DEFAULT_EXPOSURE_FORMAT,
-    ) -> tuple[list[int], str]:
+    ) -> RuleTargetSelection:
         result = await session.execute(
             select(RoutingRule)
             .where(RoutingRule.group_name == rule_group, RoutingRule.is_active.is_(True))
             .order_by(RoutingRule.priority.desc(), RoutingRule.id)
         )
         rules = result.scalars().all()
-        fallback: tuple[list[int], str] | None = None
+        if not rules and rule_group.lower() == "default":
+            return RuleTargetSelection(
+                target_key_ids=[],
+                strategy=DEFAULT_RULE_STRATEGY,
+                matched_rule=True,
+                exposure_supported=True,
+            )
+        fallback: RuleTargetSelection | None = None
+        exposure_supported = False
         for rule in rules:
-            if not model_pattern_matches(rule.model_pattern, model_alias):
-                continue
             _, _, rule_exposure_formats = self._parse_rule_config_detail(
                 rule.target_key_ids_json
             )
             match_priority = exposure_format_match_priority(
                 rule_exposure_formats, exposure_format
             )
+            if match_priority is not None:
+                exposure_supported = True
+            if not model_pattern_matches(rule.model_pattern, model_alias):
+                continue
             if match_priority == 2:
-                return self._parse_rule_config(rule.target_key_ids_json)
+                target_key_ids, strategy = self._parse_rule_config(
+                    rule.target_key_ids_json
+                )
+                return RuleTargetSelection(
+                    target_key_ids=target_key_ids,
+                    strategy=strategy,
+                    matched_rule=True,
+                    exposure_supported=True,
+                )
             if match_priority == 1 and fallback is None:
-                fallback = self._parse_rule_config(rule.target_key_ids_json)
-        return fallback or ([], DEFAULT_RULE_STRATEGY)
+                target_key_ids, strategy = self._parse_rule_config(
+                    rule.target_key_ids_json
+                )
+                fallback = RuleTargetSelection(
+                    target_key_ids=target_key_ids,
+                    strategy=strategy,
+                    matched_rule=True,
+                    exposure_supported=True,
+                )
+        return fallback or RuleTargetSelection(
+            target_key_ids=[],
+            strategy=DEFAULT_RULE_STRATEGY,
+            matched_rule=False,
+            exposure_supported=exposure_supported,
+        )
 
     @staticmethod
     def _parse_rule_config_detail(raw: str) -> tuple[list[int], str, list[str]]:

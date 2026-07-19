@@ -225,6 +225,100 @@ async def test_factory_access_key_does_not_fallback_to_default_when_not_allowed(
 
 
 @pytest.mark.asyncio
+async def test_factory_access_key_rejects_api_entry_not_enabled_for_rule_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+
+    endpoint = Endpoint(
+        name="Codex Group Key",
+        base_url="https://api.example.com",
+        provider="openai",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.flush()
+    api_key = APIKey(endpoint_id=endpoint.id, key="sk-codex-group", is_active=True)
+    api_key.assign_rule_groups(["codex-only"])
+    session.add(api_key)
+    await session.flush()
+    session.add(
+        ModelMap(
+            endpoint_id=endpoint.id,
+            model_alias="gpt-5.6-sol",
+            real_model="gpt-5.6-sol",
+        )
+    )
+    session.add(
+        RoutingRule(
+            model_pattern=".*",
+            group_name="codex-only",
+            priority=10,
+            is_active=True,
+            target_key_ids_json=json.dumps(
+                {
+                    "target_key_ids": [api_key.id],
+                    "strategy": "sequential",
+                    "exposure_formats": ["codex"],
+                }
+            ),
+        )
+    )
+    factory_key = FactoryAccessKey(
+        name="codex-entry-only",
+        key=hash_access_key("fk-codex-entry-only"),
+        key_preview=access_key_preview("fk-codex-entry-only"),
+        is_active=True,
+    )
+    factory_key.rule_groups = ["codex-only"]
+    session.add(factory_key)
+    await session.commit()
+
+    settings = Settings(master_auth_token="admin")
+    redis = MemoryRedis()
+
+    async def fake_get_redis():
+        return redis
+
+    async def override_session():
+        yield session
+
+    async def fake_get_http_client() -> httpx.AsyncClient:
+        raise AssertionError("disabled Chat entry must not call upstream")
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", fake_get_redis)
+    monkeypatch.setattr(routes_module, "get_notifier", lambda: None)
+    monkeypatch.setattr(routes_module, "get_http_client", fake_get_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer fk-codex-entry-only"},
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No available API keys"
+
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_factory_access_key_cannot_escalate_rule_group_from_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
