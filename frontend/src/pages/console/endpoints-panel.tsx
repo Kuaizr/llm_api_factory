@@ -27,6 +27,27 @@ import {
 
 const providerFilters = ["openai", "anthropic", "gemini", "codex", "custom"] as const;
 
+export const countEndpointsByProvider = (
+  endpoints: Array<Pick<Endpoint, "provider">>
+) => {
+  const counts: Record<(typeof providerFilters)[number], number> = {
+    openai: 0,
+    anthropic: 0,
+    gemini: 0,
+    codex: 0,
+    custom: 0,
+  };
+  endpoints.forEach((endpoint) => {
+    const provider = (endpoint.provider || "custom").toLowerCase();
+    if (providerFilters.includes(provider as (typeof providerFilters)[number])) {
+      counts[provider as (typeof providerFilters)[number]] += 1;
+    } else {
+      counts.custom += 1;
+    }
+  });
+  return counts;
+};
+
 type EndpointsPanelProps = {
   endpoints: Endpoint[];
   agents: AgentNode[];
@@ -225,23 +246,10 @@ export const EndpointsPanel = ({
     ];
   }, [endpoints, agents, usageStats]);
 
-  const providerCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      openai: 0,
-      anthropic: 0,
-      gemini: 0,
-      custom: 0,
-    };
-    endpoints.forEach((endpoint) => {
-      const provider = (endpoint.provider || "custom").toLowerCase();
-      if (provider in counts) {
-        counts[provider] += 1;
-      } else {
-        counts.custom += 1;
-      }
-    });
-    return counts;
-  }, [endpoints]);
+  const providerCounts = useMemo(
+    () => countEndpointsByProvider(endpoints),
+    [endpoints]
+  );
 
   const filteredEndpoints = useMemo(() => {
     if (providerFilter === "all") {
