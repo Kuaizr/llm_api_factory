@@ -11,6 +11,8 @@ Agent 是 LLM API Factory 的核心特色。它让请求从指定远程节点发
 
 Agent 不是模型 runtime，也不是 provider。它只负责按主服务下发的请求去远端代理访问目标 URL。
 
+渠道绑定 Agent 后，模型列表与自动探测、API Key 测试、OAuth/Codex Token 刷新以及真实推理请求都会使用同一个 Agent 网络出口。Agent 离线或请求失败时不会回退到主服务直连，而是按正常错误与路由故障切换逻辑处理；未绑定 Agent 的渠道则始终由主服务直连上游。
+
 ## 架构
 
 ```mermaid
@@ -103,4 +105,3 @@ systemctl is-active llm-api-factory-agent.service
 journalctl -u llm-api-factory-agent.service -n 100 --no-pager
 ps aux | grep llm-api-factory-agent
 ```
-

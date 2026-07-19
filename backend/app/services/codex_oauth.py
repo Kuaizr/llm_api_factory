@@ -8,12 +8,13 @@ import json
 import logging
 import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import APIKey
+from app.services.endpoint_transport import send_endpoint_request
 from app.services.secrets import decrypt_secret_value, encrypt_secret_value_if_possible
 
 logger = logging.getLogger(__name__)
@@ -213,23 +214,27 @@ async def _refresh_codex_credential(
     *,
     client,
     settings: Settings,
+    endpoint: object | None = None,
 ) -> CodexCredential:
     if not credential.refresh_token:
         raise CodexCredentialError("Codex credential is expired and has no refresh_token")
-    response = await client.post(
-        settings.codex_oauth_token_url,
-        data={
+    body = urlencode(
+        {
             "client_id": settings.codex_oauth_client_id,
             "grant_type": "refresh_token",
             "refresh_token": credential.refresh_token,
-        },
+        }
+    ).encode("utf-8")
+    response = await send_endpoint_request(
+        endpoint=endpoint,
+        method="POST",
+        url=settings.codex_oauth_token_url,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+        body=body,
+        client=client,
         timeout=30.0,
     )
-    try:
-        content = await response.aread()
-    finally:
-        await response.aclose()
+    content = response.body
     if response.status_code >= 400:
         raise CodexCredentialError(f"Codex token refresh failed: HTTP {response.status_code}")
     try:
@@ -371,6 +376,7 @@ async def resolve_codex_credential(
     redis: object | None = None,
     settings: Settings | None = None,
     force_refresh: bool = False,
+    endpoint: object | None = None,
 ) -> CodexCredential:
     resolved_settings = settings or get_settings()
     decrypted = decrypt_secret_value(api_key.key, settings=resolved_settings)
@@ -439,6 +445,7 @@ async def resolve_codex_credential(
                     credential,
                     client=client,
                     settings=resolved_settings,
+                    endpoint=endpoint,
                 )
                 await _persist_refreshed_credential(
                     stored_api_key,

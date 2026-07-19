@@ -13,6 +13,7 @@ from app.core.redis import MemoryRedis
 from app.db.base import Base
 from app.db.models import APIKey, Endpoint, ModelMap, RequestAttemptLog, RequestLog
 from app.db.session import get_session
+from app.services import endpoint_transport
 from app.services.agent_transport import AgentResponse
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
@@ -959,7 +960,7 @@ async def test_api_key_test_uses_agent_for_agent_endpoint(
         lambda: Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True),
     )
     monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
-    monkeypatch.setattr(routes_module, "get_agent_manager", lambda: agent_manager)
+    monkeypatch.setattr(endpoint_transport, "get_agent_manager", lambda: agent_manager)
 
     app = FastAPI()
     app.include_router(routes_module.router)

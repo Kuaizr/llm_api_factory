@@ -13,6 +13,7 @@ from app.db.models import RoutingRule
 from app.services.background_tasks import safe_create_task
 from app.services.billing import RequestMetrics, extract_usage, write_request_log
 from app.services.codex_oauth import CodexCredential, apply_codex_auth_headers
+from app.services.endpoint_transport import endpoint_agent_name, send_endpoint_request
 from app.services.router import RouteCandidate
 from app.services.secrets import decrypt_oauth_config, decrypt_secret_value
 
@@ -289,14 +290,7 @@ def _build_upstream_headers(
 
 
 def _get_agent_name(endpoint: object) -> str | None:
-    access_mode = str(getattr(endpoint, "access_mode", "") or "").strip()
-    if access_mode and access_mode != "via_agent":
-        return None
-    name = getattr(endpoint, "agent_node", None)
-    if not name:
-        return None
-    trimmed = str(name).strip()
-    return trimmed or None
+    return endpoint_agent_name(endpoint)
 
 
 def _strip_duplicate_version_segment(base: str, path: str) -> str:
@@ -502,20 +496,24 @@ def _build_oauth_request_form(config: dict[str, object]) -> dict[str, str]:
 async def _fetch_oauth_token(
     http_client: object,
     config: dict[str, object],
+    endpoint: object,
 ) -> tuple[str, int]:
     token_url = str(config["token_url"])
     form = _build_oauth_request_form(config)
-    response = await http_client.post(
-        token_url,
-        data=form,
+    response = await send_endpoint_request(
+        endpoint=endpoint,
+        method="POST",
+        url=token_url,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+        body=urlencode(form).encode("utf-8"),
+        client=http_client,
     )
+    if response.status_code >= 400:
+        raise RuntimeError(f"OAuth token request failed with status {response.status_code}")
     try:
-        if response.status_code >= 400:
-            raise RuntimeError(f"OAuth token request failed with status {response.status_code}")
-        payload = response.json()
-    finally:
-        await response.aclose()
+        payload = json.loads(response.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("OAuth token response must be valid JSON") from exc
 
     if not isinstance(payload, dict):
         raise RuntimeError("OAuth token response must be a JSON object")
@@ -613,7 +611,11 @@ async def _resolve_oauth_access_token(
             if cached_token:
                 return cached_token
 
-        access_token, expires_at = await _fetch_oauth_token(http_client, config)
+        access_token, expires_at = await _fetch_oauth_token(
+            http_client,
+            config,
+            endpoint,
+        )
         await _write_cached_oauth_token(redis, cache_key, access_token, expires_at)
         return access_token
     finally:

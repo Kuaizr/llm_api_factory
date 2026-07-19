@@ -18,6 +18,7 @@ from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
 from app.core.timezone import app_today
 from app.services.agent_transport import get_agent_manager
 from app.services.circuit_breaker import CircuitBreaker
+from app.services.endpoint_transport import endpoint_agent_name
 from app.services.model_patterns import model_pattern_matches
 
 
@@ -46,11 +47,7 @@ class RouteCandidate:
     def agent_name(self) -> str | None:
         if self.execution_mode != "via_agent":
             return None
-        name = getattr(self.endpoint, "agent_node", None)
-        if not name:
-            return None
-        trimmed = str(name).strip()
-        return trimmed or None
+        return endpoint_agent_name(self.endpoint)
 
 
 @dataclass(frozen=True)

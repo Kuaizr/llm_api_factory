@@ -4,9 +4,86 @@ import httpx
 import pytest
 
 from app.core.config import Settings
+from app.services import endpoint_transport
+from app.services.agent_transport import AgentResponse
 from app.services.router import RouteCandidate
 from app.services.secrets import ENCRYPTED_SECRET_PREFIX, encrypt_oauth_config
 from proxy_test_utils import APIKeyStub, EndpointStub, build_proxy_app
+
+
+@pytest.mark.asyncio
+async def test_agent_endpoint_routes_oauth_and_upstream_through_same_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=90,
+        name="AgentOAuthEndpoint",
+        base_url="https://api.example.com",
+        agent_node="edge-oauth",
+        oauth_config=json.dumps(
+            {
+                "token_url": "https://auth.example.com/oauth/token",
+                "client_id": "agent-client",
+                "client_secret": "agent-secret",
+            }
+        ),
+    )
+    candidate = RouteCandidate(
+        api_key=APIKeyStub(id=91, key="sk-ignored"),
+        endpoint=endpoint,
+        real_model="gpt-4o",
+    )
+
+    class FakeAgentManager:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def send_request(self, agent_name, request):  # noqa: ANN001
+            self.calls.append((agent_name, request))
+            if request.url == "https://auth.example.com/oauth/token":
+                return AgentResponse(
+                    status_code=200,
+                    headers={"content-type": "application/json"},
+                    body=json.dumps(
+                        {"access_token": "agent-oauth-token", "expires_in": 3600}
+                    ).encode("utf-8"),
+                )
+            assert request.headers["Authorization"] == "Bearer agent-oauth-token"
+            return AgentResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                body=b'{"id":"agent-oauth-ok"}',
+            )
+
+    manager = FakeAgentManager()
+    monkeypatch.setattr(endpoint_transport, "get_agent_manager", lambda: manager)
+
+    def direct_handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("via_agent OAuth channel must not connect directly")
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(direct_handler))
+    recorded: dict[str, object] = {}
+    app = build_proxy_app(
+        monkeypatch,
+        candidate,
+        upstream_client,
+        recorded,
+        agent_manager=manager,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/completions",
+            headers={"Authorization": "Bearer token"},
+            json={"model": "gpt-4o-mini", "prompt": "hi"},
+        )
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert [call[0] for call in manager.calls] == ["edge-oauth", "edge-oauth"]
+    assert manager.calls[0][1].url == "https://auth.example.com/oauth/token"
+    assert manager.calls[1][1].url == "https://api.example.com/v1/completions"
 
 
 @pytest.mark.asyncio

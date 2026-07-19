@@ -25,6 +25,7 @@ from app.services.codex_oauth import (
     build_codex_models_url,
     resolve_codex_credential,
 )
+from app.services.endpoint_transport import send_endpoint_request
 from app.services.secrets import decrypt_secret_value
 from app.services.telegram import TelegramNotifier
 
@@ -341,6 +342,7 @@ class HealthMonitor:
                     session_factory=self._session_factory,
                     redis=redis,
                     settings=self.settings,
+                    endpoint=target.endpoint,
                 )
                 url = build_codex_models_url(
                     target.endpoint.base_url,
@@ -352,22 +354,23 @@ class HealthMonitor:
                 )
             else:
                 headers = self._build_headers(target)
+            body = b""
+            method = "GET"
             if provider == "anthropic":
-                response = await client.post(
-                    url,
-                    headers=headers,
-                    json=probe_payload,
-                    timeout=self.settings.health_probe_timeout_seconds,
-                )
-            else:
-                response = await client.get(
-                    url,
-                    headers=headers,
-                    timeout=self.settings.health_probe_timeout_seconds,
-                )
+                method = "POST"
+                body = json.dumps(probe_payload, ensure_ascii=False).encode("utf-8")
+                headers.setdefault("Content-Type", "application/json")
+            response = await send_endpoint_request(
+                endpoint=target.endpoint,
+                method=method,
+                url=url,
+                headers=headers,
+                body=body,
+                client=client,
+                timeout=self.settings.health_probe_timeout_seconds,
+            )
             latency_ms = int((time.perf_counter() - start) * 1000)
             status_code = response.status_code
-            await response.aclose()
 
             if status_code >= 400:
                 status = "failure"

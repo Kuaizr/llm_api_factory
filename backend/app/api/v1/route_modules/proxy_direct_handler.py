@@ -137,6 +137,7 @@ async def handle_direct_candidate(
                     session_factory=SessionLocal,
                     redis=redis,
                     force_refresh=True,
+                    endpoint=candidate.endpoint,
                 )
                 headers = apply_codex_auth_headers(headers, credential)
                 request_obj = client.build_request(

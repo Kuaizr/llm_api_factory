@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import httpx
@@ -7,11 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import routes as routes_module
+from app.api.v1.route_modules import admin_handlers
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import APIKey, Endpoint, FactoryAccessKey, ModelMap, RequestLog
 from app.db.session import get_session
+from app.services import endpoint_transport
 from app.services.access_keys import is_hashed_access_key
+from app.services.agent_transport import AgentResponse
 
 
 @pytest.mark.asyncio
@@ -916,3 +920,54 @@ async def test_rule_group_eligibility_auto_probes_when_model_maps_missing(
     await upstream_client.aclose()
     await session.close()
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rule_group_auto_probe_uses_endpoint_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = Endpoint(
+        id=901,
+        name="Agent OpenAI",
+        base_url="https://api.example.test/v1",
+        provider="openai",
+        access_mode="via_agent",
+        agent_node="edge-rule",
+    )
+
+    class FakeAgentManager:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def send_request(self, agent_name, request):  # noqa: ANN001
+            self.calls.append((agent_name, request))
+            return AgentResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps({"data": [{"id": "gpt-agent"}]}).encode("utf-8"),
+            )
+
+    manager = FakeAgentManager()
+
+    def direct_handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("via_agent automatic model probe must not connect directly")
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(direct_handler))
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(admin_handlers, "get_http_client", override_http_client)
+    monkeypatch.setattr(endpoint_transport, "get_agent_manager", lambda: manager)
+
+    models, status_code = await admin_handlers._probe_endpoint_models_with_key(
+        endpoint=endpoint,
+        api_key_value="sk-agent",
+    )
+    await upstream_client.aclose()
+
+    assert status_code == 200
+    assert models == ["gpt-agent"]
+    assert len(manager.calls) == 1
+    assert manager.calls[0][0] == "edge-rule"
+    assert manager.calls[0][1].url == "https://api.example.test/v1/models"

@@ -8,6 +8,8 @@ import respx
 
 from app.core.config import Settings
 from app.services.circuit_breaker import CircuitBreaker
+from app.services import endpoint_transport
+from app.services.agent_transport import AgentResponse
 from app.services.health_monitor import (
     HealthMonitor,
     HealthProbeStore,
@@ -28,6 +30,8 @@ class EndpointStub:
     is_active: bool = True
     provider: str = "openai"
     url_path_suffix: str | None = None
+    access_mode: str = "direct"
+    agent_node: str | None = None
 
 
 @dataclass
@@ -123,6 +127,48 @@ async def test_probe_target_records_success_and_store() -> None:
     assert result.status_code == 200
     assert result.endpoint_name == endpoint.name
     assert result.latency_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduled_probe_uses_endpoint_agent_without_direct_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=31,
+        name="Agent OpenAI",
+        base_url="https://api.example.test",
+        access_mode="via_agent",
+        agent_node="edge-us",
+    )
+    api_key = APIKeyStub(id=32, key="sk-agent")
+    target = HealthTarget(endpoint=endpoint, api_key=api_key, real_model="gpt-agent")
+    store = HealthProbeStore(MemoryRedis())
+
+    class FakeAgentManager:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def send_request(self, agent_name, request):  # noqa: ANN001
+            self.calls.append((agent_name, request))
+            return AgentResponse(status_code=200, headers={}, body=b"{}")
+
+    manager = FakeAgentManager()
+    monkeypatch.setattr(endpoint_transport, "get_agent_manager", lambda: manager)
+
+    def direct_handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("scheduled via_agent probe must not connect directly")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(direct_handler))
+    monitor = HealthMonitor(client=client, probe_store=store)
+    await monitor.probe_target(target)
+    await client.aclose()
+
+    result = await store.read(api_key.id)
+    assert result is not None
+    assert result.status == "success"
+    assert len(manager.calls) == 1
+    assert manager.calls[0][0] == "edge-us"
+    assert manager.calls[0][1].url == "https://api.example.test/v1/models"
 
 
 @pytest.mark.asyncio

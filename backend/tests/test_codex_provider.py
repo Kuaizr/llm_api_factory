@@ -2,6 +2,7 @@ import json
 import asyncio
 import base64
 import time
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -20,6 +21,8 @@ from app.services.codex_oauth import (
     parse_codex_credential,
     resolve_codex_credential,
 )
+from app.services import endpoint_transport
+from app.services.agent_transport import AgentResponse
 from app.services.router import RouteCandidate
 from conftest import TestMemoryRedis as MemoryRedis
 from proxy_test_utils import APIKeyStub, EndpointStub, build_proxy_app
@@ -415,6 +418,71 @@ async def test_codex_credential_refresh_uses_mock_token_endpoint() -> None:
     assert requests[0].url == "https://auth.example.test/oauth/token"
     persisted = parse_codex_credential(api_key.key)
     assert persisted.access_token == "mock-new-access-token"
+
+
+@pytest.mark.asyncio
+async def test_codex_credential_refresh_uses_endpoint_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = APIKeyStub(
+        id=206,
+        key=_mock_codex_key(access_token="", expires_at=int(time.time()) - 60),
+    )
+    endpoint = EndpointStub(
+        id=207,
+        name="Codex Agent",
+        base_url="https://chatgpt.example.test",
+        provider="codex",
+        agent_node="edge-codex",
+    )
+
+    class FakeSession:
+        async def commit(self) -> None:
+            return None
+
+    class FakeAgentManager:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def send_request(self, agent_name, request):  # noqa: ANN001
+            self.calls.append((agent_name, request))
+            return AgentResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(
+                    {
+                        "access_token": "agent-access-token",
+                        "refresh_token": "agent-refresh-token",
+                        "account_id": "agent-account-id",
+                        "expires_in": 3600,
+                    }
+                ).encode("utf-8"),
+            )
+
+    manager = FakeAgentManager()
+    monkeypatch.setattr(endpoint_transport, "get_agent_manager", lambda: manager)
+
+    def direct_handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Codex refresh for via_agent must not connect directly")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(direct_handler))
+    credential = await resolve_codex_credential(
+        api_key,
+        client=client,
+        session=FakeSession(),  # type: ignore[arg-type]
+        settings=Settings(codex_oauth_token_url="https://auth.example.test/oauth/token"),
+        endpoint=endpoint,
+    )
+    await client.aclose()
+
+    assert credential.access_token == "agent-access-token"
+    assert len(manager.calls) == 1
+    agent_name, request = manager.calls[0]
+    assert agent_name == "edge-codex"
+    assert request.url == "https://auth.example.test/oauth/token"
+    form = parse_qs(request.body.decode("utf-8"))
+    assert form["grant_type"] == ["refresh_token"]
+    assert form["refresh_token"] == ["mock-refresh-token"]
 
 
 @pytest.mark.asyncio

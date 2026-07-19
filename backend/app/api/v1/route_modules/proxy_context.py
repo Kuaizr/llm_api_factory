@@ -72,6 +72,7 @@ async def prepare_candidate_request_context(
             client=client,
             session_factory=SessionLocal,
             redis=redis,
+            endpoint=candidate.endpoint,
         )
     headers = _build_upstream_headers(
         request.headers,

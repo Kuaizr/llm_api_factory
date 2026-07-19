@@ -63,6 +63,7 @@ from app.api.v1.route_models import (
     RuleGroupEligibilityCheck,
     RuleGroupEligibilityOut,
 )
+from app.api.v1.route_proxy_helpers import _build_upstream_headers
 from app.core.config import get_settings
 from app.core.http_client import get_http_client
 from app.core.redis import get_redis
@@ -89,6 +90,8 @@ from app.services.access_keys import (
     hash_access_key,
     is_hashed_access_key,
 )
+from app.services.agent_transport import AgentUnavailableError
+from app.services.audit import audit_snapshot, record_audit_log
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.codex_oauth import (
     CodexCredentialError,
@@ -99,6 +102,7 @@ from app.services.codex_oauth import (
     resolve_codex_credential,
 )
 from app.services.codex_usage import read_codex_usage_many
+from app.services.endpoint_transport import send_endpoint_request
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 from app.services.model_patterns import (
     UnsafeModelPatternError,
@@ -110,14 +114,6 @@ from app.services.secrets import (
     encrypt_oauth_config,
     encrypt_secret_value,
 )
-from app.services.audit import audit_snapshot, record_audit_log
-from app.services.agent_transport import (
-    AgentRequest,
-    AgentResponse,
-    AgentUnavailableError,
-    get_agent_manager,
-)
-from app.api.v1.route_proxy_helpers import _build_upstream_headers
 
 SUPPORTED_ENDPOINT_PROVIDERS = {"openai", "anthropic", "gemini", "codex", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
@@ -328,17 +324,6 @@ CLAUDE_CODE_BETAS = (
 )
 
 
-def _endpoint_agent_name(endpoint: Endpoint) -> str | None:
-    access_mode = _normalize_endpoint_access_mode(
-        getattr(endpoint, "access_mode", None),
-        getattr(endpoint, "agent_node", None),
-    )
-    if access_mode != "via_agent":
-        return None
-    name = str(getattr(endpoint, "agent_node", "") or "").strip()
-    return name or None
-
-
 async def _send_endpoint_request(
     *,
     endpoint: Endpoint,
@@ -357,36 +342,16 @@ async def _send_endpoint_request(
     request_headers = dict(headers)
     if json_payload is not None:
         request_headers.setdefault("Content-Type", "application/json")
-    agent_name = _endpoint_agent_name(endpoint)
-    if agent_name:
-        agent_response = await get_agent_manager().send_request(
-            agent_name,
-            AgentRequest(
-                method=method.upper(),
-                url=url,
-                headers=request_headers,
-                body=body,
-                stream=False,
-            ),
-        )
-        if not isinstance(agent_response, AgentResponse):
-            raise AgentUnavailableError(f"Agent {agent_name} returned stream response")
-        return agent_response.status_code, dict(agent_response.headers), agent_response.body
-
-    if method.upper() == "POST":
-        response = await client.post(
-            url,
-            headers=request_headers,
-            content=body,
-            timeout=timeout,
-        )
-    else:
-        response = await client.get(url, headers=headers, timeout=timeout)
-    try:
-        content = await response.aread()
-    finally:
-        await response.aclose()
-    return response.status_code, dict(response.headers), content
+    response = await send_endpoint_request(
+        endpoint=endpoint,
+        method=method,
+        url=url,
+        headers=request_headers,
+        body=body,
+        client=client,
+        timeout=timeout,
+    )
+    return response.status_code, response.headers, response.body
 
 
 def _default_direct_test_template(endpoint: Endpoint) -> str:
@@ -1052,7 +1017,6 @@ async def _probe_endpoint_models_with_key(
 
     settings = get_settings()
     client = await get_http_client()
-    response = None
     try:
         if provider == "codex":
             credential = parse_codex_credential(api_key_value)
@@ -1076,22 +1040,27 @@ async def _probe_endpoint_models_with_key(
                 if header_prefix
                 else {header_name: api_key_value}
             )
-        response = await client.get(
-            url,
+        status_code, _response_headers, response_body = await _send_endpoint_request(
+            endpoint=endpoint,
+            method="GET",
+            url=url,
             headers=headers,
+            json_payload=None,
+            client=client,
             timeout=settings.health_probe_timeout_seconds,
         )
-        status_code = response.status_code
         if status_code >= 400:
             return [], status_code
-        payload = response.json()
+        payload = json.loads(response_body.decode("utf-8"))
         discovered_models = _extract_provider_models(provider, payload)
         return discovered_models, status_code
     except Exception:
+        logger.exception(
+            "endpoint_model_probe_failed endpoint_id=%s provider=%s",
+            endpoint.id,
+            provider,
+        )
         return [], None
-    finally:
-        if response is not None:
-            await response.aclose()
 
 
 async def list_endpoints(session: AsyncSession = Depends(get_session)) -> list[EndpointDetailOut]:
@@ -1328,6 +1297,7 @@ async def _probe_endpoint_key(
                 session_factory=SessionLocal,
                 redis=redis,
                 settings=settings,
+                endpoint=endpoint,
             )
             headers = build_codex_headers(
                 credential,
@@ -1924,6 +1894,7 @@ async def test_api_key_direct(
             client=client,
             session_factory=SessionLocal,
             redis=await get_redis(),
+            endpoint=endpoint,
         )
     headers = _build_upstream_headers(
         probe_headers,

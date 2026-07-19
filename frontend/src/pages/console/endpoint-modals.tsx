@@ -460,7 +460,7 @@ export const EditEndpointModal = ({
           <div className="pt-2 border-t border-gray-800">
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-bold text-gray-500 uppercase">
-                Agent 代理加速
+                Agent 网络出口
               </label>
             </div>
             <select
@@ -471,7 +471,7 @@ export const EditEndpointModal = ({
               className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
               disabled={!isAdmin}
             >
-              <option value="">不使用代理</option>
+              <option value="">主服务直连</option>
               {agents.filter((agent) => agent.status === "online").length === 0 ? (
                 <option value="" disabled>
                   暂无可用 Agent 节点
@@ -488,7 +488,13 @@ export const EditEndpointModal = ({
             </select>
             {form.agent_node && (
               <p className="text-xs text-blue-400 mt-2">
-                已启用 Agent 代理加速：{form.agent_node}
+                此渠道的模型探测、Key 测试、Token 刷新和真实请求均通过 {form.agent_node}；
+                Agent 不可用时不会回退主服务。
+              </p>
+            )}
+            {!form.agent_node && (
+              <p className="text-xs text-gray-500 mt-2">
+                未配置 Agent，此渠道的所有上游请求均由主服务发出。
               </p>
             )}
           </div>
