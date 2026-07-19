@@ -104,11 +104,17 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
             "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_exposure_format ON request_attempt_logs(exposure_format)",
         ),
     }
-    assert len(exposure_formats_statements) == 5
-    assert "pg_input_is_valid" in exposure_formats_statements[0]
+    assert len(exposure_formats_statements) == 7
+    assert "CREATE OR REPLACE FUNCTION llm_factory_is_valid_jsonb" in (
+        exposure_formats_statements[0]
+    )
+    assert "llm_factory_is_valid_jsonb(target_key_ids_json)" in (
+        exposure_formats_statements[1]
+    )
+    assert exposure_formats_statements[-1].startswith("DROP FUNCTION")
     assert all(
         "exposure_formats" in statement
-        for statement in exposure_formats_statements[:4]
+        for statement in exposure_formats_statements[1:5]
     )
 
 

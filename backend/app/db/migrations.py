@@ -311,6 +311,23 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
         ),
         pg_only=(
             """
+            CREATE OR REPLACE FUNCTION llm_factory_is_valid_jsonb(candidate TEXT)
+            RETURNS BOOLEAN
+            LANGUAGE plpgsql
+            IMMUTABLE
+            AS $function$
+            BEGIN
+                IF candidate IS NULL THEN
+                    RETURN FALSE;
+                END IF;
+                PERFORM candidate::jsonb;
+                RETURN TRUE;
+            EXCEPTION WHEN others THEN
+                RETURN FALSE;
+            END;
+            $function$
+            """,
+            """
             UPDATE routing_rules
             SET target_key_ids_json = jsonb_build_object(
                 'target_key_ids', '[]'::jsonb,
@@ -319,7 +336,7 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
             )::text
             WHERE target_key_ids_json IS NULL
                OR BTRIM(target_key_ids_json) = ''
-               OR NOT pg_input_is_valid(target_key_ids_json, 'jsonb')
+               OR NOT llm_factory_is_valid_jsonb(target_key_ids_json)
             """,
             """
             UPDATE routing_rules
@@ -371,6 +388,7 @@ SCHEMA_MIGRATIONS: tuple[SchemaMigration, ...] = (
                 )::text
             WHERE LOWER(group_name) = 'default'
             """,
+            "DROP FUNCTION IF EXISTS llm_factory_is_valid_jsonb(TEXT)",
         ),
     ),
 )
