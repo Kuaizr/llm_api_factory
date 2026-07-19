@@ -374,13 +374,16 @@ class HealthMonitor:
 
             if status_code >= 400:
                 status = "failure"
-                await circuit_breaker.record_failure(target.api_key.id)
+                if provider != "codex":
+                    await circuit_breaker.record_failure(target.api_key.id)
             else:
                 status = "success"
-                await circuit_breaker.record_success(target.api_key.id)
+                if provider != "codex":
+                    await circuit_breaker.record_success(target.api_key.id)
         except Exception:
             latency_ms = int((time.perf_counter() - start) * 1000)
-            await circuit_breaker.record_failure(target.api_key.id)
+            if provider != "codex":
+                await circuit_breaker.record_failure(target.api_key.id)
 
         result = HealthProbeResult(
             api_key_id=target.api_key.id,

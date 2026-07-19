@@ -214,6 +214,57 @@ async def test_codex_probe_uses_oauth_credential_and_models_endpoint() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_codex_models_probe_does_not_change_request_circuit() -> None:
+    endpoint = EndpointStub(
+        id=23,
+        name="Codex",
+        base_url="https://chatgpt.example.test",
+        provider="codex",
+    )
+    api_key = APIKeyStub(
+        id=24,
+        key=json.dumps(
+            {
+                "access_token": "codex-access",
+                "account_id": "codex-account",
+                "expires_at": int(time.time()) + 3600,
+            }
+        ),
+    )
+    target = HealthTarget(endpoint=endpoint, api_key=api_key, real_model=None)
+    redis = MemoryRedis()
+    store = HealthProbeStore(redis)
+    settings = Settings(
+        codex_client_version="9.8.7",
+        circuit_breaker_failures=1,
+        circuit_breaker_ttl_seconds=60,
+    )
+    breaker = CircuitBreaker(redis, settings=settings)
+    route = respx.get(
+        "https://chatgpt.example.test/backend-api/codex/models?client_version=9.8.7"
+    ).mock(return_value=httpx.Response(402))
+
+    async with httpx.AsyncClient() as client:
+        monitor = HealthMonitor(
+            client=client,
+            circuit_breaker=breaker,
+            probe_store=store,
+            settings=settings,
+        )
+        await monitor.probe_target(target)
+
+    result = await store.read(api_key.id)
+    circuit = await breaker.get_status(api_key.id)
+    assert result is not None
+    assert result.status == "failure"
+    assert result.status_code == 402
+    assert route.called
+    assert circuit.state == "closed"
+    assert circuit.failures == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_probe_target_records_failure_and_opens_circuit() -> None:
     endpoint = EndpointStub(
         id=9,

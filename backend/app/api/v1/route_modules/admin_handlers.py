@@ -1424,9 +1424,10 @@ async def probe_endpoint(
         probe_results.append(result)
         key_status, key_status_code, key_latency_ms, key_models = result
         if key_status == "success":
-            await circuit_breaker.record_success(api_key.id)
+            if provider != "codex":
+                await circuit_breaker.record_success(api_key.id)
             discovered_models.extend(key_models)
-        else:
+        elif provider != "codex":
             await circuit_breaker.record_failure(api_key.id)
         await probe_store.write(
             HealthProbeResult(
