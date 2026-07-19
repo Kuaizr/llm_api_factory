@@ -853,7 +853,7 @@ def _normalize_rule_group_key(value: str) -> str:
 
 async def _validate_rule_groups(session: AsyncSession, groups: list[str]) -> list[str]:
     normalized = APIKey.normalize_rule_groups(groups)
-    await _ensure_default_rule_group(session)
+    await _ensure_default_rule_group(session, commit=False)
     non_default_groups = [group for group in normalized if not _is_default_rule_group(group)]
     if not non_default_groups:
         return normalized
@@ -918,6 +918,7 @@ async def _sync_api_key_groups_for_rule_targets(
     group_name: str,
     previous_target_key_ids: list[int],
     current_target_key_ids: list[int],
+    exclude_rule_id: int | None = None,
 ) -> None:
     normalized_group = _normalize_rule_group_key(group_name)
     group_lookup = normalized_group.lower()
@@ -940,6 +941,19 @@ async def _sync_api_key_groups_for_rule_targets(
     if not affected_key_ids:
         return
 
+    await session.flush()
+    rules_result = await session.execute(select(RoutingRule))
+    group_target_key_ids: set[int] = set()
+    for rule in rules_result.scalars().all():
+        if exclude_rule_id is not None and rule.id == exclude_rule_id:
+            continue
+        if _normalize_rule_group_key(rule.group_name).lower() != group_lookup:
+            continue
+        target_key_ids, _, _ = _deserialize_rule_config_detail(
+            rule.target_key_ids_json
+        )
+        group_target_key_ids.update(target_key_ids)
+
     result = await session.execute(select(APIKey).where(APIKey.id.in_(affected_key_ids)))
     api_keys = result.scalars().all()
 
@@ -949,7 +963,7 @@ async def _sync_api_key_groups_for_rule_targets(
             _normalize_rule_group_key(group).lower() == group_lookup
             for group in previous_groups
         )
-        should_have_group = api_key.id in current_key_ids
+        should_have_group = api_key.id in group_target_key_ids
         if has_group == should_have_group:
             continue
 
@@ -1125,6 +1139,7 @@ async def create_endpoint(
 ) -> EndpointOut:
     import json
     data = payload.model_dump()
+    initial_key_data = data.pop("initial_key", None)
     if data.get("agent_node") == "":
         data["agent_node"] = None
     if data.get("access_mode") == "direct" and data.get("agent_node"):
@@ -1155,6 +1170,37 @@ async def create_endpoint(
     endpoint = Endpoint(**data)
     session.add(endpoint)
     await session.flush()
+    initial_api_key: APIKey | None = None
+    if initial_key_data is not None:
+        initial_key_data["key"] = encrypt_secret_value(
+            _normalize_api_key_secret(endpoint, initial_key_data["key"]),
+            settings=get_settings(),
+        )
+        raw_rule_groups = initial_key_data.pop("rule_groups", None)
+        normalized_groups = await _validate_rule_groups(
+            session,
+            APIKey.normalize_rule_groups(
+                raw_rule_groups, fallback=initial_key_data.get("rule_group")
+            ),
+        )
+        initial_key_data["rule_group"] = next(
+            (
+                group
+                for group in normalized_groups
+                if not _is_default_rule_group(group)
+            ),
+            "default",
+        )
+        initial_api_key = APIKey(endpoint_id=endpoint.id, **initial_key_data)
+        initial_api_key.assign_rule_groups(normalized_groups)
+        session.add(initial_api_key)
+        await session.flush()
+        await _sync_rule_targets_for_api_key(
+            session=session,
+            api_key_id=initial_api_key.id,
+            previous_groups=[],
+            current_groups=normalized_groups,
+        )
     await record_audit_log(
         session,
         action="create",
@@ -1163,6 +1209,15 @@ async def create_endpoint(
         resource_name=endpoint.name,
         after=endpoint,
     )
+    if initial_api_key is not None:
+        await record_audit_log(
+            session,
+            action="create",
+            resource_type="api_key",
+            resource_id=initial_api_key.id,
+            resource_name=_api_key_resource_name(initial_api_key),
+            after=initial_api_key,
+        )
     await session.commit()
     await session.refresh(endpoint)
     return _build_endpoint_out(endpoint)
@@ -1234,6 +1289,90 @@ async def update_endpoint(
     return _build_endpoint_out(endpoint)
 
 
+async def _probe_endpoint_key(
+    *,
+    endpoint: Endpoint,
+    api_key: APIKey,
+    provider: str,
+    url: str,
+    probe_model: str,
+    client,
+    redis,
+    settings,
+) -> tuple[str, int | None, int, list[str]]:
+    headers: dict[str, str] = {}
+    started_at = time.perf_counter()
+    try:
+        if provider == "codex":
+            credential = await resolve_codex_credential(
+                api_key,
+                client=client,
+                session_factory=SessionLocal,
+                redis=redis,
+                settings=settings,
+            )
+            headers = build_codex_headers(
+                credential,
+                client_version=settings.codex_client_version,
+            )
+        else:
+            header_name = endpoint.auth_header_name or "Authorization"
+            header_prefix = endpoint.auth_header_prefix
+            if header_prefix is None:
+                header_prefix = "Bearer"
+            decrypted_api_key = decrypt_secret_value(
+                api_key.key, settings=settings
+            )
+            headers = (
+                {header_name: f"{header_prefix} {decrypted_api_key}"}
+                if header_prefix
+                else {header_name: decrypted_api_key}
+            )
+
+        if provider == "anthropic":
+            status_code, _response_headers, response_body = await _send_endpoint_request(
+                endpoint=endpoint,
+                method="POST",
+                url=url,
+                headers=headers,
+                json_payload={
+                    "model": probe_model,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+                client=client,
+                timeout=settings.health_probe_timeout_seconds,
+            )
+        else:
+            status_code, _response_headers, response_body = await _send_endpoint_request(
+                endpoint=endpoint,
+                method="GET",
+                url=url,
+                headers=headers,
+                json_payload=None,
+                client=client,
+                timeout=settings.health_probe_timeout_seconds,
+            )
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        if status_code >= 400:
+            return "failure", status_code, latency_ms, []
+        discovered_models: list[str] = []
+        if provider != "anthropic":
+            payload = json.loads(response_body.decode("utf-8"))
+            discovered_models = _extract_provider_models(provider, payload)
+        return "success", status_code, latency_ms, discovered_models
+    except Exception:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.exception(
+            "endpoint_probe_failed endpoint_id=%s api_key_id=%s provider=%s url=%s",
+            endpoint.id,
+            api_key.id,
+            provider,
+            url,
+        )
+        return "error", None, latency_ms, []
+
+
 async def probe_endpoint(
     endpoint_id: int,
     session: AsyncSession = Depends(get_session),
@@ -1241,12 +1380,13 @@ async def probe_endpoint(
     endpoint = await session.get(Endpoint, endpoint_id)
     if not endpoint:
         raise HTTPException(status_code=404, detail="Endpoint not found")
-    api_key = await session.scalar(
+    api_key_result = await session.execute(
         select(APIKey)
         .where(APIKey.endpoint_id == endpoint_id, APIKey.is_active.is_(True))
         .order_by(APIKey.id)
     )
-    if not api_key:
+    api_keys = api_key_result.scalars().all()
+    if not api_keys:
         raise HTTPException(status_code=400, detail="No active API key for probe")
 
     existing_stmt = select(ModelMap).where(ModelMap.endpoint_id == endpoint_id).order_by(ModelMap.id)
@@ -1279,100 +1419,50 @@ async def probe_endpoint(
     else:
         default_suffix = "/v1/models"
         url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
-    headers: dict[str, str] = {}
-    if provider != "codex":
-        header_name = endpoint.auth_header_name or "Authorization"
-        header_prefix = endpoint.auth_header_prefix
-        if header_prefix is None:
-            header_prefix = "Bearer"
-        decrypted_api_key = decrypt_secret_value(api_key.key, settings=get_settings())
-        headers = (
-            {header_name: f"{header_prefix} {decrypted_api_key}"}
-            if header_prefix
-            else {header_name: decrypted_api_key}
-        )
-
-    status = "error"
-    status_code: int | None = None
-    latency_ms: int | None = None
     discovered_models: list[str] = []
-    response_body = b""
-    started_at = time.perf_counter()
     probe_model = _pick_probe_model(existing_models)
-    anthropic_probe_payload = {
-        "model": probe_model,
-        "max_tokens": 1,
-        "messages": [{"role": "user", "content": "ping"}],
-    }
-
-    try:
-        if provider == "codex":
-            credential = await resolve_codex_credential(
-                api_key,
-                client=client,
-                session_factory=SessionLocal,
-                redis=redis,
-                settings=settings,
-            )
-            headers = build_codex_headers(
-                credential,
-                client_version=settings.codex_client_version,
-            )
-        if provider == "anthropic":
-            status_code, _response_headers, response_body = await _send_endpoint_request(
-                endpoint=endpoint,
-                method="POST",
-                url=url,
-                headers=headers,
-                json_payload=anthropic_probe_payload,
-                client=client,
-                timeout=settings.health_probe_timeout_seconds,
-            )
+    probe_results: list[tuple[str, int | None, int, list[str]]] = []
+    for api_key in api_keys:
+        result = await _probe_endpoint_key(
+            endpoint=endpoint,
+            api_key=api_key,
+            provider=provider,
+            url=url,
+            probe_model=probe_model,
+            client=client,
+            redis=redis,
+            settings=settings,
+        )
+        probe_results.append(result)
+        key_status, key_status_code, key_latency_ms, key_models = result
+        if key_status == "success":
+            await circuit_breaker.record_success(api_key.id)
+            discovered_models.extend(key_models)
         else:
-            status_code, _response_headers, response_body = await _send_endpoint_request(
-                endpoint=endpoint,
-                method="GET",
-                url=url,
-                headers=headers,
-                json_payload=None,
-                client=client,
-                timeout=settings.health_probe_timeout_seconds,
+            await circuit_breaker.record_failure(api_key.id)
+        await probe_store.write(
+            HealthProbeResult(
+                api_key_id=api_key.id,
+                endpoint_id=endpoint.id,
+                endpoint_name=endpoint.name,
+                real_model=None,
+                status=key_status,
+                status_code=key_status_code,
+                latency_ms=key_latency_ms,
+                checked_at=datetime.now(timezone.utc),
             )
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        if status_code >= 400:
-            status = "failure"
-        else:
-            status = "success"
-            if provider not in {"anthropic"}:
-                payload = json.loads(response_body.decode("utf-8"))
-                discovered_models = _extract_provider_models(provider, payload)
-    except Exception:
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        status = "error"
-        logger.exception(
-            "endpoint_probe_failed endpoint_id=%s provider=%s url=%s",
-            endpoint.id,
-            provider,
-            url,
         )
 
-    if status == "success":
-        await circuit_breaker.record_success(api_key.id)
-    else:
-        await circuit_breaker.record_failure(api_key.id)
-
-    await probe_store.write(
-        HealthProbeResult(
-            api_key_id=api_key.id,
-            endpoint_id=endpoint.id,
-            endpoint_name=endpoint.name,
-            real_model=None,
-            status=status,
-            status_code=status_code,
-            latency_ms=latency_ms,
-            checked_at=datetime.now(timezone.utc),
-        )
+    discovered_models = _dedupe_discovered_models(discovered_models)
+    successful_result = next(
+        (item for item in probe_results if item[0] == "success"), None
     )
+    failed_result = next(
+        (item for item in probe_results if item[0] == "failure"), None
+    )
+    selected_result = successful_result or failed_result or probe_results[0]
+    status = selected_result[0]
+    status_code = selected_result[1]
 
     if status == "success" and provider != "anthropic" and discovered_models:
         existing_models = await _sync_probe_model_maps(
@@ -1912,6 +2002,36 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
                     continue
                 if not matcher.match(log.model_alias):
                     continue
+                log_exposure_format = normalize_exposure_format(
+                    getattr(log, "exposure_format", None)
+                )
+                if exposure_format != DEFAULT_EXPOSURE_FORMAT:
+                    if log_exposure_format != exposure_format:
+                        continue
+                elif log_exposure_format != DEFAULT_EXPOSURE_FORMAT:
+                    has_explicit_match = False
+                    for candidate_rule in rules:
+                        if (
+                            not candidate_rule.is_active
+                            or candidate_rule.group_name != rule.group_name
+                        ):
+                            continue
+                        _, _, candidate_exposure = _deserialize_rule_config_detail(
+                            candidate_rule.target_key_ids_json
+                        )
+                        if candidate_exposure != log_exposure_format:
+                            continue
+                        try:
+                            candidate_matcher = compile_model_pattern(
+                                candidate_rule.model_pattern
+                            )
+                        except UnsafeModelPatternError:
+                            continue
+                        if candidate_matcher.match(log.model_alias):
+                            has_explicit_match = True
+                            break
+                    if has_explicit_match:
+                        continue
                 request_count += 1
                 tokens = log.total_tokens
                 if tokens is None:
@@ -1943,10 +2063,17 @@ async def list_rules(session: AsyncSession = Depends(get_session)) -> list[Routi
 async def create_rule(
     payload: RoutingRuleCreate, session: AsyncSession = Depends(get_session)
 ) -> RoutingRuleOut:
-    group_name = await _ensure_rule_group_available(session, payload.group_name)
     model_pattern = _validate_rule_model_pattern(payload.model_pattern)
     dump_path = _validate_rule_dump_path(payload.dump_path)
     exposure_format = _validate_rule_exposure_format(payload.exposure_format)
+    if exposure_format == DEFAULT_EXPOSURE_FORMAT:
+        raise HTTPException(
+            status_code=400,
+            detail="New routing rules require an explicit exposure format",
+        )
+    group_name = await _ensure_rule_group_available(
+        session, payload.group_name, exposure_format
+    )
     rule = RoutingRule(
         model_pattern=model_pattern,
         group_name=group_name,
@@ -2035,11 +2162,6 @@ async def update_rule(
                 detail="Default rule group cannot be disabled",
             )
 
-    if "group_name" in data and data["group_name"] != rule.group_name:
-        data["group_name"] = await _ensure_rule_group_available(
-            session, data["group_name"], exclude_rule_id=rule.id
-        )
-
     has_target_update = "target_key_ids" in data
     has_exposure_update = "exposure_format" in data
     if has_exposure_update:
@@ -2051,6 +2173,18 @@ async def update_rule(
         next_strategy = data.pop("strategy", current_strategy)
         rule.target_key_ids_json = _serialize_rule_config(
             next_targets, next_strategy, next_exposure_format
+        )
+
+    requested_group_name = data.get("group_name", rule.group_name)
+    if not _is_default_rule_group(rule.group_name) and (
+        str(requested_group_name).strip().lower() != rule.group_name.strip().lower()
+        or next_exposure_format != current_exposure_format
+    ):
+        data["group_name"] = await _ensure_rule_group_available(
+            session,
+            str(requested_group_name),
+            next_exposure_format,
+            exclude_rule_id=rule.id,
         )
 
     if "model_pattern" in data:
@@ -2138,6 +2272,7 @@ async def delete_rule(
         group_name=rule.group_name,
         previous_target_key_ids=target_key_ids,
         current_target_key_ids=[],
+        exclude_rule_id=rule.id,
     )
 
     await session.delete(rule)

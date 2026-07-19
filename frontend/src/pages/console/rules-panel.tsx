@@ -26,7 +26,6 @@ import {
 import { parseModelMapList, parseStringList } from "./response-validators";
 
 const exposureFormatOptions = [
-  { value: "any", label: "any", hint: "兼容旧规则" },
   { value: "chat", label: "chat", hint: "OpenAI Chat" },
   { value: "response", label: "response", hint: "OpenAI Responses" },
   { value: "codex", label: "codex", hint: "Codex CLI Responses" },
@@ -53,7 +52,7 @@ export const RuleEditorModal = ({
   const [modelPattern, setModelPattern] = useState(rule?.model_pattern ?? "");
   const [groupName, setGroupName] = useState(rule?.group_name ?? "custom");
   const [exposureFormat, setExposureFormat] = useState(
-    rule?.exposure_format ?? "any"
+    rule?.exposure_format ?? "chat"
   );
   const [priority, setPriority] = useState(String(rule?.priority ?? 10));
   const [strategy, setStrategy] = useState(
@@ -128,6 +127,10 @@ export const RuleEditorModal = ({
     keyId: number;
   } | null>(null);
   const isDefaultRule = (rule?.group_name ?? "").toLowerCase() === "default";
+  const visibleExposureFormatOptions =
+    rule?.exposure_format === "any"
+      ? [{ value: "any", label: "any", hint: "兼容旧规则" }, ...exposureFormatOptions]
+      : exposureFormatOptions;
 
   useEffect(() => {
     setEndpointOrder((prev) => {
@@ -417,7 +420,7 @@ export const RuleEditorModal = ({
                   className="w-full bg-gray-900 border border-gray-700 rounded p-2.5 text-sm text-white focus:border-yellow-500 focus:outline-none"
                   disabled={!isAdmin}
                 >
-                  {exposureFormatOptions.map((option) => (
+                  {visibleExposureFormatOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label} - {option.hint}
                     </option>
@@ -932,6 +935,9 @@ export const RulesView = ({
                 </span>
                 <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
                   Priority: {rule.priority}
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded bg-cyan-950/40 text-cyan-300 border border-cyan-800/50">
+                  {rule.exposure_format ?? "any"}
                 </span>
                 {isDefaultGroup && (
                   <span className="text-xs px-2 py-0.5 rounded bg-blue-900/20 text-blue-300 border border-blue-700/50">

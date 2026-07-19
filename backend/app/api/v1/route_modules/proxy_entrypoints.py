@@ -15,11 +15,26 @@ from app.api.v1.route_modules.proxy_models import (
 )
 from app.core.route_exposure import (
     EXPOSURE_FORMAT_CHAT,
+    EXPOSURE_FORMAT_CLAUDE_CODE,
     EXPOSURE_FORMAT_GEMINI,
     EXPOSURE_FORMAT_MESSAGE,
     EXPOSURE_FORMAT_RESPONSE,
 )
 from app.db.session import get_session
+
+
+def _is_claude_code_request(request: Request) -> bool:
+    session_id = str(request.headers.get("x-claude-code-session-id") or "").strip()
+    if session_id:
+        return True
+    x_app = str(request.headers.get("x-app") or "").strip().lower()
+    if x_app == "cli":
+        return True
+    anthropic_beta = str(request.headers.get("anthropic-beta") or "").lower()
+    if "claude-code" in anthropic_beta:
+        return True
+    user_agent = str(request.headers.get("user-agent") or "").lower()
+    return "claude-code" in user_agent or "claude_cli" in user_agent
 
 
 async def chat_completions(
@@ -148,6 +163,11 @@ async def anthropic_passthrough(
         if payload is not None:
             return JSONResponse(content=payload)
 
+    exposure_format = (
+        EXPOSURE_FORMAT_CLAUDE_CODE
+        if _is_claude_code_request(request)
+        else EXPOSURE_FORMAT_MESSAGE
+    )
     return await _proxy_openai_request(
         request,
         session,
@@ -156,7 +176,7 @@ async def anthropic_passthrough(
         path_prefix="/anthropic",
         provider_filter=("anthropic", "custom"),
         provider_filter_fallback_to_any=False,
-        exposure_format=EXPOSURE_FORMAT_MESSAGE,
+        exposure_format=exposure_format,
         allow_missing_model=True,
     )
 

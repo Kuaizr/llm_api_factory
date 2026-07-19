@@ -418,6 +418,7 @@ def rule_group_list(args: argparse.Namespace, client: FactoryClient) -> CommandR
         columns=[
             ("id", "ID"),
             ("group_name", "Group"),
+            ("exposure_format", "Protocol"),
             ("model_pattern", "Pattern"),
             ("strategy", "Strategy"),
             ("is_active", "Active"),
@@ -430,6 +431,7 @@ def rule_group_create(args: argparse.Namespace, client: FactoryClient) -> Comman
     payload = {
         "group_name": args.group,
         "model_pattern": args.model_pattern,
+        "exposure_format": args.exposure_format,
         "priority": args.priority,
         "strategy": args.strategy,
         "is_active": not args.inactive,
@@ -447,6 +449,8 @@ def rule_group_update(args: argparse.Namespace, client: FactoryClient) -> Comman
         payload["group_name"] = args.group
     if args.model_pattern is not None:
         payload["model_pattern"] = args.model_pattern
+    if args.exposure_format is not None:
+        payload["exposure_format"] = args.exposure_format
     if args.priority is not None:
         payload["priority"] = args.priority
     if args.strategy is not None:
@@ -642,6 +646,11 @@ def build_parser() -> argparse.ArgumentParser:
     rule_create_parser.add_argument("model_pattern")
     rule_create_parser.add_argument("--key-ids", default="")
     rule_create_parser.add_argument("--strategy", default="weighted_round_robin")
+    rule_create_parser.add_argument(
+        "--exposure-format",
+        choices=("chat", "response", "codex", "message", "claude_code", "gemini"),
+        default="chat",
+    )
     rule_create_parser.add_argument("--priority", type=int, default=10)
     rule_create_parser.add_argument("--inactive", action="store_true")
     rule_create_parser.add_argument("--dump-enabled", action="store_true")
@@ -654,6 +663,10 @@ def build_parser() -> argparse.ArgumentParser:
     rule_update_parser.add_argument("--model-pattern")
     rule_update_parser.add_argument("--key-ids")
     rule_update_parser.add_argument("--strategy")
+    rule_update_parser.add_argument(
+        "--exposure-format",
+        choices=("chat", "response", "codex", "message", "claude_code", "gemini"),
+    )
     rule_update_parser.add_argument("--priority", type=int)
     active_group = rule_update_parser.add_mutually_exclusive_group()
     active_group.add_argument("--active", action="store_true")

@@ -79,6 +79,52 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
         assert Path(payload["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
         assert payload["request_count"] == 0
 
+        codex_response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-4.*",
+                "group_name": "alpha",
+                "priority": 20,
+                "exposure_format": "codex",
+                "target_key_ids": [api_key.id],
+            },
+        )
+        duplicate_response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-5.*",
+                "group_name": "alpha",
+                "exposure_format": "response",
+                "target_key_ids": [api_key.id],
+            },
+        )
+        default_format_response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-5.*",
+                "group_name": "beta",
+                "target_key_ids": [],
+            },
+        )
+        new_any_response = await client.post(
+            "/admin/rules",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "model_pattern": "gpt-5.*",
+                "group_name": "legacy-new",
+                "exposure_format": "any",
+                "target_key_ids": [],
+            },
+        )
+        assert codex_response.status_code == 200
+        assert duplicate_response.status_code == 400
+        assert default_format_response.status_code == 200
+        assert default_format_response.json()["exposure_format"] == "chat"
+        assert new_any_response.status_code == 400
+
         session.add_all(
             [
                 RequestLog(
@@ -87,6 +133,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
                     model_alias="gpt-4.1",
                     endpoint_id=endpoint.id,
                     api_key_id=api_key.id,
+                    exposure_format="response",
                     prompt_tokens=10,
                     completion_tokens=20,
                     total_tokens=30,
@@ -101,6 +148,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
                     model_alias="gpt-4.2",
                     endpoint_id=endpoint.id,
                     api_key_id=api_key.id,
+                    exposure_format="response",
                     prompt_tokens=5,
                     completion_tokens=15,
                     total_tokens=20,
@@ -117,9 +165,32 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
             "/admin/rules", headers={"Authorization": "Bearer token"}
         )
 
+        remove_response_target = await client.patch(
+            f"/admin/rules/{payload['id']}",
+            headers={"Authorization": "Bearer token"},
+            json={"target_key_ids": []},
+        )
+        assert remove_response_target.status_code == 200
+        await session.refresh(api_key)
+        assert api_key.in_rule_group("alpha") is True
+
+        remove_codex_target = await client.patch(
+            f"/admin/rules/{codex_response.json()['id']}",
+            headers={"Authorization": "Bearer token"},
+            json={"target_key_ids": []},
+        )
+        assert remove_codex_target.status_code == 200
+        await session.refresh(api_key)
+        assert api_key.in_rule_group("alpha") is False
+
     assert list_response.status_code == 200
     data = list_response.json()
-    alpha_rule = next(item for item in data if item["group_name"] == "alpha")
+    alpha_rules = [item for item in data if item["group_name"] == "alpha"]
+    assert {item["exposure_format"] for item in alpha_rules} == {"response", "codex"}
+    alpha_rule = next(
+        item for item in alpha_rules if item["exposure_format"] == "response"
+    )
+    codex_rule = next(item for item in alpha_rules if item["exposure_format"] == "codex")
     assert alpha_rule["request_count"] == 2
     assert alpha_rule["exposure_format"] == "response"
     assert alpha_rule["total_tokens"] == 50
@@ -127,6 +198,7 @@ async def test_admin_rules_create_and_list(monkeypatch: pytest.MonkeyPatch) -> N
     assert alpha_rule["avg_tps"] == 15.0
     assert alpha_rule["dump_enabled"] is True
     assert Path(alpha_rule["dump_path"]).resolve() == Path("/tmp/alpha-dump").resolve()
+    assert codex_rule["request_count"] == 0
     default_rules = [item for item in data if item["group_name"] == "default"]
     assert len(default_rules) == 1
     assert default_rules[0]["model_pattern"] == ".*"

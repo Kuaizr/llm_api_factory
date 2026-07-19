@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.providers import normalize_provider_filters, normalize_provider_name
 from app.core.route_exposure import (
     DEFAULT_EXPOSURE_FORMAT,
-    exposure_format_matches,
+    exposure_format_match_priority,
     normalize_exposure_format,
 )
 from app.db.models import APIKey, Agent, Endpoint, ModelMap, RoutingRule
@@ -405,15 +405,21 @@ class ModelRouter:
             .order_by(RoutingRule.priority.desc(), RoutingRule.id)
         )
         rules = result.scalars().all()
+        fallback: tuple[list[int], str] | None = None
         for rule in rules:
             if not model_pattern_matches(rule.model_pattern, model_alias):
                 continue
             _, _, rule_exposure_format = self._parse_rule_config_detail(
                 rule.target_key_ids_json
             )
-            if exposure_format_matches(rule_exposure_format, exposure_format):
+            match_priority = exposure_format_match_priority(
+                rule_exposure_format, exposure_format
+            )
+            if match_priority == 2:
                 return self._parse_rule_config(rule.target_key_ids_json)
-        return [], DEFAULT_RULE_STRATEGY
+            if match_priority == 1 and fallback is None:
+                fallback = self._parse_rule_config(rule.target_key_ids_json)
+        return fallback or ([], DEFAULT_RULE_STRATEGY)
 
     @staticmethod
     def _parse_rule_config_detail(raw: str) -> tuple[list[int], str, str]:

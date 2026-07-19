@@ -15,7 +15,7 @@ from app.api.v1.route_helpers import (
     _parse_iso_datetime,
     build_metric_buckets,
 )
-from app.core.route_exposure import exposure_format_matches
+from app.core.route_exposure import exposure_format_match_priority
 from app.api.v1.route_models import (
     DashboardAgentOut,
     DashboardStatusOut,
@@ -677,15 +677,20 @@ async def _matching_route_rule(
         .where(RoutingRule.group_name == rule_group, RoutingRule.is_active.is_(True))
         .order_by(RoutingRule.priority.desc(), RoutingRule.id)
     )
+    fallback: tuple[RoutingRule, list[int], str] | None = None
     for rule in result.scalars().all():
         if model_pattern_matches(rule.model_pattern, model_alias):
             target_key_ids, strategy, rule_exposure = _deserialize_rule_config_detail(
                 rule.target_key_ids_json
             )
-            if not exposure_format_matches(rule_exposure, exposure_format):
-                continue
-            return rule, target_key_ids, strategy
-    return None, [], "weighted_round_robin"
+            match_priority = exposure_format_match_priority(
+                rule_exposure, exposure_format
+            )
+            if match_priority == 2:
+                return rule, target_key_ids, strategy
+            if match_priority == 1 and fallback is None:
+                fallback = (rule, target_key_ids, strategy)
+    return fallback or (None, [], "weighted_round_robin")
 
 
 async def _resolve_route_explain_policy(

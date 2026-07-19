@@ -92,6 +92,12 @@ def test_historical_sqlite_migrations_do_not_run_on_postgresql() -> None:
             "ALTER TABLE request_logs ADD COLUMN cached_tokens INTEGER",
             "ALTER TABLE request_logs ADD COLUMN is_cache_hit BOOLEAN DEFAULT FALSE",
         ),
+        "20260719_request_log_exposure_format": (
+            "ALTER TABLE request_logs ADD COLUMN exposure_format VARCHAR(32)",
+            "ALTER TABLE request_attempt_logs ADD COLUMN exposure_format VARCHAR(32)",
+            "CREATE INDEX IF NOT EXISTS ix_request_logs_exposure_format ON request_logs(exposure_format)",
+            "CREATE INDEX IF NOT EXISTS ix_request_attempt_logs_exposure_format ON request_attempt_logs(exposure_format)",
+        ),
     }
 
 

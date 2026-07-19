@@ -312,6 +312,7 @@ def test_cli_rule_group_create_and_update() -> None:
             assert body == {
                 "group_name": "vps",
                 "model_pattern": "^gpt-vps$",
+                "exposure_format": "codex",
                 "priority": 50,
                 "strategy": "sequential",
                 "is_active": True,
@@ -339,6 +340,8 @@ def test_cli_rule_group_create_and_update() -> None:
             "1,2",
             "--strategy",
             "sequential",
+            "--exposure-format",
+            "codex",
             "--priority",
             "50",
         ],

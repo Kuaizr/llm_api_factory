@@ -151,6 +151,7 @@ async def test_write_request_log_records_usage_atomically(
             api_key_id=api_key_id,
             requested_rule_group="requested",
             rule_group="effective",
+            exposure_format="response",
             status_code=200,
             latency_ms=123,
             ttft_ms=10,
@@ -172,6 +173,7 @@ async def test_write_request_log_records_usage_atomically(
     assert log.total_tokens is None
     assert log.cached_tokens == 1
     assert log.is_cache_hit is True
+    assert log.exposure_format == "response"
     assert api_key is not None
     assert api_key.used_today == 5
     assert api_key.total_usage == 15
@@ -216,6 +218,7 @@ async def test_write_request_attempt_log_records_fallback_context(
             api_key_id=api_key_id,
             requested_rule_group="requested",
             rule_group="effective",
+            exposure_format="codex",
             attempt_order=2,
             status_code=503,
             outcome="failure",
@@ -234,6 +237,7 @@ async def test_write_request_attempt_log_records_fallback_context(
     assert log.trace_id == "trace-attempt"
     assert log.requested_rule_group == "requested"
     assert log.rule_group == "effective"
+    assert log.exposure_format == "codex"
     assert log.attempt_order == 2
     assert log.status_code == 503
     assert log.outcome == "failure"

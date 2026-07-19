@@ -148,12 +148,11 @@ describe("console actions", () => {
     });
   });
 
-  it("creates the initial Codex credential after creating an endpoint", async () => {
+  it("creates the endpoint and initial Codex credential atomically", async () => {
     const loadEndpoints = vi.fn();
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ id: 77 }))
-      .mockResolvedValueOnce(jsonResponse({ id: 88 }))
       .mockResolvedValueOnce(
         jsonResponse({
           provider: "codex",
@@ -177,15 +176,20 @@ describe("console actions", () => {
       })
     ).resolves.toBe(true);
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const [keyUrl, keyInit] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[1];
-    expect(keyUrl).toContain("/admin/endpoints/77/keys");
-    expect(JSON.parse(String(keyInit.body))).toMatchObject({
-      key: '{"access_token":"access","account_id":"account"}',
-      name: "Imported Codex",
-      rule_groups: ["default"],
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [endpointUrl, endpointInit] = (
+      fetchMock.mock.calls as unknown as [string, RequestInit][]
+    )[0];
+    expect(endpointUrl).toContain("/admin/endpoints");
+    expect(JSON.parse(String(endpointInit.body))).toMatchObject({
+      provider: "codex",
+      initial_key: {
+        key: '{"access_token":"access","account_id":"account"}',
+        name: "Imported Codex",
+        rule_groups: ["default"],
+      },
     });
-    expect(fetchMock.mock.calls[2][0]).toContain("/admin/endpoints/77/probe");
+    expect(fetchMock.mock.calls[1][0]).toContain("/admin/endpoints/77/probe");
     expect(loadEndpoints).toHaveBeenCalledWith("adm.test");
   });
 

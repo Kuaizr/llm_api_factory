@@ -9,7 +9,7 @@ from app.api.v1.route_modules.proxy_agent_streams import (
 )
 from app.api.v1.route_modules.proxy_attempts import (
     elapsed_ms as _elapsed_ms,
-    record_attempt_log as _record_attempt_log,
+    record_attempt_log as _write_attempt_log,
     reserve_candidate_attempt_or_raise as _reserve_candidate_attempt_or_raise,
 )
 from app.api.v1.route_modules.proxy_context import CandidateRequestContext
@@ -58,6 +58,7 @@ async def handle_agent_candidate(
     model_alias: str,
     requested_rule_group: str | None,
     effective_group: str,
+    exposure_format: str,
     dump_rule,
     session_id: str | None,
     request_start: float,
@@ -71,6 +72,9 @@ async def handle_agent_candidate(
     debug_headers = candidate_context.debug_headers
     agent_name = candidate_context.agent_name
     candidate_provider = candidate_context.candidate_provider
+
+    def _record_attempt_log(**kwargs) -> None:  # noqa: ANN003
+        _write_attempt_log(exposure_format=exposure_format, **kwargs)
 
     if agent_name is None:
         raise HTTPException(status_code=502, detail="Agent unavailable")
@@ -92,6 +96,7 @@ async def handle_agent_candidate(
             attempt_start=attempt_start,
             agent_node=agent_name,
             upstream_url=url,
+            exposure_format=exposure_format,
         ):
             break
         try:
@@ -280,6 +285,7 @@ async def handle_agent_candidate(
                 candidate=candidate,
                 requested_rule_group=requested_rule_group,
                 effective_group=effective_group,
+                exposure_format=exposure_format,
                 status_code=status_code,
                 agent_name=agent_name,
                 upstream_url=url,
@@ -386,6 +392,7 @@ async def handle_agent_candidate(
             api_key_id=candidate.api_key.id,
             requested_rule_group=requested_rule_group,
             rule_group=effective_group,
+            exposure_format=exposure_format,
             status_code=status_code,
             latency_ms=latency_ms,
             ttft_ms=None,

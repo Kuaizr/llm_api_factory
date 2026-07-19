@@ -544,10 +544,18 @@ async def test_anthropic_standard_passthrough_filters_provider(
             headers={"x-api-key": "token"},
             json={"max_tokens": 64, "messages": [{"role": "user", "content": "hi"}]},
         )
+        assert recorded["candidate_kwargs"]["exposure_format"] == "message"
+        claude_code_response = await client.post(
+            "/anthropic/v1/messages",
+            headers={"x-api-key": "token", "x-app": "cli"},
+            json={"max_tokens": 64, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert recorded["candidate_kwargs"]["exposure_format"] == "claude_code"
 
     await upstream_client.aclose()
 
     assert response.status_code == 200
+    assert claude_code_response.status_code == 200
     assert response.json() == upstream_payload
     assert requests
     sent_request = requests[0]

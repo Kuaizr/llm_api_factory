@@ -26,7 +26,7 @@ from app.api.v1.route_models import (
 from app.core.config import get_settings
 from app.core.route_exposure import (
     DEFAULT_EXPOSURE_FORMAT,
-    exposure_format_matches,
+    exposure_format_match_priority,
     normalize_exposure_format,
 )
 from app.core.timezone import app_today
@@ -251,15 +251,21 @@ async def _find_dump_rule(
         return None
 
     rules = result.scalars().all()
+    fallback: RoutingRule | None = None
     for rule in rules:
         if not model_pattern_matches(rule.model_pattern, model_alias):
             continue
         _, _, rule_exposure_format = _deserialize_rule_config_detail(
             rule.target_key_ids_json
         )
-        if exposure_format_matches(rule_exposure_format, exposure_format):
+        match_priority = exposure_format_match_priority(
+            rule_exposure_format, exposure_format
+        )
+        if match_priority == 2:
             return rule
-    return None
+        if match_priority == 1 and fallback is None:
+            fallback = rule
+    return fallback
 
 
 def _sanitize_dump_filename(value: str) -> str:
@@ -795,7 +801,9 @@ def _deserialize_rule_config(raw: str) -> tuple[list[int], str]:
     return target_key_ids, strategy
 
 
-async def _ensure_default_rule_group(session: AsyncSession) -> RoutingRule:
+async def _ensure_default_rule_group(
+    session: AsyncSession, *, commit: bool = True
+) -> RoutingRule:
     existing = await session.scalar(
         select(RoutingRule)
         .where(RoutingRule.group_name == DEFAULT_RULE_GROUP)
@@ -814,8 +822,11 @@ async def _ensure_default_rule_group(session: AsyncSession) -> RoutingRule:
         target_key_ids_json=_serialize_rule_config([], DEFAULT_RULE_STRATEGY),
     )
     session.add(rule)
-    await session.commit()
-    await session.refresh(rule)
+    if commit:
+        await session.commit()
+        await session.refresh(rule)
+    else:
+        await session.flush()
     return rule
 
 
@@ -857,18 +868,32 @@ def _is_default_rule_group(value: str) -> bool:
 
 
 async def _ensure_rule_group_available(
-    session: AsyncSession, group_name: str, exclude_rule_id: int | None = None
+    session: AsyncSession,
+    group_name: str,
+    exposure_format: str,
+    exclude_rule_id: int | None = None,
 ) -> str:
     normalized = _normalize_rule_group_name(group_name)
     if not normalized or _is_default_rule_group(normalized):
         raise HTTPException(status_code=400, detail="Invalid rule group name")
-    stmt = select(RoutingRule.id).where(RoutingRule.group_name == normalized)
-    if exclude_rule_id is not None:
-        stmt = stmt.where(RoutingRule.id != exclude_rule_id)
-    exists = await session.scalar(stmt)
-    if exists is not None:
-        raise HTTPException(status_code=400, detail="Rule group already exists")
-    return normalized
+    normalized_exposure = normalize_exposure_format(exposure_format)
+    result = await session.execute(select(RoutingRule))
+    canonical_group_name = normalized
+    for rule in result.scalars().all():
+        if exclude_rule_id is not None and rule.id == exclude_rule_id:
+            continue
+        if _normalize_rule_group_name(rule.group_name).lower() != normalized.lower():
+            continue
+        canonical_group_name = rule.group_name
+        _, _, existing_exposure = _deserialize_rule_config_detail(
+            rule.target_key_ids_json
+        )
+        if normalize_exposure_format(existing_exposure) == normalized_exposure:
+            raise HTTPException(
+                status_code=400,
+                detail="Rule group and exposure format already exist",
+            )
+    return canonical_group_name
 
 
 def _floor_bucket(value: datetime, bucket_seconds: int) -> datetime:

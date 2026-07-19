@@ -367,6 +367,88 @@ async def test_manual_probe_records_success_status(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_manual_probe_unions_models_from_all_active_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+    endpoint = Endpoint(name="Multi Auth", base_url="https://api.example.test", is_active=True)
+    session.add(endpoint)
+    await session.flush()
+    api_keys = [
+        APIKey(endpoint_id=endpoint.id, key="sk-a", name="A", is_active=True),
+        APIKey(endpoint_id=endpoint.id, key="sk-b", name="B", is_active=True),
+        APIKey(endpoint_id=endpoint.id, key="sk-fail", name="Fail", is_active=True),
+    ]
+    session.add_all(api_keys)
+    await session.commit()
+
+    settings = Settings(
+        master_auth_token="token",
+        admin_legacy_master_bearer_enabled=True,
+        circuit_breaker_failures=1,
+    )
+    redis = MemoryRedis()
+    probe_store = HealthProbeStore(redis)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        authorization = request.headers.get("authorization")
+        if authorization == "Bearer sk-a":
+            return httpx.Response(
+                200, json={"data": [{"id": "model-a"}, {"id": "shared"}]}
+            )
+        if authorization == "Bearer sk-b":
+            return httpx.Response(
+                200, json={"data": [{"id": "model-b"}, {"id": "shared"}]}
+            )
+        return httpx.Response(403, json={"error": "model access denied"})
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def override_session():
+        yield session
+
+    async def override_redis():
+        return redis
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/probe",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["probe_status"] == "success"
+    assert payload["discovered_models"] == ["model-a", "shared", "model-b"]
+    assert len(requests) == 3
+    assert (await probe_store.read(api_keys[0].id)).status == "success"
+    assert (await probe_store.read(api_keys[1].id)).status == "success"
+    assert (await probe_store.read(api_keys[2].id)).status == "failure"
+
+    await upstream_client.aclose()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_manual_probe_sync_overwrites_auto_keeps_manual(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

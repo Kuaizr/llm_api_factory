@@ -5,9 +5,15 @@ import time
 
 import httpx
 import pytest
+from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.v1 import routes as routes_module
 from app.api.v1.route_modules import proxy_direct_handler
 from app.core.config import Settings
+from app.db.base import Base
+from app.db.models import APIKey, Endpoint
+from app.db.session import get_session
 from app.services.codex_oauth import (
     CodexCredential,
     normalize_codex_credential_json,
@@ -75,6 +81,88 @@ def test_normalize_codex_credential_supports_nested_tokens_and_drops_extra_data(
         "account_id": "nested-account",
         "expires_at": 1_900_000_000,
     }
+
+
+@pytest.mark.asyncio
+async def test_codex_manual_probe_unions_models_from_every_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_maker()
+    endpoint = Endpoint(
+        name="Codex Multi Auth",
+        base_url="https://chatgpt.example.test",
+        provider="codex",
+        is_active=True,
+    )
+    session.add(endpoint)
+    await session.flush()
+    session.add_all(
+        [
+            APIKey(
+                endpoint_id=endpoint.id,
+                key=_mock_codex_key(access_token="access-a", account_id="account-a"),
+                is_active=True,
+            ),
+            APIKey(
+                endpoint_id=endpoint.id,
+                key=_mock_codex_key(access_token="access-b", account_id="account-b"),
+                is_active=True,
+            ),
+        ]
+    )
+    await session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["authorization"] == "Bearer access-a":
+            return httpx.Response(
+                200, json={"models": [{"slug": "model-a"}, {"slug": "shared"}]}
+            )
+        return httpx.Response(
+            200, json={"models": [{"slug": "model-b"}, {"slug": "shared"}]}
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    redis = MemoryRedis()
+
+    async def override_session():
+        yield session
+
+    async def override_http_client() -> httpx.AsyncClient:
+        return upstream_client
+
+    async def override_redis():
+        return redis
+
+    monkeypatch.setattr(
+        routes_module,
+        "get_settings",
+        lambda: Settings(
+            master_auth_token="token", admin_legacy_master_bearer_enabled=True
+        ),
+    )
+    monkeypatch.setattr(routes_module, "get_http_client", override_http_client)
+    monkeypatch.setattr(routes_module, "get_redis", override_redis)
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/admin/endpoints/{endpoint.id}/probe",
+            headers={"Authorization": "Bearer token"},
+        )
+
+    await upstream_client.aclose()
+    assert response.status_code == 200
+    assert response.json()["discovered_models"] == ["model-a", "shared", "model-b"]
+
+    await session.close()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -213,6 +301,68 @@ async def test_codex_provider_refreshes_and_retries_once_after_401(
     assert len(requests) == 2
     assert requests[0].headers["authorization"] == "Bearer mock-access-token"
     assert requests[1].headers["authorization"] == "Bearer refreshed-access-token"
+
+
+@pytest.mark.asyncio
+async def test_codex_model_error_falls_back_to_next_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = EndpointStub(
+        id=221,
+        name="Codex",
+        base_url="https://chatgpt.example.test",
+        provider="codex",
+    )
+    first_key = APIKeyStub(
+        id=222,
+        key=_mock_codex_key(access_token="access-a", account_id="account-a"),
+    )
+    second_key = APIKeyStub(
+        id=223,
+        key=_mock_codex_key(access_token="access-b", account_id="account-b"),
+    )
+    candidates = [
+        RouteCandidate(
+            api_key=first_key,
+            endpoint=endpoint,
+            real_model="gpt-5.6-sol",
+        ),
+        RouteCandidate(
+            api_key=second_key,
+            endpoint=endpoint,
+            real_model="gpt-5.6-sol",
+        ),
+    ]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.headers["authorization"] == "Bearer access-a":
+            return httpx.Response(400, json={"error": "model_not_supported"})
+        return httpx.Response(200, content=b"data: [DONE]\n\n")
+
+    recorded: dict[str, object] = {}
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = build_proxy_app(monkeypatch, candidates, upstream_client, recorded)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/openai/v1/responses",
+            headers={"Authorization": "Bearer token", "User-Agent": "codex-cli/1.0"},
+            json={"model": "gpt-5.6-sol", "input": "hi"},
+        )
+
+    await upstream_client.aclose()
+
+    assert response.status_code == 200
+    assert [request.headers["authorization"] for request in requests] == [
+        "Bearer access-a",
+        "Bearer access-b",
+    ]
+    assert [attempt.outcome for attempt in recorded["attempts"]] == [
+        "fallback",
+        "success",
+    ]
 
 
 @pytest.mark.asyncio

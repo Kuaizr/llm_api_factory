@@ -3,6 +3,19 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class EndpointKeyCreate(BaseModel):
+    key: str = Field(..., min_length=1)
+    name: str | None = None
+    rule_group: str = "default"
+    rule_groups: list[str] | None = None
+    weight: int = 1
+    rpm_limit: int | None = None
+    daily_limit: int | None = None
+    used_today: int = 0
+    total_usage: int = 0
+    is_active: bool = True
+
+
 class EndpointCreate(BaseModel):
     name: str = Field(..., min_length=1)
     base_url: str = Field(..., min_length=1)
@@ -21,6 +34,7 @@ class EndpointCreate(BaseModel):
     extra_query_params: dict[str, str] | None = None
     oauth_config: dict[str, str] | None = None
     request_body_template: str | None = None
+    initial_key: EndpointKeyCreate | None = None
 
 
 class EndpointUpdate(BaseModel):
@@ -69,19 +83,6 @@ class EndpointOut(BaseModel):
 
 class APIKeyCreate(BaseModel):
     endpoint_id: int
-    key: str = Field(..., min_length=1)
-    name: str | None = None
-    rule_group: str = "default"
-    rule_groups: list[str] | None = None
-    weight: int = 1
-    rpm_limit: int | None = None
-    daily_limit: int | None = None
-    used_today: int = 0
-    total_usage: int = 0
-    is_active: bool = True
-
-
-class EndpointKeyCreate(BaseModel):
     key: str = Field(..., min_length=1)
     name: str | None = None
     rule_group: str = "default"
@@ -168,7 +169,7 @@ class EndpointDetailOut(BaseModel):
 class RoutingRuleCreate(BaseModel):
     model_pattern: str
     group_name: str = "default"
-    exposure_format: str = "any"
+    exposure_format: str = "chat"
     priority: int = 10
     strategy: str = "weighted_round_robin"
     is_active: bool = True
@@ -456,6 +457,7 @@ class RequestLogOut(BaseModel):
     api_key_id: int
     requested_rule_group: str | None = None
     rule_group: str | None
+    exposure_format: str | None = None
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
@@ -480,6 +482,7 @@ class RequestAttemptLogOut(BaseModel):
     api_key_id: int
     requested_rule_group: str | None = None
     rule_group: str | None
+    exposure_format: str | None = None
     attempt_order: int
     status_code: int | None
     outcome: str

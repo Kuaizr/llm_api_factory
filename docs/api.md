@@ -50,6 +50,8 @@ Codex 场景会额外保留 Responses 需要的 Codex header，例如 `originato
 
 每类标准入口只会选择协议兼容的 provider。比如 Anthropic Messages 不会在没有 Anthropic/custom 候选时退回 OpenAI endpoint，Codex 候选仅参与 Responses/Codex 路由。
 
+同一个规则组可以按 `exposure_format` 配置多条协议规则。显式协议规则优先于旧版 `any` 规则；同组同协议只允许一条规则。Responses/Codex 规则可以包含多个兼容 provider 或多个 Auth Key，候选返回模型不支持、鉴权、额度、限流或上游错误时会继续切换下一个候选。
+
 ## Anthropic
 
 支持入口：
@@ -74,6 +76,8 @@ curl http://127.0.0.1:8000/anthropic/v1/messages \
 ```
 
 Claude Code 场景建议使用 Claude Code 自身发起请求。控制台的 API key 测试提供 `Claude Code` 模板，用于模拟关键 header 和 body 结构。
+
+Anthropic 入口会根据 `x-claude-code-session-id`、`x-app: cli`、Claude Code beta 或 User-Agent 识别 Claude Code 请求，并选择同组的 `claude_code` 规则；普通 Messages 请求选择 `message` 规则。
 
 ## Gemini
 

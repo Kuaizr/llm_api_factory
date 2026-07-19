@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.v1 import routes as routes_module
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.models import APIKey
+from app.db.models import APIKey, Endpoint
 from app.db.session import get_session
 from app.services.audit import audit_snapshot
 from app.services.secrets import decrypt_secret_value
@@ -180,5 +180,65 @@ async def test_codex_api_key_import_stores_only_required_credential_fields(
         "account_id": "account",
         "expires_at": 1_900_000_000,
     }
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_codex_endpoint_and_initial_credential_are_created_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def override_session():
+        async with session_maker() as session:
+            yield session
+
+    settings = Settings(master_auth_token="token", admin_legacy_master_bearer_enabled=True)
+    monkeypatch.setattr(routes_module, "get_settings", lambda: settings)
+    app = FastAPI()
+    app.include_router(routes_module.router)
+    app.dependency_overrides[get_session] = override_session
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        valid_response = await client.post(
+            "/admin/endpoints",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "name": "Atomic Codex",
+                "base_url": "https://chatgpt.com",
+                "provider": "codex",
+                "initial_key": {
+                    "name": "Initial Auth",
+                    "key": json.dumps(
+                        {"access_token": "access", "account_id": "account"}
+                    ),
+                    "rule_groups": ["default"],
+                },
+            },
+        )
+        invalid_response = await client.post(
+            "/admin/endpoints",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "name": "Rolled Back Codex",
+                "base_url": "https://chatgpt.com",
+                "provider": "codex",
+                "initial_key": {"name": "Broken Auth", "key": "not-json"},
+            },
+        )
+
+    assert valid_response.status_code == 200
+    assert invalid_response.status_code == 400
+    async with session_maker() as session:
+        endpoints = (await session.execute(select(Endpoint))).scalars().all()
+        api_keys = (await session.execute(select(APIKey))).scalars().all()
+    assert [endpoint.name for endpoint in endpoints] == ["Atomic Codex"]
+    assert [api_key.name for api_key in api_keys] == ["Initial Auth"]
 
     await engine.dispose()

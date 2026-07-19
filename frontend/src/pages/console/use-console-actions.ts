@@ -197,6 +197,16 @@ export const useConsoleActions = ({
           request_body_template: isCustomProvider
             ? payload.request_body_template || null
             : null,
+          initial_key:
+            !editingEndpoint && payload.provider === "codex" && payload.initial_api_key
+              ? {
+                  key: payload.initial_api_key,
+                  name: payload.initial_api_key_name?.trim() || "Codex Auth JSON",
+                  rule_group: "default",
+                  rule_groups: ["default"],
+                  is_active: true,
+                }
+              : undefined,
         }),
       });
       if (!response.ok) {
@@ -207,23 +217,7 @@ export const useConsoleActions = ({
       if (!editingEndpoint && payload.provider === "codex" && payload.initial_api_key) {
         const endpointId = Number(savedEndpoint.id);
         if (!Number.isInteger(endpointId) || endpointId <= 0) {
-          alert("端点已创建，但响应中缺少端点 ID，无法导入 Codex 凭据");
-          await loadEndpoints(token);
-          return false;
-        }
-        const keyResponse = await fetch(`${apiBase}/admin/endpoints/${endpointId}/keys`, {
-          method: "POST",
-          headers: buildHeaders(token, true),
-          body: JSON.stringify({
-            key: payload.initial_api_key,
-            name: payload.initial_api_key_name?.trim() || "Codex Auth JSON",
-            rule_group: "default",
-            rule_groups: ["default"],
-            is_active: true,
-          }),
-        });
-        if (!keyResponse.ok) {
-          await notifyApiError(keyResponse, "端点已创建，但 Codex 凭据导入失败");
+          alert("端点和 Codex 凭据已创建，但响应中缺少端点 ID，无法执行模型探测");
           await loadEndpoints(token);
           return false;
         }

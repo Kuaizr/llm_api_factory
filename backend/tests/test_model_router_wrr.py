@@ -261,6 +261,19 @@ async def test_get_candidates_filters_rules_by_exposure_format() -> None:
                         }
                     ),
                 ),
+                RoutingRule(
+                    model_pattern="^gpt-5\\.5$",
+                    group_name="gpt",
+                    priority=100,
+                    is_active=True,
+                    target_key_ids_json=json.dumps(
+                        {
+                            "target_key_ids": [codex_key.id],
+                            "strategy": "sequential",
+                            "exposure_format": "any",
+                        }
+                    ),
+                ),
             ]
         )
         await session.commit()

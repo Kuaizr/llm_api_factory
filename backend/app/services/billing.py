@@ -43,6 +43,7 @@ class RequestMetrics:
     execution_mode: str = "direct"
     agent_node: str | None = None
     upstream_url: str | None = None
+    exposure_format: str = "any"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ class RequestAttemptMetrics:
     execution_mode: str = "direct"
     agent_node: str | None = None
     upstream_url: str | None = None
+    exposure_format: str = "any"
 
 
 def extract_usage(
@@ -161,6 +163,7 @@ async def write_request_log(metrics: RequestMetrics) -> None:
             api_key_id=metrics.api_key_id,
             requested_rule_group=metrics.requested_rule_group,
             rule_group=metrics.rule_group,
+            exposure_format=metrics.exposure_format,
             prompt_tokens=metrics.prompt_tokens,
             completion_tokens=metrics.completion_tokens,
             total_tokens=metrics.total_tokens,
@@ -209,6 +212,7 @@ async def write_request_attempt_log(metrics: RequestAttemptMetrics) -> None:
             api_key_id=metrics.api_key_id,
             requested_rule_group=metrics.requested_rule_group,
             rule_group=metrics.rule_group,
+            exposure_format=metrics.exposure_format,
             attempt_order=metrics.attempt_order,
             status_code=metrics.status_code,
             outcome=metrics.outcome,

@@ -268,6 +268,9 @@ class RequestLog(Base):
         String(64), index=True, nullable=True
     )
     rule_group: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    exposure_format: Mapped[str | None] = mapped_column(
+        String(32), index=True, nullable=True
+    )
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -304,6 +307,9 @@ class RequestAttemptLog(Base):
         String(64), index=True, nullable=True
     )
     rule_group: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    exposure_format: Mapped[str | None] = mapped_column(
+        String(32), index=True, nullable=True
+    )
     attempt_order: Mapped[int] = mapped_column(Integer)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     outcome: Mapped[str] = mapped_column(String(32), index=True)

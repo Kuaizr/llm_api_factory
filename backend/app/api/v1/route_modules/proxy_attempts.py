@@ -26,6 +26,7 @@ def record_attempt_log(
     latency_ms: int,
     agent_node: str | None,
     upstream_url: str,
+    exposure_format: str = "any",
 ) -> None:
     metrics = RequestAttemptMetrics(
         request_id=request_id,
@@ -35,6 +36,7 @@ def record_attempt_log(
         api_key_id=candidate.api_key.id,
         requested_rule_group=requested_rule_group,
         rule_group=rule_group,
+        exposure_format=exposure_format,
         attempt_order=attempt_order,
         status_code=status_code,
         outcome=outcome,
@@ -61,6 +63,7 @@ async def reserve_candidate_attempt_or_raise(
     attempt_start: float,
     agent_node: str | None,
     upstream_url: str,
+    exposure_format: str = "any",
 ) -> bool:
     if await router_service.reserve_candidate_attempt(candidate):
         return True
@@ -78,6 +81,7 @@ async def reserve_candidate_attempt_or_raise(
         latency_ms=elapsed_ms(attempt_start),
         agent_node=agent_node,
         upstream_url=upstream_url,
+        exposure_format=exposure_format,
     )
     if candidate != last_candidate:
         return False

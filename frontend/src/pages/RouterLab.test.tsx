@@ -137,6 +137,24 @@ describe("Console rules", () => {
     expect(await screen.findByText("System Group")).toBeInTheDocument();
   });
 
+  it("requires an explicit protocol for new routing rules", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("llm_admin_token", "token");
+    render(<Console />);
+
+    await user.click(await screen.findByText("路由规则"));
+    await user.click(await screen.findByRole("button", { name: "新建规则" }));
+
+    const exposureSelect = screen
+      .getByText("暴露格式")
+      .parentElement?.querySelector("select");
+    expect(exposureSelect).not.toBeNull();
+    expect(exposureSelect).toHaveValue("chat");
+    expect(
+      Array.from(exposureSelect?.options ?? []).map((option) => option.value)
+    ).not.toContain("any");
+  });
+
   it("copies access key from rule key list", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("llm_admin_token", "token");

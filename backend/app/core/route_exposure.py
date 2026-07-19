@@ -34,10 +34,18 @@ def normalize_exposure_format(value: object) -> str:
 
 
 def exposure_format_matches(configured: object, requested: object) -> bool:
+    return exposure_format_match_priority(configured, requested) is not None
+
+
+def exposure_format_match_priority(
+    configured: object, requested: object
+) -> int | None:
     normalized_configured = normalize_exposure_format(configured)
     normalized_requested = normalize_exposure_format(requested)
-    return (
-        normalized_configured == EXPOSURE_FORMAT_ANY
-        or normalized_requested == EXPOSURE_FORMAT_ANY
-        or normalized_configured == normalized_requested
-    )
+    if normalized_requested == EXPOSURE_FORMAT_ANY:
+        return 1
+    if normalized_configured == normalized_requested:
+        return 2
+    if normalized_configured == EXPOSURE_FORMAT_ANY:
+        return 1
+    return None
