@@ -91,6 +91,9 @@ async def test_codex_provider_uses_backend_api_shape(
     assert sent_request.headers.get("openai-beta") == "responses=experimental"
     assert sent_request.headers.get("originator") == "codex_cli_rs"
     assert sent_request.headers.get("session-id") == "sess-123"
+    assert sent_request.headers.get_list("content-type") == ["application/json"]
+    assert sent_request.headers.get_list("accept") == ["application/json"]
+    assert sent_request.headers.get_list("openai-beta") == ["responses=experimental"]
     body = json.loads(sent_request.content.decode("utf-8"))
     assert body["model"] == "gpt-5.5-codex-real"
     assert body["instructions"] == ""

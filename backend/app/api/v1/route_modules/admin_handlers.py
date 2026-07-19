@@ -88,7 +88,12 @@ from app.services.access_keys import (
     is_hashed_access_key,
 )
 from app.services.circuit_breaker import CircuitBreaker
-from app.services.codex_oauth import resolve_codex_credential
+from app.services.codex_oauth import (
+    build_codex_headers,
+    build_codex_models_url,
+    parse_codex_credential,
+    resolve_codex_credential,
+)
 from app.services.codex_usage import read_codex_usage_many
 from app.services.health_monitor import HealthProbeResult, HealthProbeStore
 from app.services.model_patterns import (
@@ -725,7 +730,7 @@ def _extract_provider_models(provider: str, payload: object) -> list[str]:
     if not isinstance(payload, dict):
         return []
 
-    if provider == "gemini":
+    if provider in {"gemini", "codex"}:
         raw_models = payload.get("models")
         if not isinstance(raw_models, list):
             return []
@@ -733,8 +738,8 @@ def _extract_provider_models(provider: str, payload: object) -> list[str]:
         for item in raw_models:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("name") or "").strip()
-            if name.startswith("models/"):
+            name = str(item.get("name") or item.get("slug") or item.get("id") or "").strip()
+            if provider == "gemini" and name.startswith("models/"):
                 name = name.removeprefix("models/")
             if name:
                 names.append(name)
@@ -1002,20 +1007,30 @@ async def _probe_endpoint_models_with_key(
 
     settings = get_settings()
     client = await get_http_client()
-    default_suffix = "/v1beta/models" if provider == "gemini" else "/v1/models"
-    url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
-    header_name = endpoint.auth_header_name or "Authorization"
-    header_prefix = endpoint.auth_header_prefix
-    if header_prefix is None:
-        header_prefix = "Bearer"
-    headers = (
-        {header_name: f"{header_prefix} {api_key_value}"}
-        if header_prefix
-        else {header_name: api_key_value}
-    )
-
     response = None
     try:
+        if provider == "codex":
+            credential = parse_codex_credential(api_key_value)
+            url = build_codex_models_url(
+                endpoint.base_url,
+                client_version=settings.codex_client_version,
+            )
+            headers = build_codex_headers(
+                credential,
+                client_version=settings.codex_client_version,
+            )
+        else:
+            default_suffix = "/v1beta/models" if provider == "gemini" else "/v1/models"
+            url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
+            header_name = endpoint.auth_header_name or "Authorization"
+            header_prefix = endpoint.auth_header_prefix
+            if header_prefix is None:
+                header_prefix = "Bearer"
+            headers = (
+                {header_name: f"{header_prefix} {api_key_value}"}
+                if header_prefix
+                else {header_name: api_key_value}
+            )
         response = await client.get(
             url,
             headers=headers,
@@ -1237,23 +1252,32 @@ async def probe_endpoint(
     circuit_breaker = CircuitBreaker(redis, settings=settings)
 
     client = await get_http_client()
-    if provider == "anthropic":
+    if provider == "codex":
+        url = build_codex_models_url(
+            endpoint.base_url,
+            client_version=settings.codex_client_version,
+        )
+    elif provider == "anthropic":
         default_suffix = "/v1/messages"
+        url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
     elif provider == "gemini":
         default_suffix = "/v1beta/models"
+        url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
     else:
         default_suffix = "/v1/models"
-    url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
-    header_name = endpoint.auth_header_name or "Authorization"
-    header_prefix = endpoint.auth_header_prefix
-    if header_prefix is None:
-        header_prefix = "Bearer"
-    decrypted_api_key = decrypt_secret_value(api_key.key, settings=get_settings())
-    headers = (
-        {header_name: f"{header_prefix} {decrypted_api_key}"}
-        if header_prefix
-        else {header_name: decrypted_api_key}
-    )
+        url = _build_provider_probe_url(endpoint, default_suffix=default_suffix)
+    headers: dict[str, str] = {}
+    if provider != "codex":
+        header_name = endpoint.auth_header_name or "Authorization"
+        header_prefix = endpoint.auth_header_prefix
+        if header_prefix is None:
+            header_prefix = "Bearer"
+        decrypted_api_key = decrypt_secret_value(api_key.key, settings=get_settings())
+        headers = (
+            {header_name: f"{header_prefix} {decrypted_api_key}"}
+            if header_prefix
+            else {header_name: decrypted_api_key}
+        )
 
     status = "error"
     status_code: int | None = None
@@ -1269,6 +1293,17 @@ async def probe_endpoint(
     }
 
     try:
+        if provider == "codex":
+            credential = await resolve_codex_credential(
+                api_key,
+                client=client,
+                session=session,
+                settings=settings,
+            )
+            headers = build_codex_headers(
+                credential,
+                client_version=settings.codex_client_version,
+            )
         if provider == "anthropic":
             status_code, _response_headers, response_body = await _send_endpoint_request(
                 endpoint=endpoint,

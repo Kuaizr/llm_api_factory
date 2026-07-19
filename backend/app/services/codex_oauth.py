@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from typing import Any
+from urllib.parse import quote
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +29,32 @@ class CodexCredential:
 
 class CodexCredentialError(RuntimeError):
     pass
+
+
+def build_codex_models_url(base_url: str, *, client_version: str) -> str:
+    cleaned = base_url.rstrip("/")
+    if cleaned.endswith("/v1"):
+        cleaned = cleaned[:-3]
+    encoded_version = quote(client_version.strip() or "0.144.3", safe="")
+    return f"{cleaned}/backend-api/codex/models?client_version={encoded_version}"
+
+
+def build_codex_headers(
+    credential: CodexCredential,
+    *,
+    client_version: str,
+    accept: str = "application/json",
+) -> dict[str, str]:
+    version = client_version.strip() or "0.144.3"
+    return {
+        "Authorization": f"Bearer {credential.access_token}",
+        "chatgpt-account-id": credential.account_id,
+        "Content-Type": "application/json",
+        "Accept": accept,
+        "OpenAI-Beta": "responses=experimental",
+        "originator": "codex_cli_rs",
+        "User-Agent": f"codex-cli/{version}",
+    }
 
 
 def _parse_timestamp(value: object) -> int | None:

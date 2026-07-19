@@ -301,6 +301,8 @@ export type EndpointFormState = {
   extra_query_params?: Record<string, string>;
   oauth_config?: Record<string, string>;
   request_body_template?: string;
+  initial_api_key?: string;
+  initial_api_key_name?: string;
 };
 
 export type AgentDeployFormState = {

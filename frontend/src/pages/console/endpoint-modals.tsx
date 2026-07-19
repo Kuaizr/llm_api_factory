@@ -1,16 +1,20 @@
 import {
+  ClipboardPaste,
   Edit2,
+  FileJson,
   FlaskConical,
   Key,
   Plus,
   RefreshCw,
   Settings,
   Trash2,
+  Upload,
   XCircle,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { ApiKeyTestModal } from "./api-key-test-modal";
+import { normalizeCodexCredentialJson } from "./codex-credential";
 import { parseRuleGroupEligibilityResult } from "./response-validators";
 import {
   apiBase,
@@ -26,6 +30,166 @@ import {
   type RuleGroupEligibilityResult,
   resolveKeyStatus,
 } from "./shared";
+
+const readCodexUsageWindow = (
+  usage: Record<string, unknown> | null | undefined,
+  window: "primary" | "secondary"
+) => {
+  const raw = usage?.[window];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const item = raw as Record<string, unknown>;
+  return {
+    usedPercent:
+      typeof item.used_percent === "number" && Number.isFinite(item.used_percent)
+        ? item.used_percent
+        : null,
+    windowMinutes:
+      typeof item.window_minutes === "number" && Number.isFinite(item.window_minutes)
+        ? item.window_minutes
+        : null,
+    resetAfterSeconds:
+      typeof item.reset_after_seconds === "number" &&
+      Number.isFinite(item.reset_after_seconds)
+        ? item.reset_after_seconds
+        : null,
+  };
+};
+
+const formatCodexWindow = (fallback: string, minutes: number | null | undefined) => {
+  if (!minutes) return fallback;
+  if (minutes % (60 * 24 * 7) === 0) return `${minutes / (60 * 24 * 7)}w`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+};
+
+const formatResetAfter = (seconds: number | null | undefined) => {
+  if (seconds == null) return null;
+  if (seconds >= 86400) return `${Math.ceil(seconds / 86400)}天后重置`;
+  if (seconds >= 3600) return `${Math.ceil(seconds / 3600)}小时后重置`;
+  return `${Math.max(1, Math.ceil(seconds / 60))}分钟后重置`;
+};
+
+const CodexKeyUsage = ({ usage }: { usage?: Record<string, unknown> | null }) => {
+  const primary = readCodexUsageWindow(usage, "primary");
+  const secondary = readCodexUsageWindow(usage, "secondary");
+  const rows = [
+    {
+      label: formatCodexWindow("5h", primary?.windowMinutes),
+      percent: primary?.usedPercent ?? null,
+      reset: formatResetAfter(primary?.resetAfterSeconds),
+    },
+    {
+      label: formatCodexWindow("1w", secondary?.windowMinutes),
+      percent: secondary?.usedPercent ?? null,
+      reset: formatResetAfter(secondary?.resetAfterSeconds),
+    },
+  ];
+  return (
+    <div className="min-w-[150px] space-y-2">
+      {rows.map((row) => (
+        <div key={row.label} aria-label={`Codex ${row.label} 用量`}>
+          <div className="mb-1 flex items-center justify-between gap-3 text-[10px] text-cyan-200/80">
+            <span>{row.label}</span>
+            <span className="font-mono">
+              {row.percent == null ? "--" : `${row.percent.toFixed(1)}%`}
+            </span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
+            <div
+              className="h-full rounded-full bg-cyan-400"
+              style={{ width: `${Math.min(Math.max(row.percent ?? 0, 0), 100)}%` }}
+            />
+          </div>
+          {row.reset && <div className="mt-0.5 text-[9px] text-gray-600">{row.reset}</div>}
+        </div>
+      ))}
+      {!usage && <div className="text-[10px] text-gray-600">等待首次成功请求</div>}
+    </div>
+  );
+};
+
+const CodexCredentialInput = ({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) => {
+  const [error, setError] = useState<string | null>(null);
+
+  const importRaw = (raw: string) => {
+    try {
+      onChange(normalizeCodexCredentialJson(raw));
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Codex 凭据格式错误");
+    }
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      importRaw(await navigator.clipboard.readText());
+    } catch {
+      setError("无法读取剪贴板，请直接粘贴到下方文本框");
+    }
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-cyan-900/60 bg-cyan-950/10 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <label className="flex items-center gap-1.5 text-xs font-bold uppercase text-cyan-300">
+          <FileJson size={14} /> Codex Auth JSON
+        </label>
+        <div className="flex gap-2">
+          <label className="flex cursor-pointer items-center gap-1 rounded border border-cyan-700/60 px-2 py-1 text-[11px] text-cyan-200 hover:bg-cyan-900/30">
+            <Upload size={12} /> 上传 JSON
+            <input
+              aria-label="上传 Codex Auth JSON"
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              disabled={disabled}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  void file.text().then(importRaw).catch(() => setError("读取 JSON 文件失败"));
+                }
+                event.target.value = "";
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void pasteFromClipboard()}
+            disabled={disabled}
+            className="flex items-center gap-1 rounded border border-cyan-700/60 px-2 py-1 text-[11px] text-cyan-200 hover:bg-cyan-900/30 disabled:opacity-50"
+          >
+            <ClipboardPaste size={12} /> 粘贴 JSON
+          </button>
+        </div>
+      </div>
+      <textarea
+        aria-label="Codex Auth JSON"
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setError(null);
+        }}
+        placeholder={'{\n  "access_token": "...",\n  "account_id": "...",\n  "refresh_token": "..."\n}'}
+        rows={6}
+        spellCheck={false}
+        disabled={disabled}
+        className="w-full rounded border border-gray-700 bg-gray-950 p-2 font-mono text-xs text-gray-200 outline-none focus:border-cyan-500"
+      />
+      <p className="text-[11px] leading-relaxed text-gray-500">
+        支持 Sub2API 导出格式和 tokens 嵌套格式；保存时仅保留令牌、账号 ID 与过期时间。
+      </p>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+};
 
 export const EditEndpointModal = ({
   endpoint,
@@ -60,7 +224,10 @@ export const EditEndpointModal = ({
     extra_query_params: endpoint?.extra_query_params ?? undefined,
     oauth_config: endpoint?.oauth_config ?? undefined,
     request_body_template: endpoint?.request_body_template ?? "",
+    initial_api_key: "",
+    initial_api_key_name: "",
   });
+  const [formError, setFormError] = useState<string | null>(null);
 
   // 用于 JSON 字段编辑的字符串状态
   const [extraHeadersText, setExtraHeadersText] = useState(
@@ -172,6 +339,7 @@ export const EditEndpointModal = ({
                       provider,
                       auth_header_name: "Authorization",
                       auth_header_prefix: "Bearer",
+                      base_url: prev.base_url.trim() || "https://chatgpt.com",
                     };
                   }
                   return { ...prev, ...customOnly, provider };
@@ -189,10 +357,38 @@ export const EditEndpointModal = ({
             {form.provider === "codex" && (
               <p className="mt-2 text-[11px] text-cyan-300/80 leading-relaxed">
                 Codex OAuth 端点使用 API Key JSON 中的 access_token / refresh_token /
-                account_id，转发到 Codex backend API；不要上传本机 ~/.codex/auth.json。
+                account_id，转发到 Codex backend API。
               </p>
             )}
           </div>
+          {form.provider === "codex" && !endpoint && (
+            <div className="space-y-3 border-t border-gray-800 pt-3">
+              <CodexCredentialInput
+                value={form.initial_api_key ?? ""}
+                onChange={(value) =>
+                  setForm((prev) => ({ ...prev, initial_api_key: value }))
+                }
+                disabled={!isAdmin}
+              />
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase text-gray-500">
+                  凭据备注名称
+                </label>
+                <input
+                  value={form.initial_api_key_name ?? ""}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      initial_api_key_name: event.target.value,
+                    }))
+                  }
+                  placeholder="例如：Sub2API 导入账号"
+                  disabled={!isAdmin}
+                  className="w-full rounded border border-gray-700 bg-gray-900 p-2.5 text-sm text-white outline-none focus:border-cyan-500"
+                />
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-bold text-gray-500 uppercase mb-1.5 block">
@@ -434,6 +630,7 @@ export const EditEndpointModal = ({
           </div>
           )}
         </div>
+        {formError && <p className="px-6 pb-2 text-xs text-red-400">{formError}</p>}
         <div className="p-4 border-t border-gray-800 flex items-center justify-between gap-2">
           {endpoint && onDelete && (
             <button
@@ -452,7 +649,24 @@ export const EditEndpointModal = ({
               取消
             </button>
             <button
-              onClick={() => onSave(form)}
+              onClick={() => {
+                let payload = form;
+                if (form.provider === "codex" && !endpoint && form.initial_api_key?.trim()) {
+                  try {
+                    payload = {
+                      ...form,
+                      initial_api_key: normalizeCodexCredentialJson(form.initial_api_key),
+                    };
+                    setFormError(null);
+                  } catch (reason) {
+                    setFormError(
+                      reason instanceof Error ? reason.message : "Codex 凭据格式错误"
+                    );
+                    return;
+                  }
+                }
+                void onSave(payload);
+              }}
               disabled={!isAdmin}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded transition disabled:opacity-50"
             >
@@ -471,6 +685,7 @@ export const KeyConfigModal = ({
   authToken,
   isAdmin,
   availableRuleGroups,
+  provider,
   onClose,
   onSave,
 }: {
@@ -479,6 +694,7 @@ export const KeyConfigModal = ({
   authToken: string | null;
   isAdmin: boolean;
   availableRuleGroups: string[];
+  provider?: string;
   onClose: () => void;
   onSave: (payload: Partial<ApiKey> & { key?: string }) => boolean | Promise<boolean>;
 }) => {
@@ -493,6 +709,13 @@ export const KeyConfigModal = ({
   const [checkingGroup, setCheckingGroup] = useState<string | null>(null);
   const [groupNotice, setGroupNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const isCodex = provider?.trim().toLowerCase() === "codex";
+
+  const normalizedKeyForRequest = () => {
+    const raw = keyValue.trim();
+    if (!raw || !isCodex) return raw;
+    return normalizeCodexCredentialJson(raw);
+  };
 
   const groupOptions = useMemo(() => {
     const groups = new Set<string>(["default"]);
@@ -546,7 +769,7 @@ export const KeyConfigModal = ({
           body: JSON.stringify({
             group_name: groupName,
             api_key_id: keyData?.id,
-            api_key: keyData ? undefined : keyValue.trim() || undefined,
+            api_key: keyData ? undefined : normalizedKeyForRequest() || undefined,
           }),
         }
       );
@@ -625,6 +848,15 @@ export const KeyConfigModal = ({
       setFormError("API Key 不能为空");
       return;
     }
+    let normalizedKeyValue = keyValue.trim();
+    if (!keyData && isCodex) {
+      try {
+        normalizedKeyValue = normalizedKeyForRequest();
+      } catch (reason) {
+        setFormError(reason instanceof Error ? reason.message : "Codex 凭据格式错误");
+        return;
+      }
+    }
     if (
       parsedDailyLimit !== null &&
       (!Number.isFinite(parsedDailyLimit) || parsedDailyLimit < 0)
@@ -659,7 +891,7 @@ export const KeyConfigModal = ({
 
     setFormError(null);
     const saved = await onSave({
-      key: keyValue.trim() || undefined,
+      key: normalizedKeyValue || undefined,
       name: name.trim() || undefined,
       rule_group: primaryRuleGroup,
       rule_groups: normalizedRuleGroups,
@@ -682,25 +914,35 @@ export const KeyConfigModal = ({
         <div className="space-y-3">
           {!keyData && (
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">
-                API Key (sk-...)
-              </label>
-              <input
-                aria-label="API Key"
-                value={keyValue}
-                onChange={(event) => {
-                  setKeyValue(event.target.value);
-                  if (formError) {
+              {isCodex ? (
+                <CodexCredentialInput
+                  value={keyValue}
+                  onChange={(value) => {
+                    setKeyValue(value);
                     setFormError(null);
-                  }
-                  if (groupNotice) {
                     setGroupNotice(null);
-                  }
-                }}
-                placeholder="sk-..."
-                className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"
-                disabled={!isAdmin}
-              />
+                  }}
+                  disabled={!isAdmin}
+                />
+              ) : (
+                <>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">
+                    API Key (sk-...)
+                  </label>
+                  <input
+                    aria-label="API Key"
+                    value={keyValue}
+                    onChange={(event) => {
+                      setKeyValue(event.target.value);
+                      if (formError) setFormError(null);
+                      if (groupNotice) setGroupNotice(null);
+                    }}
+                    placeholder="sk-..."
+                    className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:border-green-500 outline-none"
+                    disabled={!isAdmin}
+                  />
+                </>
+              )}
             </div>
           )}
           <div>
@@ -897,7 +1139,7 @@ export const ManageKeysModal = ({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[900px] max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-[#0f1117] border border-gray-800 rounded-xl w-[1050px] max-w-[95vw] max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
         <div className="p-6 border-b border-gray-800 flex justify-between items-center">
           <div>
             <h3 className="text-xl font-bold text-white flex items-center gap-2">
@@ -957,6 +1199,9 @@ export const ManageKeysModal = ({
                 <th className="px-4 py-3">每日限额 (Quota)</th>
                 <th className="px-4 py-3">今日已用</th>
                 <th className="px-4 py-3">速率 (RPM)</th>
+                {endpoint.provider === "codex" && (
+                  <th className="px-4 py-3">Codex 用量</th>
+                )}
                 <th className="px-4 py-3">状态</th>
                 <th className="px-4 py-3 rounded-r-lg text-right">操作</th>
               </tr>
@@ -1006,6 +1251,11 @@ export const ManageKeysModal = ({
                       </div>
                     </td>
                     <td className="px-4 py-3">{key.rpm_limit ?? "--"}</td>
+                    {endpoint.provider === "codex" && (
+                      <td className="px-4 py-3">
+                        <CodexKeyUsage usage={key.codex_usage} />
+                      </td>
+                    )}
                     <td className="px-4 py-3">
                       <span
                         className={`text-xs px-2 py-0.5 rounded border ${status.className}`}
@@ -1042,7 +1292,10 @@ export const ManageKeysModal = ({
               })}
               {filteredKeys.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-xs text-gray-500">
+                  <td
+                    colSpan={endpoint.provider === "codex" ? 8 : 7}
+                    className="px-4 py-8 text-center text-xs text-gray-500"
+                  >
                     当前分组暂无 Key
                   </td>
                 </tr>
@@ -1059,6 +1312,7 @@ export const ManageKeysModal = ({
           authToken={authToken}
           isAdmin={isAdmin}
           availableRuleGroups={availableRuleGroups}
+          provider={endpoint.provider}
           onClose={() => {
             setEditingKey(null);
             setIsAddingKey(false);

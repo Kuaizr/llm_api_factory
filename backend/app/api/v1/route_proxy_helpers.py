@@ -239,12 +239,21 @@ def _build_upstream_headers(
     if provider == "codex":
         if codex_credential is None:
             raise RuntimeError("Codex credential is required for codex provider")
-        headers["Authorization"] = f"Bearer {codex_credential.access_token}"
-        headers["chatgpt-account-id"] = codex_credential.account_id
-        headers["Content-Type"] = "application/json"
-        headers["Accept"] = "text/event-stream" if is_stream else "application/json"
-        headers.setdefault("OpenAI-Beta", "responses=experimental")
-        headers.setdefault("originator", "codex_cli_rs")
+        def set_header(name: str, value: str, *, preserve_existing: bool = False) -> None:
+            matching = [key for key in headers if key.lower() == name.lower()]
+            resolved_value = value
+            if preserve_existing and matching:
+                resolved_value = str(headers[matching[0]])
+            for key in matching:
+                del headers[key]
+            headers[name] = resolved_value
+
+        set_header("Authorization", f"Bearer {codex_credential.access_token}")
+        set_header("chatgpt-account-id", codex_credential.account_id)
+        set_header("Content-Type", "application/json")
+        set_header("Accept", "text/event-stream" if is_stream else "application/json")
+        set_header("OpenAI-Beta", "responses=experimental", preserve_existing=True)
+        set_header("originator", "codex_cli_rs", preserve_existing=True)
         return headers
 
     resolved_api_key = decrypt_secret_value(api_key, settings=get_settings())

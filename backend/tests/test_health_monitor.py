@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+import json
+import time
 
 import httpx
 import pytest
@@ -64,6 +66,10 @@ def test_build_probe_url_handles_base_paths() -> None:
         build_probe_url("https://gateway.example.com/v1", url_path_suffix="/healthz")
         == "https://gateway.example.com/v1/healthz"
     )
+    assert (
+        build_probe_url("https://chatgpt.com", provider="codex")
+        == "https://chatgpt.com/backend-api/codex/models?client_version=0.144.3"
+    )
 
 
 @pytest.mark.asyncio
@@ -117,6 +123,47 @@ async def test_probe_target_records_success_and_store() -> None:
     assert result.status_code == 200
     assert result.endpoint_name == endpoint.name
     assert result.latency_ms is not None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_codex_probe_uses_oauth_credential_and_models_endpoint() -> None:
+    endpoint = EndpointStub(
+        id=21,
+        name="Codex",
+        base_url="https://chatgpt.example.test",
+        provider="codex",
+    )
+    api_key = APIKeyStub(
+        id=22,
+        key=json.dumps(
+            {
+                "access_token": "codex-access",
+                "account_id": "codex-account",
+                "expires_at": int(time.time()) + 3600,
+            }
+        ),
+    )
+    target = HealthTarget(endpoint=endpoint, api_key=api_key, real_model=None)
+    redis = MemoryRedis()
+    store = HealthProbeStore(redis)
+    settings = Settings(codex_client_version="9.8.7")
+    route = respx.get(
+        "https://chatgpt.example.test/backend-api/codex/models?client_version=9.8.7"
+    ).mock(return_value=httpx.Response(200, json={"models": [{"slug": "gpt-test"}]}))
+
+    async with httpx.AsyncClient() as client:
+        monitor = HealthMonitor(client=client, probe_store=store, settings=settings)
+        await monitor.probe_target(target)
+
+    result = await store.read(api_key.id)
+    assert result is not None
+    assert result.status == "success"
+    assert route.called
+    request = route.calls[0].request
+    assert request.headers["authorization"] == "Bearer codex-access"
+    assert request.headers["chatgpt-account-id"] == "codex-account"
+    assert request.headers["user-agent"] == "codex-cli/9.8.7"
 
 
 @pytest.mark.asyncio

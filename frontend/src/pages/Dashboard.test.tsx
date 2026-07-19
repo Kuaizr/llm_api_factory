@@ -158,6 +158,9 @@ describe("Console layout", () => {
     expect(screen.queryByText("流量统计")).not.toBeInTheDocument();
     expect(screen.queryByText("系统设置")).not.toBeInTheDocument();
     expect(screen.queryByText("v2.0-Probe")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /编辑端点/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "管理 Keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "探测模型" })).not.toBeInTheDocument();
   });
 
   it("toggles to light theme", async () => {

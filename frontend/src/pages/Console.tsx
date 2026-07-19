@@ -367,9 +367,15 @@ export const Console = () => {
             usageStats={usageStats}
             healthStatusMap={healthStatusMap}
             isAdmin={isAdmin}
-            onCreateEndpoint={() => setEditingEndpoint(undefined)}
-            onEditEndpoint={(endpoint) => setEditingEndpoint(endpoint)}
-            onManageKeys={(endpoint) => setManageKeysEndpoint(endpoint)}
+            onCreateEndpoint={() => {
+              if (isAdmin) setEditingEndpoint(undefined);
+            }}
+            onEditEndpoint={(endpoint) => {
+              if (isAdmin) setEditingEndpoint(endpoint);
+            }}
+            onManageKeys={(endpoint) => {
+              if (isAdmin) setManageKeysEndpoint(endpoint);
+            }}
             onProbeEndpoint={handleProbeEndpoint}
           />
         )}
@@ -438,7 +444,7 @@ export const Console = () => {
         )}
       </main>
 
-      {manageKeysEndpoint && (
+      {isAdmin && manageKeysEndpoint && (
         <ManageKeysModal
           endpoint={manageKeysEndpoint}
           isAdmin={isAdmin}
@@ -452,7 +458,7 @@ export const Console = () => {
           onRefresh={refreshKeys}
         />
       )}
-      {editingEndpoint !== null && (
+      {isAdmin && editingEndpoint !== null && (
         <EditEndpointModal
           endpoint={editingEndpoint ?? null}
           agents={agents}

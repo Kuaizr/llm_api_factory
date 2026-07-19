@@ -203,6 +203,38 @@ export const useConsoleActions = ({
         await notifyApiError(response, "保存 API 端点失败");
         return false;
       }
+      const savedEndpoint = (await response.json()) as { id?: number };
+      if (!editingEndpoint && payload.provider === "codex" && payload.initial_api_key) {
+        const endpointId = Number(savedEndpoint.id);
+        if (!Number.isInteger(endpointId) || endpointId <= 0) {
+          alert("端点已创建，但响应中缺少端点 ID，无法导入 Codex 凭据");
+          await loadEndpoints(token);
+          return false;
+        }
+        const keyResponse = await fetch(`${apiBase}/admin/endpoints/${endpointId}/keys`, {
+          method: "POST",
+          headers: buildHeaders(token, true),
+          body: JSON.stringify({
+            key: payload.initial_api_key,
+            name: payload.initial_api_key_name?.trim() || "Codex Auth JSON",
+            rule_group: "default",
+            rule_groups: ["default"],
+            is_active: true,
+          }),
+        });
+        if (!keyResponse.ok) {
+          await notifyApiError(keyResponse, "端点已创建，但 Codex 凭据导入失败");
+          await loadEndpoints(token);
+          return false;
+        }
+        const probeResponse = await fetch(`${apiBase}/admin/endpoints/${endpointId}/probe`, {
+          method: "POST",
+          headers: buildHeaders(token),
+        });
+        if (!probeResponse.ok) {
+          await notifyApiError(probeResponse, "Codex 凭据已导入，但首次模型探测失败");
+        }
+      }
       await loadEndpoints(token);
       setEditingEndpoint(null);
       return true;
@@ -236,6 +268,18 @@ export const useConsoleActions = ({
       if (!response.ok) {
         await notifyApiError(response, "创建 API Key 失败");
         return false;
+      }
+      if (
+        manageKeysEndpoint?.id === endpointId &&
+        manageKeysEndpoint.provider.trim().toLowerCase() === "codex"
+      ) {
+        const probeResponse = await fetch(`${apiBase}/admin/endpoints/${endpointId}/probe`, {
+          method: "POST",
+          headers: buildHeaders(token),
+        });
+        if (!probeResponse.ok) {
+          await notifyApiError(probeResponse, "Codex 凭据已创建，但模型探测失败");
+        }
       }
       await refreshKeys();
       return true;

@@ -172,7 +172,7 @@ describe("Console endpoints", () => {
     expect(await screen.findByText("基础连通延迟")).toBeInTheDocument();
     expect(await screen.findByText("通道健康度")).toBeInTheDocument();
     expect(await screen.findByText(/Key 负载池/)).toBeInTheDocument();
-    expect(await screen.findByText("管理 Keys")).toBeInTheDocument();
+    expect(screen.queryByText("管理 Keys")).not.toBeInTheDocument();
   });
 
   it("creates endpoint key with eligible multi rule groups", async () => {

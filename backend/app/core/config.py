@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     codex_oauth_token_url: str = "https://auth.openai.com/oauth/token"
     codex_oauth_client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann"
     codex_oauth_refresh_leeway_seconds: int = 300
+    codex_client_version: str = "0.144.3"
 
     model_config = SettingsConfigDict(env_prefix="LLM_", case_sensitive=False)
 

@@ -30,6 +30,9 @@ const defaultTemplateForProvider = (provider?: string | null) => {
   if (normalized === "gemini") {
     return "gemini";
   }
+  if (normalized === "codex") {
+    return "codex";
+  }
   return "chat";
 };
 

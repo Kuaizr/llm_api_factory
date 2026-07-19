@@ -27,68 +27,6 @@ import {
 
 const providerFilters = ["openai", "anthropic", "gemini", "codex", "custom"] as const;
 
-const readCodexWindow = (
-  usage: Record<string, unknown> | null | undefined,
-  window: "primary" | "secondary"
-) => {
-  const raw = usage?.[window];
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return null;
-  }
-  const item = raw as Record<string, unknown>;
-  const usedPercent =
-    typeof item.used_percent === "number" && Number.isFinite(item.used_percent)
-      ? item.used_percent
-      : null;
-  const windowMinutes =
-    typeof item.window_minutes === "number" && Number.isFinite(item.window_minutes)
-      ? item.window_minutes
-      : null;
-  const resetAfterSeconds =
-    typeof item.reset_after_seconds === "number" &&
-    Number.isFinite(item.reset_after_seconds)
-      ? item.reset_after_seconds
-      : null;
-  return { usedPercent, windowMinutes, resetAfterSeconds };
-};
-
-const formatCodexWindowLabel = (
-  fallback: string,
-  windowMinutes: number | null | undefined
-) => {
-  if (!windowMinutes) {
-    return fallback;
-  }
-  if (windowMinutes % (60 * 24 * 7) === 0) {
-    return `${windowMinutes / (60 * 24 * 7)}w`;
-  }
-  if (windowMinutes % 60 === 0) {
-    return `${windowMinutes / 60}h`;
-  }
-  return `${windowMinutes}m`;
-};
-
-const CodexUsageBar = ({
-  label,
-  percent,
-}: {
-  label: string;
-  percent: number | null;
-}) => (
-  <div>
-    <div className="mb-1 flex items-center justify-between text-[10px] text-cyan-200/80">
-      <span>{label}</span>
-      <span className="font-mono">{percent == null ? "--" : `${percent.toFixed(1)}%`}</span>
-    </div>
-    <div className="h-1.5 rounded-full bg-gray-800 overflow-hidden">
-      <div
-        className="h-full rounded-full bg-cyan-400"
-        style={{ width: `${Math.min(Math.max(percent ?? 0, 0), 100)}%` }}
-      />
-    </div>
-  </div>
-);
-
 type EndpointsPanelProps = {
   endpoints: Endpoint[];
   agents: AgentNode[];
@@ -119,10 +57,6 @@ const EndpointCard = ({
   const availableKeys = data.keys.filter((key) =>
     resolveKeyStatus(key, healthStatusMap[key.id]).isAvailable
   ).length;
-  const codexUsage = data.keys.find((key) => key.codex_usage)?.codex_usage ?? null;
-  const codexPrimary = readCodexWindow(codexUsage, "primary");
-  const codexSecondary = readCodexWindow(codexUsage, "secondary");
-
   return (
     <div className="group relative bg-[#0f1117] border border-gray-800 rounded-xl p-5 hover:border-blue-500/50 transition-all duration-300 shadow-lg hover:shadow-blue-900/10 flex flex-col h-full">
       <div className="flex justify-between items-start mb-4">
@@ -156,12 +90,15 @@ const EndpointCard = ({
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={data.status} />
-          <button
-            onClick={() => onEdit(data)}
-            className="text-gray-500 hover:text-white p-1 rounded hover:bg-gray-800 transition"
-          >
-            <Settings size={16} />
-          </button>
+          {isAdmin && (
+            <button
+              aria-label={`编辑端点 ${data.name}`}
+              onClick={() => onEdit(data)}
+              className="text-gray-500 hover:text-white p-1 rounded hover:bg-gray-800 transition"
+            >
+              <Settings size={16} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -198,27 +135,6 @@ const EndpointCard = ({
         </div>
       )}
 
-      {data.provider === "codex" && (
-        <div className="mb-4 rounded-lg border border-cyan-800/40 bg-cyan-950/10 p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-xs font-medium text-cyan-200">Codex 用量窗口</span>
-            <span className="text-[10px] text-cyan-200/50">
-              {codexUsage ? "响应头同步" : "等待数据"}
-            </span>
-          </div>
-          <div className="space-y-2">
-            <CodexUsageBar
-              label={formatCodexWindowLabel("3h", codexPrimary?.windowMinutes)}
-              percent={codexPrimary?.usedPercent ?? null}
-            />
-            <CodexUsageBar
-              label={formatCodexWindowLabel("1w", codexSecondary?.windowMinutes)}
-              percent={codexSecondary?.usedPercent ?? null}
-            />
-          </div>
-        </div>
-      )}
-
       <div className="flex-1" />
 
       <div className="space-y-3 border-t border-gray-800 pt-3">
@@ -237,21 +153,22 @@ const EndpointCard = ({
         <LatencyBar ms={data.latency} />
       </div>
 
-      <div className="absolute bottom-0 left-0 w-full p-4 bg-[#0f1117]/95 backdrop-blur-sm border-t border-gray-800 rounded-b-xl opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
-        <button
-          onClick={() => onManageKeys(data)}
-          className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded font-medium transition"
-        >
-          管理 Keys
-        </button>
-        <button
-          onClick={() => onProbe(data)}
-          disabled={!isAdmin}
-          className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-2 rounded font-medium border border-gray-700 transition disabled:opacity-40"
-        >
-          探测模型
-        </button>
-      </div>
+      {isAdmin && (
+        <div className="absolute bottom-0 left-0 w-full p-4 bg-[#0f1117]/95 backdrop-blur-sm border-t border-gray-800 rounded-b-xl opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+          <button
+            onClick={() => onManageKeys(data)}
+            className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded font-medium transition"
+          >
+            管理 Keys
+          </button>
+          <button
+            onClick={() => onProbe(data)}
+            className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-2 rounded font-medium border border-gray-700 transition"
+          >
+            探测模型
+          </button>
+        </div>
+      )}
     </div>
   );
 };

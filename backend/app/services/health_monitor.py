@@ -20,6 +20,11 @@ from app.db.models import APIKey, Endpoint, ModelMap
 from app.db.session import SessionLocal
 from app.services.circuit_breaker import CircuitBreaker
 from app.services.notifications import AlertPolicyStore, get_notifier
+from app.services.codex_oauth import (
+    build_codex_headers,
+    build_codex_models_url,
+    resolve_codex_credential,
+)
 from app.services.secrets import decrypt_secret_value
 from app.services.telegram import TelegramNotifier
 
@@ -195,7 +200,7 @@ class HealthProbeStore:
             await self.redis.expire(key, self.series_ttl_seconds)
 
 
-SUPPORTED_PROBE_PROVIDERS = {"openai", "anthropic", "gemini", "custom"}
+SUPPORTED_PROBE_PROVIDERS = {"openai", "anthropic", "gemini", "codex", "custom"}
 ANTHROPIC_PROBE_FALLBACK_MODEL = "claude-3-5-haiku-latest"
 
 
@@ -232,6 +237,8 @@ def build_probe_url(
     cleaned = base_url.rstrip("/")
 
     normalized_provider = _normalize_probe_provider(provider)
+    if normalized_provider == "codex":
+        return build_codex_models_url(cleaned, client_version="0.144.3")
     if normalized_provider == "gemini":
         if cleaned.endswith("/v1beta"):
             cleaned = cleaned[: -len("/v1beta")]
@@ -313,7 +320,7 @@ class HealthMonitor:
             provider=provider,
             url_path_suffix=getattr(target.endpoint, "url_path_suffix", None),
         )
-        headers = self._build_headers(target)
+        headers: dict[str, str] = {}
         start = time.perf_counter()
         status_code: int | None = None
         latency_ms: int | None = None
@@ -327,6 +334,22 @@ class HealthMonitor:
         }
 
         try:
+            if provider == "codex":
+                credential = await resolve_codex_credential(
+                    target.api_key,
+                    client=client,
+                    settings=self.settings,
+                )
+                url = build_codex_models_url(
+                    target.endpoint.base_url,
+                    client_version=self.settings.codex_client_version,
+                )
+                headers = build_codex_headers(
+                    credential,
+                    client_version=self.settings.codex_client_version,
+                )
+            else:
+                headers = self._build_headers(target)
             if provider == "anthropic":
                 response = await client.post(
                     url,

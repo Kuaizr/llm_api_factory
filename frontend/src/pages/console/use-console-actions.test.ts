@@ -148,6 +148,47 @@ describe("console actions", () => {
     });
   });
 
+  it("creates the initial Codex credential after creating an endpoint", async () => {
+    const loadEndpoints = vi.fn();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: 77 }))
+      .mockResolvedValueOnce(jsonResponse({ id: 88 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          provider: "codex",
+          probe_status: "success",
+          probe_status_code: 200,
+          probe_message: null,
+          discovered_models: ["gpt-5.6-sol"],
+          manual_models: [],
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const actions = buildActions({ loadEndpoints });
+    await expect(
+      actions.handleSaveEndpoint({
+        ...endpointForm,
+        provider: "codex",
+        base_url: "https://chatgpt.com",
+        initial_api_key: '{"access_token":"access","account_id":"account"}',
+        initial_api_key_name: "Imported Codex",
+      })
+    ).resolves.toBe(true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [keyUrl, keyInit] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[1];
+    expect(keyUrl).toContain("/admin/endpoints/77/keys");
+    expect(JSON.parse(String(keyInit.body))).toMatchObject({
+      key: '{"access_token":"access","account_id":"account"}',
+      name: "Imported Codex",
+      rule_groups: ["default"],
+    });
+    expect(fetchMock.mock.calls[2][0]).toContain("/admin/endpoints/77/probe");
+    expect(loadEndpoints).toHaveBeenCalledWith("adm.test");
+  });
+
   it("keeps rule editor open and surfaces backend detail on save failure", async () => {
     const setEditingRule = vi.fn();
     const loadRules = vi.fn();

@@ -11,8 +11,28 @@ from app.api.v1.route_modules.stats_handlers import (
     admin_stats_overview,
     admin_stats_timeseries,
     admin_stats_top_keys,
+    public_dashboard,
 )
 from app.db.models import APIKey, DumpIndex, Endpoint, RequestLog
+
+
+@pytest.mark.asyncio
+async def test_public_dashboard_hides_upstream_base_url(
+    db_session: AsyncSession,
+) -> None:
+    db_session.add(
+        Endpoint(
+            name="Private Upstream",
+            base_url="https://secret-upstream.example.test/v1",
+            provider="openai",
+        )
+    )
+    await db_session.commit()
+
+    result = await public_dashboard(session=db_session)
+
+    assert result.endpoints[0].base_url == "hidden"
+    assert "secret-upstream" not in result.model_dump_json()
 
 
 @pytest.mark.asyncio

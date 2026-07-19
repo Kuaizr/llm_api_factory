@@ -731,7 +731,9 @@ def _build_dashboard_endpoint(endpoint: Endpoint) -> DashboardEndpointOut:
     return DashboardEndpointOut(
         id=endpoint.id,
         name=endpoint.name,
-        base_url=endpoint.base_url,
+        # Public dashboard data must never expose the upstream address. The
+        # authenticated admin endpoint returns the real value when needed.
+        base_url="hidden",
         provider=endpoint.provider,
         status=status,
         latency=latency,
