@@ -26,13 +26,17 @@ import {
 import { parseModelMapList, parseStringList } from "./response-validators";
 
 const exposureFormatOptions = [
-  { value: "chat", label: "chat", hint: "OpenAI Chat" },
-  { value: "response", label: "response", hint: "OpenAI Responses" },
-  { value: "codex", label: "codex", hint: "Codex CLI Responses" },
-  { value: "message", label: "message", hint: "Anthropic Messages" },
-  { value: "claude_code", label: "claude code", hint: "Claude Code" },
-  { value: "gemini", label: "gemini", hint: "Gemini" },
+  { value: "chat", label: "Chat", hint: "OpenAI Chat Completions" },
+  { value: "response", label: "Responses", hint: "OpenAI Responses API" },
+  { value: "codex", label: "Codex", hint: "Codex CLI Responses" },
+  { value: "message", label: "Anthropic", hint: "Anthropic Messages" },
+  { value: "claude_code", label: "Claude Code", hint: "Claude Code CLI" },
+  { value: "gemini", label: "Gemini", hint: "Gemini API" },
 ] as const;
+
+const exposureFormatLabels = new Map<string, string>(
+  exposureFormatOptions.map((option) => [option.value, option.label])
+);
 
 export const RuleEditorModal = ({
   endpoints,
@@ -406,7 +410,7 @@ export const RuleEditorModal = ({
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
                   规则组
@@ -420,43 +424,6 @@ export const RuleEditorModal = ({
                 {isDefaultRule && (
                   <p className="mt-1 text-[11px] text-gray-500">系统默认分组不可重命名。</p>
                 )}
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
-                  可用 API 入口
-                </label>
-                <div className="grid grid-cols-2 gap-2 rounded border border-gray-700 bg-gray-900 p-2.5">
-                  {exposureFormatOptions.map((option) => {
-                    const checked = selectedExposureFormats.includes(option.value);
-                    return (
-                      <label
-                        key={option.value}
-                        className={`flex items-start gap-2 rounded px-2 py-1.5 text-xs ${
-                          isDefaultRule
-                            ? "cursor-not-allowed opacity-75"
-                            : "cursor-pointer hover:bg-gray-800"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleExposureFormat(option.value)}
-                          disabled={!isAdmin || isDefaultRule}
-                          className="mt-0.5 accent-yellow-500"
-                        />
-                        <span>
-                          <span className="font-semibold text-gray-200">{option.label}</span>
-                          <span className="ml-1 text-gray-500">{option.hint}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                <p className="mt-1 text-[11px] text-gray-500">
-                  {isDefaultRule
-                    ? "默认规则固定支持全部 API 入口。"
-                    : "所选入口共享这条规则的候选 Key 与调度策略。"}
-                </p>
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">
@@ -483,6 +450,41 @@ export const RuleEditorModal = ({
                   <option value="weighted_round_robin">加权轮询</option>
                   <option value="sequential">顺序主备</option>
                 </select>
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label className="text-xs font-bold uppercase text-gray-500">
+                  可用 API 入口
+                </label>
+                <span className="text-[11px] text-gray-500">
+                  {isDefaultRule
+                    ? "默认规则固定支持全部入口"
+                    : "可多选，共享候选 Key 与调度策略"}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {exposureFormatOptions.map((option) => {
+                  const selected = selectedExposureFormats.includes(option.value);
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      aria-pressed={selected}
+                      title={option.hint}
+                      onClick={() => toggleExposureFormat(option.value)}
+                      disabled={!isAdmin || isDefaultRule}
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                        selected
+                          ? "border-cyan-600/70 bg-cyan-950/50 text-cyan-200 shadow-sm shadow-cyan-950/30"
+                          : "border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                      } disabled:cursor-not-allowed disabled:opacity-70`}
+                    >
+                      {selected && <Check size={13} strokeWidth={2.5} />}
+                      {option.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <div className="bg-gray-900/30 border border-gray-800 rounded-lg p-4 space-y-3">
@@ -977,7 +979,7 @@ export const RulesView = ({
                     key={format}
                     className="text-xs px-2 py-0.5 rounded bg-cyan-950/40 text-cyan-300 border border-cyan-800/50"
                   >
-                    {format}
+                    {exposureFormatLabels.get(format) ?? format}
                   </span>
                 ))}
                 {isDefaultGroup && (

@@ -148,15 +148,13 @@ describe("Console rules", () => {
     await user.click(await screen.findByRole("button", { name: "新建规则" }));
 
     expect(screen.getByText("可用 API 入口")).toBeInTheDocument();
-    const chatEntry = screen.getByRole("checkbox", { name: /chat OpenAI Chat/i });
-    const responsesEntry = screen.getByRole("checkbox", {
-      name: /response OpenAI Responses/i,
-    });
-    expect(chatEntry).toBeChecked();
-    expect(responsesEntry).not.toBeChecked();
+    const chatEntry = screen.getByRole("button", { name: "Chat" });
+    const responsesEntry = screen.getByRole("button", { name: "Responses" });
+    expect(chatEntry).toHaveAttribute("aria-pressed", "true");
+    expect(responsesEntry).toHaveAttribute("aria-pressed", "false");
     await user.click(responsesEntry);
-    expect(chatEntry).toBeChecked();
-    expect(responsesEntry).toBeChecked();
+    expect(chatEntry).toHaveAttribute("aria-pressed", "true");
+    expect(responsesEntry).toHaveAttribute("aria-pressed", "true");
   });
 
   it("copies access key from rule key list", async () => {
