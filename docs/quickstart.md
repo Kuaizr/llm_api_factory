@@ -91,6 +91,8 @@ SQLite 默认启用：
 
 个人和低并发单机可以先用 SQLite。请求日志写入量上来后，建议改用 PostgreSQL。
 
+项目按最新 schema 的新部署方式运维。空数据库会自动创建当前版本需要的表和字段，但不保证把旧版本数据库自动迁移到最新版；升级已有实例前应先备份，再自行执行必要 SQL，或切换到新的空数据库。
+
 ## 常用环境变量
 
 ```bash
@@ -102,4 +104,3 @@ export LLM_REDIS_URL="redis://localhost:6379/0"
 ```
 
 `LLM_DATA_ENCRYPTION_KEY` 必须稳定保存。上游 API key 和 OAuth client secret 会用它加密后落库。
-

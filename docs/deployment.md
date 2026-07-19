@@ -85,6 +85,16 @@ export LLM_PG_MAX_OVERFLOW=5
 
 `scripts/start_all.sh` 检测到 PostgreSQL URL 时，会用 `pg_isready` 做启动前可达性检查。
 
+## 数据库版本策略
+
+当前只保证在空 SQLite/PostgreSQL 数据库上按 ORM 模型创建最新版 schema，不维护跨版本旧库的自动数据转换。升级现有实例时：
+
+1. 先备份数据库和 `LLM_DATA_ENCRYPTION_KEY`。
+2. 对照当前 `backend/app/db/models.py` 自行执行字段与索引 SQL，或创建新的空数据库。
+3. 验证端点、Key、规则组和管理员登录后再切换流量。
+
+新安装建议直接使用空 PostgreSQL 数据库，不需要额外执行迁移脚本。
+
 ## Redis
 
 Redis 用于：
@@ -120,4 +130,3 @@ export LLM_REDIS_URL="redis://localhost:6379/0"
 | `LLM_PROXY_DUMP_ROOT` | `backend/proxy_dumps` | dump 文件目录 |
 
 生产环境至少设置 `LLM_MASTER_AUTH_TOKEN` 和 `LLM_DATA_ENCRYPTION_KEY`。
-

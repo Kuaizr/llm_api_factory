@@ -25,6 +25,11 @@ discarded before the credential is encrypted and stored.
 If `account_id` or `expires_at` is omitted, LMF derives it from the access-token
 JWT when the corresponding claim is present.
 
+The console accepts the JSON by paste or file upload both while creating a Codex
+endpoint and while adding keys in API-key management. Each imported credential
+is stored as an independent key; its 5-hour and 1-week usage windows are shown on
+that key's card rather than as one endpoint-wide value.
+
 ## Refresh
 
 When `expires_at` is near expiry, LMF refreshes with:
@@ -40,6 +45,16 @@ concurrent workers from refreshing the same credential repeatedly.
 A credential without `refresh_token` remains unchanged while its access token is
 valid. Once it expires or the upstream rejects it, an administrator must import a
 new credential.
+
+If the endpoint is bound to an Agent, refresh uses that same Agent. Model
+discovery, API-key tests, scheduled/manual probes, refresh, and real inference all
+share the endpoint's Agent network egress. Agent failure never silently falls
+back to a direct request from the main service. An endpoint without an Agent uses
+the main service directly.
+
+For the default URLs, that Agent's target allowlist must include both
+`chatgpt.com` and `auth.openai.com`. Add the endpoint hostname as well when using
+a custom base URL.
 
 ## Upstream Shape
 

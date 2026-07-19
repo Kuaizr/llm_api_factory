@@ -74,6 +74,14 @@ curl -fsSL https://raw.githubusercontent.com/Kuaizr/llm_api_factory/master/scrip
 api.openai.com,api.anthropic.com,generativelanguage.googleapis.com
 ```
 
+Codex OAuth 端点默认还需要允许推理/模型地址 `chatgpt.com` 和刷新地址 `auth.openai.com`：
+
+```text
+chatgpt.com,auth.openai.com
+```
+
+如果 Codex 端点使用了自定义 base URL，也要把该 URL 的 hostname 加入 Agent allowlist。否则模型探测、Key 测试、Token 刷新和真实请求都会按 Agent 不可用处理，不会改由主服务直连。
+
 也可以允许端口或 CIDR：
 
 ```text
